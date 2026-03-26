@@ -1,0 +1,7 @@
+# Deciduous database (local)
+.deciduous/
+.worktrees/
+docs/
+*.db
+*.sqlite
+bin/
