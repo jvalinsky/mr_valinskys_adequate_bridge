@@ -171,7 +171,7 @@ func collectionFromPath(path string) (string, bool) {
 
 func isSupportedCollection(collection string) bool {
 	switch collection {
-	case mapper.RecordTypePost, mapper.RecordTypeLike, mapper.RecordTypeRepost, mapper.RecordTypeFollow:
+	case mapper.RecordTypePost, mapper.RecordTypeLike, mapper.RecordTypeFollow, mapper.RecordTypeBlock, mapper.RecordTypeProfile:
 		return true
 	default:
 		return false

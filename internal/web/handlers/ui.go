@@ -542,8 +542,10 @@ func summarizeDeferredIssue(reason string) string {
 		return "Waiting on contact bridge"
 	case strings.Contains(reason, "_atproto_subject="):
 		return "Waiting on subject bridge"
-	case strings.Contains(reason, "_atproto_repost_subject="):
-		return "Waiting on repost subject bridge"
+	case strings.Contains(reason, "_atproto_quote_subject="):
+		return "Waiting on quoted post bridge"
+	case strings.Contains(reason, "_atproto_about_did="):
+		return "Waiting on author feed bridge"
 	default:
 		return compactIssueText(reason)
 	}

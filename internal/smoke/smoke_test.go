@@ -94,24 +94,31 @@ func TestBridgeSmoke(t *testing.T) {
 			}`,
 		},
 		{
-			collection: mapper.RecordTypeRepost,
-			atURI:      "at://did:plc:smoketest/app.bsky.feed.repost/1",
-			atCID:      "bafy-smoke-repost",
-			payload: `{
-				"subject": {
-					"uri": "at://did:plc:smoketest/app.bsky.feed.post/1",
-					"cid": "bafy-smoke-post"
-				},
-				"createdAt": "2026-01-01T00:00:02Z"
-			}`,
-		},
-		{
 			collection: mapper.RecordTypeFollow,
 			atURI:      "at://did:plc:smoketest/app.bsky.graph.follow/1",
 			atCID:      "bafy-smoke-follow",
 			payload: `{
 				"subject": "did:plc:smoke-follow-target",
+				"createdAt": "2026-01-01T00:00:02Z"
+			}`,
+		},
+		{
+			collection: mapper.RecordTypeBlock,
+			atURI:      "at://did:plc:smoketest/app.bsky.graph.block/1",
+			atCID:      "bafy-smoke-block",
+			payload: `{
+				"subject": "did:plc:smoke-follow-target",
 				"createdAt": "2026-01-01T00:00:03Z"
+			}`,
+		},
+		{
+			collection: mapper.RecordTypeProfile,
+			atURI:      "at://did:plc:smoketest/app.bsky.actor.profile/self",
+			atCID:      "bafy-smoke-profile",
+			payload: `{
+				"displayName":"Smoke Tester",
+				"description":"bridge smoke",
+				"createdAt":"2026-01-01T00:00:04Z"
 			}`,
 		},
 	}
@@ -133,6 +140,22 @@ func TestBridgeSmoke(t *testing.T) {
 		if strings.TrimSpace(msg.SSBMsgRef) == "" {
 			t.Fatalf("expected published ssb ref for %s", f.atURI)
 		}
+	}
+
+	postMsg, err := database.GetMessage(ctx, postURI)
+	if err != nil {
+		t.Fatalf("get post message: %v", err)
+	}
+	if !strings.Contains(postMsg.RawSSBJson, `"type":"post"`) {
+		t.Fatalf("post payload missing native type: %s", postMsg.RawSSBJson)
+	}
+
+	profileMsg, err := database.GetMessage(ctx, "at://did:plc:smoketest/app.bsky.actor.profile/self")
+	if err != nil {
+		t.Fatalf("get profile message: %v", err)
+	}
+	if !strings.Contains(profileMsg.RawSSBJson, `"type":"about"`) || !strings.Contains(profileMsg.RawSSBJson, `"about":"`) {
+		t.Fatalf("profile payload missing about shape: %s", profileMsg.RawSSBJson)
 	}
 
 	if err := database.SetBridgeState(ctx, "firehose_seq", "9001"); err != nil {
