@@ -1,0 +1,76 @@
+name: Bridge Live Interop (Pre-release)
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_environment:
+        description: "Promotion environment to validate"
+        required: true
+        default: staging
+        type: choice
+        options:
+          - staging
+          - release
+  push:
+    branches:
+      - staging
+  release:
+    types:
+      - published
+      - prereleased
+
+jobs:
+  live-interop:
+    name: Live Relay + Room Peer Interop
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: ${{ (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.target_environment == 'release')) && 'release' || 'staging' }}
+    permissions:
+      contents: read
+    env:
+      LIVE_E2E_ENABLED: "1"
+      LIVE_ATPROTO_HOST: ${{ vars.LIVE_ATPROTO_HOST }}
+      LIVE_ATPROTO_IDENTIFIER: ${{ secrets.LIVE_ATPROTO_IDENTIFIER }}
+      LIVE_ATPROTO_PASSWORD: ${{ secrets.LIVE_ATPROTO_PASSWORD }}
+      LIVE_ATPROTO_FOLLOW_TARGET_DID: ${{ secrets.LIVE_ATPROTO_FOLLOW_TARGET_DID }}
+      LIVE_ROOM_PEER_VERIFY_CMD: ./scripts/local_room_peer_verify.sh
+      LIVE_RELAY_URL: ${{ vars.LIVE_RELAY_URL }}
+      LIVE_BRIDGE_BOT_SEED: ${{ secrets.LIVE_BRIDGE_BOT_SEED }}
+      LIVE_E2E_TIMEOUT: ${{ vars.LIVE_E2E_TIMEOUT }}
+      LIVE_ROOM_MUXRPC_ADDR: ${{ vars.LIVE_ROOM_MUXRPC_ADDR }}
+      LIVE_ROOM_HTTP_ADDR: ${{ vars.LIVE_ROOM_HTTP_ADDR }}
+      LIVE_ROOM_MODE: ${{ vars.LIVE_ROOM_MODE }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Validate live interop secrets
+        run: |
+          set -euo pipefail
+          required=(
+            LIVE_ATPROTO_IDENTIFIER
+            LIVE_ATPROTO_PASSWORD
+            LIVE_ATPROTO_FOLLOW_TARGET_DID
+          )
+          for name in "${required[@]}"; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "Missing required secret: $name"
+              exit 1
+            fi
+          done
+          if [[ ! -x "${LIVE_ROOM_PEER_VERIFY_CMD}" ]]; then
+            echo "Peer verifier command is not executable: ${LIVE_ROOM_PEER_VERIFY_CMD}"
+            exit 1
+          fi
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Run live interoperability gate
+        run: ./scripts/live_bridge_e2e.sh

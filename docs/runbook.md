@@ -112,8 +112,28 @@ export LIVE_ROOM_MODE="community"
 
 4. CI gate workflow:
    - `.github/workflows/bridge-live-prerelease.yml`
-   - Triggered on `release` (`published`, `prereleased`) and `workflow_dispatch`.
+   - Triggered on `push` to `staging`, `release` (`published`, `prereleased`), and `workflow_dispatch`.
    - Intended for pre-release validation, not pull request blocking.
+
+5. GitHub environment wiring for promotion gates:
+   - Workflow routes to environment `staging` for staging pushes/manual staging runs, and `release` for release/manual release runs.
+   - Configure required environment secrets in both `staging` and `release`:
+     - `LIVE_ATPROTO_IDENTIFIER`
+     - `LIVE_ATPROTO_PASSWORD`
+     - `LIVE_ATPROTO_FOLLOW_TARGET_DID`
+     - `LIVE_BRIDGE_BOT_SEED` (recommended, optional in code)
+   - Configure optional environment variables in both `staging` and `release`:
+     - `LIVE_ATPROTO_HOST`
+     - `LIVE_RELAY_URL`
+     - `LIVE_E2E_TIMEOUT`
+     - `LIVE_ROOM_MUXRPC_ADDR`
+     - `LIVE_ROOM_HTTP_ADDR`
+     - `LIVE_ROOM_MODE`
+   - `LIVE_ROOM_PEER_VERIFY_CMD` is pinned in workflow to `./scripts/local_room_peer_verify.sh`.
+
+6. Repository protection policy (manual GitHub settings):
+   - Require status check `Bridge Live Interop (Pre-release) / Live Relay + Room Peer Interop` on branch `staging`.
+   - Gate release promotion on successful run of the same workflow in `release` environment.
 
 ## Local Isolated ATProto Stack (No Live Services)
 Use this workflow when you want full bridge E2E coverage without touching public ATProto infrastructure.
