@@ -101,6 +101,19 @@ func (r *Runtime) Publish(ctx context.Context, atDID string, content map[string]
 	return msgRef.Ref(), nil
 }
 
+// ResolveFeed returns the deterministic SSB feed ref for atDID without creating a DB account row.
+func (r *Runtime) ResolveFeed(_ context.Context, atDID string) (string, error) {
+	if r == nil || r.manager == nil {
+		return "", fmt.Errorf("runtime manager is nil")
+	}
+
+	feedRef, err := r.manager.GetFeedID(atDID)
+	if err != nil {
+		return "", fmt.Errorf("get feed id for %s: %w", atDID, err)
+	}
+	return feedRef.Ref(), nil
+}
+
 // BlobStore returns the underlying SSB blob store used by this runtime.
 func (r *Runtime) BlobStore() ssb.BlobStore {
 	return r.blobStore

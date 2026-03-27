@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -32,6 +34,145 @@ type mockBlobBridge struct {
 
 func (m *mockBlobBridge) BridgeRecordBlobs(context.Context, string, map[string]interface{}, []byte) error {
 	return m.err
+}
+
+type recordingPublisher struct {
+	mu        sync.Mutex
+	published []map[string]interface{}
+}
+
+func (p *recordingPublisher) Publish(_ context.Context, _ string, content map[string]interface{}) (string, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	copyContent := deepCopyMap(content)
+	p.published = append(p.published, copyContent)
+	return fmt.Sprintf("%%pub-%d.sha256", len(p.published)), nil
+}
+
+func (p *recordingPublisher) snapshot() []map[string]interface{} {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	out := make([]map[string]interface{}, len(p.published))
+	for i, item := range p.published {
+		out[i] = deepCopyMap(item)
+	}
+	return out
+}
+
+type mockFeedResolver struct {
+	mu      sync.Mutex
+	refs    map[string]string
+	lookups map[string]int
+	waitCh  chan struct{}
+	err     error
+}
+
+func (m *mockFeedResolver) ResolveFeed(ctx context.Context, did string) (string, error) {
+	if m.waitCh != nil {
+		select {
+		case <-m.waitCh:
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.lookups == nil {
+		m.lookups = make(map[string]int)
+	}
+	m.lookups[did]++
+	if m.err != nil {
+		return "", m.err
+	}
+	return m.refs[did], nil
+}
+
+func (m *mockFeedResolver) lookupCount(did string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lookups[did]
+}
+
+type stubRecordFetcher struct {
+	mu      sync.Mutex
+	records map[string]FetchedRecord
+	errors  map[string]error
+	fetches map[string]int
+	waitCh  chan struct{}
+}
+
+func (f *stubRecordFetcher) FetchRecord(ctx context.Context, atURI string) (FetchedRecord, error) {
+	if f.waitCh != nil {
+		select {
+		case <-f.waitCh:
+		case <-ctx.Done():
+			return FetchedRecord{}, ctx.Err()
+		}
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.fetches == nil {
+		f.fetches = make(map[string]int)
+	}
+	f.fetches[atURI]++
+
+	if err := f.errors[atURI]; err != nil {
+		return FetchedRecord{}, err
+	}
+	record, ok := f.records[atURI]
+	if !ok {
+		return FetchedRecord{}, fmt.Errorf("missing stub record for %s", atURI)
+	}
+	return record, nil
+}
+
+func (f *stubRecordFetcher) fetchCount(atURI string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.fetches[atURI]
+}
+
+func newProcessorWithDependencies(database *db.DB, publisher Publisher, feedResolver FeedResolver, fetcher RecordFetcher) *Processor {
+	logger := log.New(io.Discard, "", 0)
+	opts := []Option{}
+	if publisher != nil {
+		opts = append(opts, WithPublisher(publisher))
+	}
+	if feedResolver != nil {
+		opts = append(opts, WithFeedResolver(feedResolver))
+	}
+
+	var processor *Processor
+	if fetcher != nil {
+		resolver := NewATProtoDependencyResolver(
+			database,
+			logger,
+			fetcher,
+			func(ctx context.Context, atDID, atURI, atCID, collection string, recordJSON []byte) error {
+				return processor.ProcessRecord(ctx, atDID, atURI, atCID, collection, recordJSON)
+			},
+		)
+		opts = append(opts, WithDependencyResolver(resolver))
+	}
+
+	processor = NewProcessor(database, logger, opts...)
+	return processor
+}
+
+func deepCopyMap(in map[string]interface{}) map[string]interface{} {
+	raw, err := json.Marshal(in)
+	if err != nil {
+		panic(err)
+	}
+	var out map[string]interface{}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		panic(err)
+	}
+	return out
 }
 
 func TestProcessRecordStoresMappedMessage(t *testing.T) {
@@ -253,6 +394,328 @@ func TestProcessRecordFollowDefersWhenContactUnresolved(t *testing.T) {
 	}
 	if !strings.Contains(stored.DeferReason, "_atproto_contact=") {
 		t.Fatalf("expected follow defer reason to include contact placeholder, got %q", stored.DeferReason)
+	}
+}
+
+func TestProcessRecordAutoFetchesLikeSubjectDependency(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open memory db: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	subjectURI := "at://did:plc:bob/app.bsky.feed.post/root"
+	publisher := &recordingPublisher{}
+	fetcher := &stubRecordFetcher{
+		records: map[string]FetchedRecord{
+			subjectURI: {
+				ATDID:      "did:plc:bob",
+				ATURI:      subjectURI,
+				ATCID:      "bafy-root",
+				Collection: mapper.RecordTypePost,
+				RecordJSON: []byte(`{"text":"dependency root","createdAt":"2026-01-01T00:00:00Z"}`),
+			},
+		},
+	}
+	processor := newProcessorWithDependencies(database, publisher, nil, fetcher)
+
+	likeRecord := []byte(`{
+		"subject": {
+			"uri": "at://did:plc:bob/app.bsky.feed.post/root",
+			"cid": "bafy-root"
+		},
+		"createdAt": "2026-01-01T00:00:00Z"
+	}`)
+	if err := processor.ProcessRecord(
+		ctx,
+		"did:plc:alice",
+		"at://did:plc:alice/app.bsky.feed.like/auto-1",
+		"bafy-like-auto-1",
+		mapper.RecordTypeLike,
+		likeRecord,
+	); err != nil {
+		t.Fatalf("process like record: %v", err)
+	}
+
+	subject, err := database.GetMessage(ctx, subjectURI)
+	if err != nil {
+		t.Fatalf("get subject message: %v", err)
+	}
+	if subject == nil || subject.MessageState != db.MessageStatePublished {
+		t.Fatalf("expected fetched dependency to publish, got %+v", subject)
+	}
+
+	like, err := database.GetMessage(ctx, "at://did:plc:alice/app.bsky.feed.like/auto-1")
+	if err != nil {
+		t.Fatalf("get like message: %v", err)
+	}
+	if like == nil || like.MessageState != db.MessageStatePublished {
+		t.Fatalf("expected like to publish after dependency resolution, got %+v", like)
+	}
+
+	published := publisher.snapshot()
+	if len(published) != 2 {
+		t.Fatalf("expected 2 publish calls, got %d", len(published))
+	}
+	if published[0]["text"] != "dependency root" {
+		t.Fatalf("expected dependency post to publish first, got %+v", published[0])
+	}
+	if published[1]["type"] != "vote" {
+		t.Fatalf("expected like vote to publish second, got %+v", published[1])
+	}
+
+	vote, ok := published[1]["vote"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected vote payload, got %+v", published[1])
+	}
+	if vote["link"] != "%pub-1.sha256" {
+		t.Fatalf("expected like to reference fetched dependency ref, got %+v", vote)
+	}
+	if fetcher.fetchCount(subjectURI) != 1 {
+		t.Fatalf("expected exactly one fetch for dependency, got %d", fetcher.fetchCount(subjectURI))
+	}
+}
+
+func TestProcessRecordAutoFetchesRepostSubjectDependency(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open memory db: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	subjectURI := "at://did:plc:bob/app.bsky.feed.post/repost-root"
+	publisher := &recordingPublisher{}
+	fetcher := &stubRecordFetcher{
+		records: map[string]FetchedRecord{
+			subjectURI: {
+				ATDID:      "did:plc:bob",
+				ATURI:      subjectURI,
+				ATCID:      "bafy-repost-root",
+				Collection: mapper.RecordTypePost,
+				RecordJSON: []byte(`{"text":"repost root","createdAt":"2026-01-01T00:00:00Z"}`),
+			},
+		},
+	}
+	processor := newProcessorWithDependencies(database, publisher, nil, fetcher)
+
+	repostRecord := []byte(`{
+		"subject": {
+			"uri": "at://did:plc:bob/app.bsky.feed.post/repost-root",
+			"cid": "bafy-repost-root"
+		},
+		"createdAt": "2026-01-01T00:00:00Z"
+	}`)
+	if err := processor.ProcessRecord(
+		ctx,
+		"did:plc:alice",
+		"at://did:plc:alice/app.bsky.feed.repost/auto-1",
+		"bafy-repost-auto-1",
+		mapper.RecordTypeRepost,
+		repostRecord,
+	); err != nil {
+		t.Fatalf("process repost record: %v", err)
+	}
+
+	repost, err := database.GetMessage(ctx, "at://did:plc:alice/app.bsky.feed.repost/auto-1")
+	if err != nil {
+		t.Fatalf("get repost message: %v", err)
+	}
+	if repost == nil || repost.MessageState != db.MessageStatePublished {
+		t.Fatalf("expected repost to publish after dependency resolution, got %+v", repost)
+	}
+
+	published := publisher.snapshot()
+	if len(published) != 2 {
+		t.Fatalf("expected 2 publish calls, got %d", len(published))
+	}
+	if published[1]["text"] != "[%pub-1.sha256]" {
+		t.Fatalf("expected repost to reference dependency ref in text, got %+v", published[1])
+	}
+}
+
+func TestProcessRecordAutoFetchesReplyChainDependencies(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open memory db: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	rootURI := "at://did:plc:carol/app.bsky.feed.post/root"
+	parentURI := "at://did:plc:bob/app.bsky.feed.post/parent"
+	publisher := &recordingPublisher{}
+	fetcher := &stubRecordFetcher{
+		records: map[string]FetchedRecord{
+			rootURI: {
+				ATDID:      "did:plc:carol",
+				ATURI:      rootURI,
+				ATCID:      "bafy-root",
+				Collection: mapper.RecordTypePost,
+				RecordJSON: []byte(`{"text":"root","createdAt":"2026-01-01T00:00:00Z"}`),
+			},
+			parentURI: {
+				ATDID:      "did:plc:bob",
+				ATURI:      parentURI,
+				ATCID:      "bafy-parent",
+				Collection: mapper.RecordTypePost,
+				RecordJSON: []byte(`{
+					"text":"parent",
+					"reply":{
+						"root":{"uri":"at://did:plc:carol/app.bsky.feed.post/root","cid":"bafy-root"},
+						"parent":{"uri":"at://did:plc:carol/app.bsky.feed.post/root","cid":"bafy-root"}
+					},
+					"createdAt":"2026-01-01T00:00:00Z"
+				}`),
+			},
+		},
+	}
+	processor := newProcessorWithDependencies(database, publisher, nil, fetcher)
+
+	replyRecord := []byte(`{
+		"text":"child",
+		"reply":{
+			"root":{"uri":"at://did:plc:carol/app.bsky.feed.post/root","cid":"bafy-root"},
+			"parent":{"uri":"at://did:plc:bob/app.bsky.feed.post/parent","cid":"bafy-parent"}
+		},
+		"createdAt":"2026-01-01T00:00:00Z"
+	}`)
+	if err := processor.ProcessRecord(
+		ctx,
+		"did:plc:alice",
+		"at://did:plc:alice/app.bsky.feed.post/reply-1",
+		"bafy-child",
+		mapper.RecordTypePost,
+		replyRecord,
+	); err != nil {
+		t.Fatalf("process reply record: %v", err)
+	}
+
+	reply, err := database.GetMessage(ctx, "at://did:plc:alice/app.bsky.feed.post/reply-1")
+	if err != nil {
+		t.Fatalf("get reply message: %v", err)
+	}
+	if reply == nil || reply.MessageState != db.MessageStatePublished {
+		t.Fatalf("expected reply to publish after resolving parent/root chain, got %+v", reply)
+	}
+
+	published := publisher.snapshot()
+	if len(published) != 3 {
+		t.Fatalf("expected 3 publish calls, got %d", len(published))
+	}
+	if published[0]["text"] != "root" || published[1]["text"] != "parent" || published[2]["text"] != "child" {
+		t.Fatalf("expected root->parent->child publish order, got %+v", published)
+	}
+	if fetcher.fetchCount(rootURI) != 1 || fetcher.fetchCount(parentURI) != 1 {
+		t.Fatalf("expected one fetch for root and parent, got root=%d parent=%d", fetcher.fetchCount(rootURI), fetcher.fetchCount(parentURI))
+	}
+}
+
+func TestProcessRecordFollowResolvesExternalFeedWithoutBridgedAccount(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open memory db: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	publisher := &recordingPublisher{}
+	feedResolver := &mockFeedResolver{
+		refs: map[string]string{
+			"did:plc:bob": "@bob.ed25519",
+		},
+	}
+	processor := newProcessorWithDependencies(database, publisher, feedResolver, nil)
+
+	followRecord := []byte(`{
+		"subject": "did:plc:bob",
+		"createdAt": "2026-01-01T00:00:00Z"
+	}`)
+	if err := processor.ProcessRecord(
+		ctx,
+		"did:plc:alice",
+		"at://did:plc:alice/app.bsky.graph.follow/auto-1",
+		"bafy-follow-auto-1",
+		mapper.RecordTypeFollow,
+		followRecord,
+	); err != nil {
+		t.Fatalf("process follow record: %v", err)
+	}
+
+	stored, err := database.GetMessage(ctx, "at://did:plc:alice/app.bsky.graph.follow/auto-1")
+	if err != nil {
+		t.Fatalf("get follow message: %v", err)
+	}
+	if stored == nil || stored.MessageState != db.MessageStatePublished {
+		t.Fatalf("expected follow message to publish, got %+v", stored)
+	}
+	if strings.Contains(stored.RawSSBJson, "_atproto_contact") {
+		t.Fatalf("expected resolved follow payload, got %s", stored.RawSSBJson)
+	}
+
+	accounts, err := database.GetAllBridgedAccounts(ctx)
+	if err != nil {
+		t.Fatalf("list bridged accounts: %v", err)
+	}
+	if len(accounts) != 0 {
+		t.Fatalf("expected no bridged account rows to be inserted, got %+v", accounts)
+	}
+}
+
+func TestProcessRecordStaysDeferredWhenDependencyUnsupported(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open memory db: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	subjectURI := "at://did:plc:bob/app.bsky.feed.post/missing"
+	publisher := &recordingPublisher{}
+	fetcher := &stubRecordFetcher{
+		records: map[string]FetchedRecord{
+			subjectURI: {
+				ATDID:      "did:plc:bob",
+				ATURI:      subjectURI,
+				ATCID:      "bafy-profile",
+				Collection: mapper.RecordTypeProfile,
+				RecordJSON: []byte(`{"displayName":"unsupported profile"}`),
+			},
+		},
+	}
+	processor := newProcessorWithDependencies(database, publisher, nil, fetcher)
+
+	likeRecord := []byte(`{
+		"subject": {
+			"uri": "at://did:plc:bob/app.bsky.feed.post/missing",
+			"cid": "bafy-profile"
+		},
+		"createdAt": "2026-01-01T00:00:00Z"
+	}`)
+	if err := processor.ProcessRecord(
+		ctx,
+		"did:plc:alice",
+		"at://did:plc:alice/app.bsky.feed.like/unsupported-1",
+		"bafy-like-unsupported",
+		mapper.RecordTypeLike,
+		likeRecord,
+	); err != nil {
+		t.Fatalf("process like record: %v", err)
+	}
+
+	stored, err := database.GetMessage(ctx, "at://did:plc:alice/app.bsky.feed.like/unsupported-1")
+	if err != nil {
+		t.Fatalf("get like message: %v", err)
+	}
+	if stored == nil || stored.MessageState != db.MessageStateDeferred {
+		t.Fatalf("expected like to remain deferred, got %+v", stored)
+	}
+	if stored.SSBMsgRef != "" {
+		t.Fatalf("expected no publish ref for unresolved dependency, got %q", stored.SSBMsgRef)
+	}
+	if fetcher.fetchCount(subjectURI) != 1 {
+		t.Fatalf("expected dependency fetch attempt, got %d", fetcher.fetchCount(subjectURI))
 	}
 }
 
@@ -515,6 +978,171 @@ func TestResolveDeferredMessagesPublishesFollowWhenContactAppears(t *testing.T) 
 	}
 	if stored.SSBMsgRef != "%resolved-follow.sha256" {
 		t.Fatalf("expected resolved follow publish ref, got %q", stored.SSBMsgRef)
+	}
+}
+
+func TestResolveDeferredMessagesAutoFetchesMissingDependency(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open memory db: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	subjectURI := "at://did:plc:bob/app.bsky.feed.post/deferred-root"
+	fetcher := &stubRecordFetcher{
+		records: map[string]FetchedRecord{
+			subjectURI: {
+				ATDID:      "did:plc:bob",
+				ATURI:      subjectURI,
+				ATCID:      "bafy-deferred-root",
+				Collection: mapper.RecordTypePost,
+				RecordJSON: []byte(`{"text":"deferred root","createdAt":"2026-01-01T00:00:00Z"}`),
+			},
+		},
+	}
+	publisher := &recordingPublisher{}
+	processor := newProcessorWithDependencies(database, publisher, nil, fetcher)
+
+	if err := database.AddMessage(ctx, db.Message{
+		ATURI:              "at://did:plc:alice/app.bsky.feed.like/resolve-auto",
+		ATCID:              "bafy-like-resolve-auto",
+		ATDID:              "did:plc:alice",
+		Type:               mapper.RecordTypeLike,
+		MessageState:       db.MessageStateDeferred,
+		RawATJson:          `{"subject":{"uri":"at://did:plc:bob/app.bsky.feed.post/deferred-root","cid":"bafy-deferred-root"},"createdAt":"2026-01-01T00:00:00Z"}`,
+		RawSSBJson:         `{"type":"vote","vote":{"value":1,"expression":"Like"},"_atproto_subject":"at://did:plc:bob/app.bsky.feed.post/deferred-root"}`,
+		DeferReason:        "_atproto_subject=at://did:plc:bob/app.bsky.feed.post/deferred-root",
+		DeferAttempts:      1,
+		LastDeferAttemptAt: func() *time.Time { v := time.Now().UTC().Add(-time.Minute); return &v }(),
+	}); err != nil {
+		t.Fatalf("seed deferred message: %v", err)
+	}
+
+	result, err := processor.ResolveDeferredMessages(ctx, 10)
+	if err != nil {
+		t.Fatalf("resolve deferred messages: %v", err)
+	}
+	if result.Published != 1 {
+		t.Fatalf("expected 1 published deferred message, got %+v", result)
+	}
+
+	stored, err := database.GetMessage(ctx, "at://did:plc:alice/app.bsky.feed.like/resolve-auto")
+	if err != nil {
+		t.Fatalf("get resolved deferred message: %v", err)
+	}
+	if stored == nil || stored.MessageState != db.MessageStatePublished {
+		t.Fatalf("expected deferred message to publish, got %+v", stored)
+	}
+	if fetcher.fetchCount(subjectURI) != 1 {
+		t.Fatalf("expected exactly one dependency fetch, got %d", fetcher.fetchCount(subjectURI))
+	}
+}
+
+func TestDependencyResolverDeduplicatesInFlightFetches(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open memory db: %v", err)
+	}
+	defer database.Close()
+
+	waitCh := make(chan struct{})
+	fetcher := &stubRecordFetcher{
+		waitCh: waitCh,
+		records: map[string]FetchedRecord{
+			"at://did:plc:bob/app.bsky.feed.post/shared": {
+				ATDID:      "did:plc:bob",
+				ATURI:      "at://did:plc:bob/app.bsky.feed.post/shared",
+				ATCID:      "bafy-shared",
+				Collection: mapper.RecordTypePost,
+				RecordJSON: []byte(`{"text":"shared","createdAt":"2026-01-01T00:00:00Z"}`),
+			},
+		},
+	}
+	resolver := NewATProtoDependencyResolver(
+		database,
+		log.New(io.Discard, "", 0),
+		fetcher,
+		func(context.Context, string, string, string, string, []byte) error { return nil },
+	)
+
+	ctx := context.Background()
+	targetURI := "at://did:plc:bob/app.bsky.feed.post/shared"
+	errCh := make(chan error, 2)
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errCh <- resolver.EnsureRecord(ctx, targetURI)
+		}()
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	close(waitCh)
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("ensure record returned error: %v", err)
+		}
+	}
+	if fetcher.fetchCount(targetURI) != 1 {
+		t.Fatalf("expected one in-flight fetch, got %d", fetcher.fetchCount(targetURI))
+	}
+}
+
+func TestLookupFeedDeduplicatesInFlightResolution(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open memory db: %v", err)
+	}
+	defer database.Close()
+
+	waitCh := make(chan struct{})
+	feedResolver := &mockFeedResolver{
+		waitCh: waitCh,
+		refs: map[string]string{
+			"did:plc:bob": "@bob.ed25519",
+		},
+	}
+	processor := newProcessorWithDependencies(database, nil, feedResolver, nil)
+
+	ctx := ensureDependencyContext(context.Background(), "did:plc:alice", "at://did:plc:alice/app.bsky.graph.follow/shared")
+	errCh := make(chan error, 2)
+	results := make(chan string, 2)
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ref, err := processor.lookupFeed(ctx, "did:plc:bob")
+			if err == nil {
+				results <- ref
+			}
+			errCh <- err
+		}()
+	}
+
+	time.Sleep(50 * time.Millisecond)
+	close(waitCh)
+	wg.Wait()
+	close(results)
+	close(errCh)
+
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("lookupFeed returned error: %v", err)
+		}
+	}
+	for ref := range results {
+		if ref != "@bob.ed25519" {
+			t.Fatalf("unexpected resolved feed ref %q", ref)
+		}
+	}
+	if feedResolver.lookupCount("did:plc:bob") != 1 {
+		t.Fatalf("expected exactly one feed resolver lookup, got %d", feedResolver.lookupCount("did:plc:bob"))
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bluesky-social/indigo/api/atproto"
@@ -27,10 +28,15 @@ var supportedCollections = map[string]struct{}{
 
 // Processor processes ATProto commits into persisted and optionally published SSB messages.
 type Processor struct {
-	db         *db.DB
-	logger     *log.Logger
-	publisher  Publisher
-	blobBridge BlobBridge
+	db                 *db.DB
+	logger             *log.Logger
+	publisher          Publisher
+	blobBridge         BlobBridge
+	dependencyResolver DependencyResolver
+	feedResolver       FeedResolver
+
+	feedMu       sync.Mutex
+	feedInFlight map[string]*feedResolutionCall
 }
 
 // RetryConfig controls retry candidate selection and scheduling.
@@ -69,6 +75,12 @@ type BlobBridge interface {
 	BridgeRecordBlobs(ctx context.Context, atDID string, mapped map[string]interface{}, rawRecordJSON []byte) error
 }
 
+type feedResolutionCall struct {
+	done chan struct{}
+	ref  string
+	err  error
+}
+
 // Option configures Processor behavior.
 type Option func(*Processor)
 
@@ -86,14 +98,29 @@ func WithBlobBridge(b BlobBridge) Option {
 	}
 }
 
+// WithDependencyResolver sets the record dependency resolver used by Processor.
+func WithDependencyResolver(resolver DependencyResolver) Option {
+	return func(proc *Processor) {
+		proc.dependencyResolver = resolver
+	}
+}
+
+// WithFeedResolver sets the DID-to-feed resolver used by Processor.
+func WithFeedResolver(resolver FeedResolver) Option {
+	return func(proc *Processor) {
+		proc.feedResolver = resolver
+	}
+}
+
 // NewProcessor constructs a Processor with optional publisher/blob integrations.
 func NewProcessor(database *db.DB, logger *log.Logger, opts ...Option) *Processor {
 	if logger == nil {
 		logger = log.New(io.Discard, "", 0)
 	}
 	proc := &Processor{
-		db:     database,
-		logger: logger,
+		db:           database,
+		logger:       logger,
+		feedInFlight: make(map[string]*feedResolutionCall),
 	}
 	for _, opt := range opts {
 		opt(proc)
@@ -254,11 +281,15 @@ func (p *Processor) processDeleteOp(ctx context.Context, atDID, path string, seq
 
 // ProcessRecord maps, resolves, publishes, and persists one ATProto record.
 func (p *Processor) ProcessRecord(ctx context.Context, atDID, atURI, atCID, collection string, recordJSON []byte) error {
+	ctx = ensureDependencyContext(ctx, atDID, atURI)
+
 	mapped, err := mapper.MapRecord(collection, recordJSON)
 	if err != nil {
 		return fmt.Errorf("map record: %w", err)
 	}
 
+	p.resolveMappedRefs(ctx, mapped)
+	p.hydrateRecordDependencies(ctx, mapped)
 	p.resolveMappedRefs(ctx, mapped)
 
 	var blobErr error
@@ -332,26 +363,10 @@ func (p *Processor) ProcessRecord(ctx context.Context, atDID, atURI, atCID, coll
 func (p *Processor) resolveMappedRefs(ctx context.Context, mapped map[string]interface{}) {
 	mapper.ReplaceATProtoRefs(mapped,
 		func(uri string) string {
-			msg, err := p.db.GetMessage(ctx, uri)
-			if err != nil {
-				p.logger.Printf("uri lookup failed (%s): %v", uri, err)
-				return ""
-			}
-			if msg == nil {
-				return ""
-			}
-			return msg.SSBMsgRef
+			return p.resolveMessageReference(ctx, uri)
 		},
 		func(did string) string {
-			acc, err := p.db.GetBridgedAccount(ctx, did)
-			if err != nil {
-				p.logger.Printf("did lookup failed (%s): %v", did, err)
-				return ""
-			}
-			if acc == nil || !acc.Active {
-				return ""
-			}
-			return acc.SSBFeedID
+			return p.resolveFeedReference(ctx, did)
 		},
 	)
 }
@@ -392,10 +407,14 @@ func (p *Processor) ResolveDeferredMessages(ctx context.Context, limit int) (Def
 }
 
 func (p *Processor) resolveDeferredMessage(ctx context.Context, msg db.Message) (string, error) {
+	ctx = ensureDependencyContext(ctx, msg.ATDID, msg.ATURI)
+
 	mapped, err := mapper.MapRecord(msg.Type, []byte(msg.RawATJson))
 	if err != nil {
 		return db.MessageStateFailed, fmt.Errorf("map deferred record: %w", err)
 	}
+	p.resolveMappedRefs(ctx, mapped)
+	p.hydrateRecordDependencies(ctx, mapped)
 	p.resolveMappedRefs(ctx, mapped)
 	unresolved := mapper.UnresolvedATProtoRefs(mapped)
 
@@ -627,4 +646,129 @@ func cborToJSON(rawCBOR []byte) ([]byte, error) {
 		return nil, err
 	}
 	return json.Marshal(decoded)
+}
+
+func (p *Processor) hydrateRecordDependencies(ctx context.Context, mapped map[string]interface{}) {
+	if p == nil || p.dependencyResolver == nil {
+		return
+	}
+
+	for _, dep := range unresolvedDependencies(mapped) {
+		switch dep.Key {
+		case "_atproto_subject", "_atproto_repost_subject", "_atproto_reply_root", "_atproto_reply_parent":
+			_ = p.dependencyResolver.EnsureRecord(withDependencyReason(ctx, dep.Key), dep.Value)
+		}
+	}
+}
+
+func (p *Processor) resolveMessageReference(ctx context.Context, uri string) string {
+	msg, err := p.db.GetMessage(ctx, uri)
+	if err != nil {
+		p.logger.Printf("uri lookup failed (%s): %v", uri, err)
+		return ""
+	}
+	if msg == nil {
+		return ""
+	}
+	return strings.TrimSpace(msg.SSBMsgRef)
+}
+
+func (p *Processor) resolveFeedReference(ctx context.Context, did string) string {
+	acc, err := p.db.GetBridgedAccount(ctx, did)
+	if err != nil {
+		p.logger.Printf("did lookup failed (%s): %v", did, err)
+		return ""
+	}
+	if acc != nil && acc.Active && strings.TrimSpace(acc.SSBFeedID) != "" {
+		logDependencyEvent(p.logger, withDependencyReason(ctx, "_atproto_contact"), "dependency_fetch_skip", "", did, "local_account", nil)
+		return acc.SSBFeedID
+	}
+	if p.feedResolver == nil {
+		logDependencyEvent(p.logger, withDependencyReason(ctx, "_atproto_contact"), "dependency_fetch_skip", "", did, "no_feed_resolver", nil)
+		return ""
+	}
+
+	ref, err := p.lookupFeed(ctx, did)
+	if err != nil {
+		logDependencyEvent(p.logger, withDependencyReason(ctx, "_atproto_contact"), "dependency_fetch_error", "", did, "resolve_feed", err)
+		return ""
+	}
+	return ref
+}
+
+func (p *Processor) lookupFeed(ctx context.Context, did string) (string, error) {
+	did = strings.TrimSpace(did)
+	if did == "" {
+		return "", fmt.Errorf("dependency did is empty")
+	}
+
+	call, wait := p.acquireFeedLookup(did)
+	if wait {
+		logDependencyEvent(p.logger, withDependencyReason(ctx, "_atproto_contact"), "dependency_fetch_skip", "", did, "inflight_wait", nil)
+		<-call.done
+		return call.ref, call.err
+	}
+	defer p.finishFeedLookup(did, call)
+
+	logDependencyEvent(p.logger, withDependencyReason(ctx, "_atproto_contact"), "dependency_fetch_start", "", did, "resolve_feed_start", nil)
+	ref, err := p.feedResolver.ResolveFeed(ctx, did)
+	call.ref = ref
+	call.err = err
+	if err != nil {
+		return "", err
+	}
+	logDependencyEvent(p.logger, withDependencyReason(ctx, "_atproto_contact"), "dependency_fetch_success", "", did, "resolve_feed_success", nil)
+	return ref, nil
+}
+
+func (p *Processor) acquireFeedLookup(did string) (*feedResolutionCall, bool) {
+	p.feedMu.Lock()
+	defer p.feedMu.Unlock()
+
+	if call, ok := p.feedInFlight[did]; ok {
+		return call, true
+	}
+
+	call := &feedResolutionCall{done: make(chan struct{})}
+	p.feedInFlight[did] = call
+	return call, false
+}
+
+func (p *Processor) finishFeedLookup(did string, call *feedResolutionCall) {
+	p.feedMu.Lock()
+	delete(p.feedInFlight, did)
+	close(call.done)
+	p.feedMu.Unlock()
+}
+
+type unresolvedDependency struct {
+	Key   string
+	Value string
+}
+
+func unresolvedDependencies(mapped map[string]interface{}) []unresolvedDependency {
+	keys := []string{
+		"_atproto_reply_root",
+		"_atproto_reply_parent",
+		"_atproto_subject",
+		"_atproto_repost_subject",
+		"_atproto_contact",
+	}
+
+	deps := make([]unresolvedDependency, 0, len(keys))
+	for _, key := range keys {
+		raw, ok := mapped[key]
+		if !ok {
+			continue
+		}
+		value := strings.TrimSpace(fmt.Sprint(raw))
+		if value == "" {
+			continue
+		}
+		deps = append(deps, unresolvedDependency{
+			Key:   key,
+			Value: value,
+		})
+	}
+	return deps
 }

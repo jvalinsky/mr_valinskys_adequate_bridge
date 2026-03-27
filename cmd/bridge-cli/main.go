@@ -335,11 +335,23 @@ func main() {
 					defer workerPublisher.Close()
 
 					blobBridge := blobbridge.New(database, ssbRuntime.BlobStore(), xrpcClient, bridgeLogger)
-					processor := bridge.NewProcessor(
+					recordFetcher := bridge.NewXRPCRecordFetcher(xrpcClient)
+					var processor *bridge.Processor
+					dependencyResolver := bridge.NewATProtoDependencyResolver(
+						database,
+						bridgeLogger,
+						recordFetcher,
+						func(ctx context.Context, atDID, atURI, atCID, collection string, recordJSON []byte) error {
+							return processor.ProcessRecord(ctx, atDID, atURI, atCID, collection, recordJSON)
+						},
+					)
+					processor = bridge.NewProcessor(
 						database,
 						bridgeLogger,
 						bridge.WithPublisher(workerPublisher),
 						bridge.WithBlobBridge(blobBridge),
+						bridge.WithDependencyResolver(dependencyResolver),
+						bridge.WithFeedResolver(ssbRuntime),
 					)
 
 					firehoseOpts := []firehose.ClientOption{}
@@ -535,11 +547,23 @@ func main() {
 					defer workerPublisher.Close()
 
 					blobBridge := blobbridge.New(database, ssbRuntime.BlobStore(), xrpcClient, bridgeLogger)
-					processor := bridge.NewProcessor(
+					recordFetcher := bridge.NewXRPCRecordFetcher(xrpcClient)
+					var processor *bridge.Processor
+					dependencyResolver := bridge.NewATProtoDependencyResolver(
+						database,
+						bridgeLogger,
+						recordFetcher,
+						func(ctx context.Context, atDID, atURI, atCID, collection string, recordJSON []byte) error {
+							return processor.ProcessRecord(ctx, atDID, atURI, atCID, collection, recordJSON)
+						},
+					)
+					processor = bridge.NewProcessor(
 						database,
 						bridgeLogger,
 						bridge.WithPublisher(workerPublisher),
 						bridge.WithBlobBridge(blobBridge),
+						bridge.WithDependencyResolver(dependencyResolver),
+						bridge.WithFeedResolver(ssbRuntime),
 					)
 
 					sinceFilter, err := backfill.ParseSince(c.String("since"))
