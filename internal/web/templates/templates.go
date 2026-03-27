@@ -16,10 +16,26 @@ const pageLayout = `
     <title>ATProto ↔ SSB Bridge Admin</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <style>
+        :root {
+            color-scheme: light;
+        }
+
+        .mono-data {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        }
+
+        .clamp-2 {
+            display: -webkit-box;
+            -webkit-box-orient: vertical;
+            -webkit-line-clamp: 2;
+            overflow: hidden;
+        }
+    </style>
 </head>
 <body class="bg-gray-100 min-h-screen">
     <nav class="bg-indigo-700 text-white shadow-lg">
-        <div class="max-w-7xl mx-auto px-4">
+        <div class="max-w-screen-2xl mx-auto px-4">
             <div class="flex items-center justify-between h-16">
                 <div class="flex items-center">
                     <span class="font-bold text-xl">Bridge Admin</span>
@@ -36,7 +52,7 @@ const pageLayout = `
         </div>
     </nav>
 
-    <main class="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
+    <main class="max-w-screen-2xl mx-auto py-6 sm:px-6 lg:px-8">
         {{template "content" .}}
     </main>
 </body>
@@ -230,39 +246,52 @@ const messagesContent = `
 
     <div class="bg-white shadow rounded-lg overflow-hidden">
         <div class="overflow-x-auto">
-            <table class="min-w-full divide-y divide-gray-200">
+            <table class="min-w-[96rem] table-fixed divide-y divide-gray-200">
                 <thead class="bg-gray-50">
                     <tr>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">AT URI</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Author DID</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Type</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">State</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">SSB Ref</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Retries</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Issue</th>
-                        <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Created</th>
+                        <th class="w-80 px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">AT URI</th>
+                        <th class="w-56 px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Author DID</th>
+                        <th class="w-44 px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Type</th>
+                        <th class="w-28 px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">State</th>
+                        <th class="w-52 px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">SSB Ref</th>
+                        <th class="w-24 px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Retries</th>
+                        <th class="w-[28rem] px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Issue</th>
+                        <th class="w-40 px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Created</th>
                     </tr>
                 </thead>
                 <tbody class="bg-white divide-y divide-gray-200">
                     {{range .Messages}}
                     <tr class="align-top hover:bg-gray-50">
                         <td class="px-6 py-4 text-sm text-gray-900">
-                            <a href="{{.DetailURL}}" class="font-medium text-indigo-700 hover:text-indigo-900 hover:underline break-all">{{.ATURI}}</a>
+                            <a href="{{.DetailURL}}" class="block" title="{{.ATURI}}">
+                                <span class="block truncate mono-data text-xs font-medium text-indigo-700 hover:text-indigo-900 hover:underline">{{.ATURI}}</span>
+                                <span class="mt-1 block text-xs text-gray-500">Open detail view</span>
+                            </a>
                         </td>
-                        <td class="px-6 py-4 text-sm text-gray-700 break-all">{{.ATDID}}</td>
+                        <td class="px-6 py-4 text-sm text-gray-700">
+                            <div class="truncate mono-data text-xs text-gray-700" title="{{.ATDID}}">{{.ATDID}}</div>
+                        </td>
                         <td class="px-6 py-4 text-sm text-gray-700">
                             <div class="font-medium text-gray-900">{{.TypeLabel}}</div>
-                            <div class="text-xs text-gray-500 break-all">{{.Type}}</div>
+                            <div class="truncate text-xs text-gray-500" title="{{.Type}}">{{.Type}}</div>
                         </td>
                         <td class="px-6 py-4 text-sm">
                             <span class="inline-flex rounded-full px-2.5 py-1 text-xs font-semibold {{.StateClass}}">{{.StateLabel}}</span>
                         </td>
-                        <td class="px-6 py-4 text-sm text-gray-700 break-all">{{if .SSBMsgRef}}{{.SSBMsgRef}}{{else}}<span class="text-gray-500">pending</span>{{end}}</td>
+                        <td class="px-6 py-4 text-sm text-gray-700">
+                            {{if .SSBMsgRef}}
+                            <div class="truncate mono-data text-xs text-gray-700" title="{{.SSBMsgRef}}">{{.SSBMsgRef}}</div>
+                            {{else}}
+                            <span class="text-gray-500">pending</span>
+                            {{end}}
+                        </td>
                         <td class="px-6 py-4 text-sm text-gray-700">
                             <div class="font-medium text-gray-900">{{.TotalAttempts}}</div>
                             <div class="text-xs text-gray-500">P{{.PublishAttempts}} / D{{.DeferAttempts}}</div>
                         </td>
-                        <td class="px-6 py-4 text-sm break-words {{.IssueClass}}">{{.IssueText}}</td>
+                        <td class="px-6 py-4 text-sm {{.IssueClass}}">
+                            <div class="clamp-2 leading-6">{{.IssueText}}</div>
+                        </td>
                         <td class="px-6 py-4 text-sm text-gray-500">{{fmtTime .CreatedAt}}</td>
                     </tr>
                     {{else}}

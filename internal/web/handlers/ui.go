@@ -506,27 +506,58 @@ func messageIssueSummary(message db.Message) (string, string) {
 	switch strings.TrimSpace(message.MessageState) {
 	case db.MessageStateFailed:
 		if strings.TrimSpace(message.PublishError) != "" {
-			return message.PublishError, "text-red-700"
+			return compactIssueText(message.PublishError), "text-red-700"
 		}
 	case db.MessageStateDeferred:
 		if strings.TrimSpace(message.DeferReason) != "" {
-			return message.DeferReason, "text-amber-700"
+			return summarizeDeferredIssue(message.DeferReason), "text-amber-700"
 		}
 	case db.MessageStateDeleted:
 		if strings.TrimSpace(message.DeletedReason) != "" {
-			return message.DeletedReason, "text-slate-700"
+			return compactIssueText(message.DeletedReason), "text-slate-700"
 		}
 	}
 	switch {
 	case strings.TrimSpace(message.PublishError) != "":
-		return message.PublishError, "text-red-700"
+		return compactIssueText(message.PublishError), "text-red-700"
 	case strings.TrimSpace(message.DeferReason) != "":
-		return message.DeferReason, "text-amber-700"
+		return summarizeDeferredIssue(message.DeferReason), "text-amber-700"
 	case strings.TrimSpace(message.DeletedReason) != "":
-		return message.DeletedReason, "text-slate-700"
+		return compactIssueText(message.DeletedReason), "text-slate-700"
 	default:
 		return "No issue", "text-gray-500"
 	}
+}
+
+func summarizeDeferredIssue(reason string) string {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return "Deferred"
+	}
+
+	switch {
+	case strings.Contains(reason, "_atproto_reply_root=") || strings.Contains(reason, "_atproto_reply_parent="):
+		return "Waiting on reply target bridge"
+	case strings.Contains(reason, "_atproto_contact="):
+		return "Waiting on contact bridge"
+	case strings.Contains(reason, "_atproto_subject="):
+		return "Waiting on subject bridge"
+	case strings.Contains(reason, "_atproto_repost_subject="):
+		return "Waiting on repost subject bridge"
+	default:
+		return compactIssueText(reason)
+	}
+}
+
+func compactIssueText(text string) string {
+	text = strings.Join(strings.Fields(strings.TrimSpace(text)), " ")
+	if text == "" {
+		return "No issue"
+	}
+	if len(text) <= 88 {
+		return text
+	}
+	return text[:85] + "..."
 }
 
 func formatTime(t time.Time) string {

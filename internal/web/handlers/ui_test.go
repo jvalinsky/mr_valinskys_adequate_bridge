@@ -198,6 +198,33 @@ func TestMessagesPageFiltersAndSortsResults(t *testing.T) {
 	}
 }
 
+func TestMessagesPageSummarizesLongDeferredIssues(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	ctx := context.Background()
+	if err := database.AddMessage(ctx, db.Message{
+		ATURI:        "at://did:plc:alice/app.bsky.feed.post/reply-wait",
+		ATCID:        "bafy-reply-wait",
+		ATDID:        "did:plc:alice",
+		Type:         mapper.RecordTypePost,
+		MessageState: db.MessageStateDeferred,
+		RawATJson:    `{"text":"reply wait"}`,
+		RawSSBJson:   `{"type":"post","text":"reply wait"}`,
+		DeferReason:  "_atproto_reply_root=at://did:plc:bob/app.bsky.feed.post/root;_atproto_reply_parent=at://did:plc:bob/app.bsky.feed.post/parent",
+	}); err != nil {
+		t.Fatalf("seed deferred reply message: %v", err)
+	}
+
+	body := fetchUI(t, database, "/messages")
+	if !strings.Contains(body, "Waiting on reply target bridge") {
+		t.Fatalf("messages page should summarize long deferred reply issues: %s", body)
+	}
+	if strings.Contains(body, "_atproto_reply_root=at://did:plc:bob/app.bsky.feed.post/root;_atproto_reply_parent=") {
+		t.Fatalf("messages page should not show the full raw deferred reason inline: %s", body)
+	}
+}
+
 func TestMessageDetailRendersStructuredAndRawPayloads(t *testing.T) {
 	database := openTestDB(t)
 	defer database.Close()
