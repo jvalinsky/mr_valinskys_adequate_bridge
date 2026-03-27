@@ -79,6 +79,87 @@ bridge-cli retry-failures --db bridge.sqlite --did did:plc:example --limit 200
    - capture failing `at_uri` rows from UI.
    - preserve DB and logs for postmortem.
 
+## Pre-release Live Interop Gate
+Run this gate before release/staging promotion to validate live firehose ingest plus room peer interoperability.
+
+1. Set required live credentials and verifier command.
+
+```bash
+export LIVE_E2E_ENABLED=1
+export LIVE_ATPROTO_IDENTIFIER="<bridged-account-handle-or-email>"
+export LIVE_ATPROTO_PASSWORD="<app-password>"
+export LIVE_ATPROTO_FOLLOW_TARGET_DID="<bridged-target-did>"
+export LIVE_ROOM_PEER_VERIFY_CMD="<command that verifies separate room peer observation>"
+```
+
+2. Optional overrides.
+
+```bash
+export LIVE_ATPROTO_HOST="https://bsky.social"
+export LIVE_RELAY_URL="wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos"
+export LIVE_BRIDGE_BOT_SEED="<seed>"
+export LIVE_E2E_TIMEOUT="4m"
+export LIVE_ROOM_MUXRPC_ADDR="127.0.0.1:9898"
+export LIVE_ROOM_HTTP_ADDR="127.0.0.1:9876"
+export LIVE_ROOM_MODE="community"
+```
+
+3. Run the live gate locally.
+
+```bash
+./scripts/live_bridge_e2e.sh
+```
+
+4. CI gate workflow:
+   - `.github/workflows/bridge-live-prerelease.yml`
+   - Triggered on `release` (`published`, `prereleased`) and `workflow_dispatch`.
+   - Intended for pre-release validation, not pull request blocking.
+
+## Local Isolated ATProto Stack (No Live Services)
+Use this workflow when you want full bridge E2E coverage without touching public ATProto infrastructure.
+
+1. Start local PLC + local PDS.
+
+```bash
+./scripts/local_atproto_up.sh
+```
+
+2. Bootstrap two local ATProto accounts and write live test env vars.
+
+```bash
+./scripts/local_atproto_bootstrap.sh /tmp/mvab-local-atproto-live.env
+set -a
+source /tmp/mvab-local-atproto-live.env
+set +a
+```
+
+3. Run bridge live E2E against the local stack.
+
+```bash
+./scripts/live_bridge_e2e.sh
+```
+
+4. One-command local flow (start + bootstrap + test).
+
+```bash
+./scripts/local_bridge_e2e.sh
+```
+
+5. Stop local services when done.
+
+```bash
+./scripts/local_atproto_down.sh
+```
+
+Notes:
+- Default local endpoints are:
+  - PDS: `http://127.0.0.1:2583`
+  - Relay URL for bridge: `ws://127.0.0.1:2583/xrpc/com.atproto.sync.subscribeRepos`
+  - PLC directory: `http://127.0.0.1:2582`
+- `scripts/local_atproto_bootstrap.sh` generates source/target DIDs and writes all required `LIVE_*` variables.
+- Local run defaults `LIVE_ROOM_MODE=open` and `LIVE_ROOM_PEER_VERIFY_CMD=./scripts/local_room_peer_verify.sh`.
+- The default local verifier is strict: it checks room health, uses an ephemeral second SSB peer to complete a real room muxrpc handshake (`whoami`, `tunnel.isRoom`, `tunnel.announce`), then snapshots the bridge repo and counts source-feed messages via `cmd/ssb-feed-count` to assert expected bridged output is readable from native SSB storage.
+
 ## Go Documentation Maintenance
 - Write package comments and exported declaration comments so `go doc` output stays useful.
 - Start declaration comments with the declaration name (or `A`/`An` + type name) and use complete sentences.
