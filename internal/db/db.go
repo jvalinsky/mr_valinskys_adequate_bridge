@@ -51,6 +51,15 @@ type Message struct {
 	CreatedAt            time.Time
 }
 
+// MessageListQuery controls filtered browsing in the admin UI.
+type MessageListQuery struct {
+	Search string
+	Type   string
+	State  string
+	Sort   string
+	Limit  int
+}
+
 // Blob stores one ATProto CID to SSB blob reference mapping.
 type Blob struct {
 	ATCID        string
@@ -457,6 +466,75 @@ func (db *DB) GetRecentMessages(ctx context.Context, limit int) ([]Message, erro
 	}
 
 	return messages, nil
+}
+
+// ListMessages returns messages filtered and sorted for interactive UI browsing.
+func (db *DB) ListMessages(ctx context.Context, query MessageListQuery) ([]Message, error) {
+	query.Search = strings.TrimSpace(query.Search)
+	query.Type = strings.TrimSpace(query.Type)
+	query.State = strings.TrimSpace(query.State)
+	query.Sort = normalizeMessageSort(query.Sort)
+	query.Limit = normalizeMessageLimit(query.Limit)
+
+	var builder strings.Builder
+	builder.WriteString(
+		`SELECT at_uri, at_cid, ssb_msg_ref, at_did, type, message_state, raw_at_json, raw_ssb_json, published_at, publish_error, publish_attempts, last_publish_attempt_at, defer_reason, defer_attempts, last_defer_attempt_at, deleted_at, deleted_seq, deleted_reason, created_at
+		 FROM messages
+		 WHERE 1=1`,
+	)
+
+	args := make([]interface{}, 0, 8)
+	if query.Search != "" {
+		search := "%" + query.Search + "%"
+		builder.WriteString(` AND (at_uri LIKE ? OR at_did LIKE ? OR COALESCE(ssb_msg_ref, '') LIKE ? OR COALESCE(publish_error, '') LIKE ? OR COALESCE(defer_reason, '') LIKE ?)`)
+		args = append(args, search, search, search, search, search)
+	}
+	if query.Type != "" {
+		builder.WriteString(` AND type = ?`)
+		args = append(args, query.Type)
+	}
+	if query.State != "" {
+		builder.WriteString(` AND message_state = ?`)
+		args = append(args, query.State)
+	}
+
+	builder.WriteString(` ORDER BY `)
+	builder.WriteString(messageOrderClause(query.Sort))
+	builder.WriteString(` LIMIT ?`)
+	args = append(args, query.Limit)
+
+	rows, err := db.conn.QueryContext(ctx, builder.String(), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return scanMessagesRows(rows)
+}
+
+// ListMessageTypes returns the distinct record types currently stored.
+func (db *DB) ListMessageTypes(ctx context.Context) ([]string, error) {
+	rows, err := db.conn.QueryContext(
+		ctx,
+		`SELECT DISTINCT type
+		 FROM messages
+		 WHERE TRIM(COALESCE(type, '')) <> ''
+		 ORDER BY type ASC`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var types []string
+	for rows.Next() {
+		var recordType string
+		if err := rows.Scan(&recordType); err != nil {
+			return nil, err
+		}
+		types = append(types, recordType)
+	}
+	return types, rows.Err()
 }
 
 // CountPublishedMessages returns the number of messages with an SSB message ref.
@@ -910,4 +988,117 @@ func (db *DB) GetAllBridgeState(ctx context.Context) ([]BridgeState, error) {
 	}
 
 	return state, nil
+}
+
+func normalizeMessageLimit(limit int) int {
+	switch {
+	case limit <= 0:
+		return 100
+	case limit > 500:
+		return 500
+	default:
+		return limit
+	}
+}
+
+func normalizeMessageSort(sort string) string {
+	switch sort {
+	case "oldest", "attempts_desc", "attempts_asc", "type_asc", "type_desc", "state_asc", "state_desc":
+		return sort
+	default:
+		return "newest"
+	}
+}
+
+func messageOrderClause(sort string) string {
+	switch sort {
+	case "oldest":
+		return "created_at ASC"
+	case "attempts_desc":
+		return "(publish_attempts + defer_attempts) DESC, created_at DESC"
+	case "attempts_asc":
+		return "(publish_attempts + defer_attempts) ASC, created_at DESC"
+	case "type_asc":
+		return "type ASC, created_at DESC"
+	case "type_desc":
+		return "type DESC, created_at DESC"
+	case "state_asc":
+		return "message_state ASC, created_at DESC"
+	case "state_desc":
+		return "message_state DESC, created_at DESC"
+	default:
+		return "created_at DESC"
+	}
+}
+
+func scanMessagesRows(rows *sql.Rows) ([]Message, error) {
+	var messages []Message
+	for rows.Next() {
+		msg, err := scanMessageRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		messages = append(messages, msg)
+	}
+	return messages, rows.Err()
+}
+
+func scanMessageRow(scanner interface {
+	Scan(dest ...interface{}) error
+}) (Message, error) {
+	var msg Message
+	var ssbMsgRef, messageState, rawATJSON, rawSSBJSON, publishError, deferReason, deletedReason sql.NullString
+	var publishedAt, lastPublishAttemptAt, lastDeferAttemptAt, deletedAt sql.NullTime
+	var deletedSeq sql.NullInt64
+	if err := scanner.Scan(
+		&msg.ATURI,
+		&msg.ATCID,
+		&ssbMsgRef,
+		&msg.ATDID,
+		&msg.Type,
+		&messageState,
+		&rawATJSON,
+		&rawSSBJSON,
+		&publishedAt,
+		&publishError,
+		&msg.PublishAttempts,
+		&lastPublishAttemptAt,
+		&deferReason,
+		&msg.DeferAttempts,
+		&lastDeferAttemptAt,
+		&deletedAt,
+		&deletedSeq,
+		&deletedReason,
+		&msg.CreatedAt,
+	); err != nil {
+		return Message{}, err
+	}
+	msg.SSBMsgRef = ssbMsgRef.String
+	msg.MessageState = messageState.String
+	msg.RawATJson = rawATJSON.String
+	msg.RawSSBJson = rawSSBJSON.String
+	msg.PublishError = publishError.String
+	msg.DeferReason = deferReason.String
+	msg.DeletedReason = deletedReason.String
+	if publishedAt.Valid {
+		t := publishedAt.Time
+		msg.PublishedAt = &t
+	}
+	if lastPublishAttemptAt.Valid {
+		t := lastPublishAttemptAt.Time
+		msg.LastPublishAttemptAt = &t
+	}
+	if lastDeferAttemptAt.Valid {
+		t := lastDeferAttemptAt.Time
+		msg.LastDeferAttemptAt = &t
+	}
+	if deletedAt.Valid {
+		t := deletedAt.Time
+		msg.DeletedAt = &t
+	}
+	if deletedSeq.Valid {
+		seq := deletedSeq.Int64
+		msg.DeletedSeq = &seq
+	}
+	return msg, nil
 }
