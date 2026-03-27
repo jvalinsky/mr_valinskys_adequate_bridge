@@ -17,7 +17,7 @@ if [[ -z "${BRIDGE_DB_PATH}" || -z "${BRIDGE_REPO_PATH}" || -z "${SOURCE_DID}" ]
   exit 1
 fi
 
-for required in jq sqlite3 go; do
+for required in jq sqlite3 go curl; do
   if ! command -v "${required}" >/dev/null 2>&1; then
     echo "[local-room-verify] ${required} is required" >&2
     exit 1
@@ -46,96 +46,115 @@ fi
 echo "[local-room-verify] source feed: ${SOURCE_FEED}"
 echo "[local-room-verify] expecting at least ${EXPECTED_COUNT} messages"
 
-PEER_REPO="$(mktemp -d "${TMPDIR:-/tmp}/mvab-ssb-peer-repo-XXXXXX")"
-SNAPSHOT_REPO="$(mktemp -d "${TMPDIR:-/tmp}/mvab-ssb-snapshot-repo-XXXXXX")"
+PEER_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mvab-ssb-peer-XXXXXX")"
 BIN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mvab-ssb-peer-bin-XXXXXX")"
-ROOM_ERR_LOG="${BIN_DIR}/room.err"
-COUNT_ERR_LOG="${BIN_DIR}/count.err"
+SERVE_LOG="${BIN_DIR}/serve.log"
+READ_LOG="${BIN_DIR}/read.log"
 
 cleanup() {
-  rm -rf "${PEER_REPO}" "${SNAPSHOT_REPO}" "${BIN_DIR}"
+  rm -rf "${PEER_DIR}" "${BIN_DIR}"
 }
 trap cleanup EXIT
 
-echo "[local-room-verify] building go-ssb helper binaries"
-(
-  cd "${ROOT_DIR}/reference/go-ssb"
-  go build -o "${BIN_DIR}/ssb-keygen" ./cmd/ssb-keygen
-  go build -o "${BIN_DIR}/sbotcli" ./cmd/sbotcli
-)
+echo "[local-room-verify] building tunnel verifier helper"
 (
   cd "${ROOT_DIR}"
-  go build -o "${BIN_DIR}/ssb-feed-count" ./cmd/ssb-feed-count
+  go build -o "${BIN_DIR}/room-tunnel-feed-verify" ./cmd/room-tunnel-feed-verify
 )
-
-"${BIN_DIR}/ssb-keygen" -repo "${PEER_REPO}" secret >/dev/null
 
 if [[ ! -f "${BRIDGE_REPO_PATH}/secret" ]]; then
   echo "[local-room-verify] bridge repo missing secret file at ${BRIDGE_REPO_PATH}/secret" >&2
   exit 1
 fi
 
-ROOM_PUB_RAW="$(jq -r '.public // empty' "${BRIDGE_REPO_PATH}/secret")"
-if [[ -z "${ROOM_PUB_RAW}" ]]; then
-  echo "[local-room-verify] failed to parse room public key from ${BRIDGE_REPO_PATH}/secret" >&2
+ROOM_FEED="$(jq -r '.id // empty' "${BRIDGE_REPO_PATH}/secret" | tr -d '[:space:]')"
+if [[ -z "${ROOM_FEED}" ]]; then
+  echo "[local-room-verify] failed to parse room feed id from ${BRIDGE_REPO_PATH}/secret" >&2
   exit 1
 fi
-ROOM_PUB="${ROOM_PUB_RAW#@}"
-ROOM_PUB="${ROOM_PUB%.ed25519}"
-
-ROOM_CLI=(
-  "${BIN_DIR}/sbotcli"
-  --unixsock "${PEER_REPO}/does-not-exist.sock"
-  --key "${PEER_REPO}/secrets/secret"
-  --addr "${ROOM_MUXRPC_ADDR}"
-  --remotekey "${ROOM_PUB}"
-  --timeout "${PEER_TIMEOUT}"
-)
-
-echo "[local-room-verify] verifying second peer can connect to room muxrpc at ${ROOM_MUXRPC_ADDR}"
-if ! "${ROOM_CLI[@]}" call whoami >"${BIN_DIR}/room-whoami.json" 2>"${ROOM_ERR_LOG}"; then
-  echo "[local-room-verify] second peer failed room whoami call" >&2
-  sed -n '1,120p' "${ROOM_ERR_LOG}" >&2 || true
+if [[ "${ROOM_FEED}" != @*".ed25519" ]]; then
+  echo "[local-room-verify] invalid room feed id in ${BRIDGE_REPO_PATH}/secret: ${ROOM_FEED}" >&2
   exit 1
 fi
 
-if ! "${ROOM_CLI[@]}" call tunnel.isRoom >"${BIN_DIR}/room-isroom.json" 2>"${ROOM_ERR_LOG}"; then
-  echo "[local-room-verify] second peer failed tunnel.isRoom call" >&2
-  sed -n '1,120p' "${ROOM_ERR_LOG}" >&2 || true
-  exit 1
-fi
+SERVE_KEY_FILE="${PEER_DIR}/serve-secret"
+READ_KEY_FILE="${PEER_DIR}/read-secret"
 
-if ! jq -e '(.features // [] | index("tunnel")) != null' "${BIN_DIR}/room-isroom.json" >/dev/null 2>&1; then
-  echo "[local-room-verify] tunnel.isRoom response missing tunnel feature" >&2
-  cat "${BIN_DIR}/room-isroom.json" >&2 || true
-  exit 1
-fi
-
-if ! "${ROOM_CLI[@]}" call tunnel.announce >"${BIN_DIR}/room-announce.json" 2>"${ROOM_ERR_LOG}"; then
-  echo "[local-room-verify] second peer failed tunnel.announce call" >&2
-  sed -n '1,120p' "${ROOM_ERR_LOG}" >&2 || true
-  exit 1
-fi
-
-echo "[local-room-verify] room handshake verified; checking source feed on repo snapshot"
+echo "[local-room-verify] verifying room tunnel peer-read on ${ROOM_MUXRPC_ADDR}"
 attempt=1
 while [[ "${attempt}" -le "${ATTEMPTS}" ]]; do
-  rm -rf "${SNAPSHOT_REPO:?}/"*
-  cp -R "${BRIDGE_REPO_PATH}/." "${SNAPSHOT_REPO}/"
+  READY_FILE="${PEER_DIR}/serve-ready-${attempt}.json"
+  : >"${SERVE_LOG}"
+  : >"${READ_LOG}"
+  rm -f "${READY_FILE}"
 
-  if msg_count="$("${BIN_DIR}/ssb-feed-count" --repo "${SNAPSHOT_REPO}" --feed "${SOURCE_FEED}" 2>"${COUNT_ERR_LOG}")"; then
-    msg_count="$(echo "${msg_count}" | tr -d '[:space:]')"
-    if [[ -z "${msg_count}" ]]; then
-      msg_count=0
+  "${BIN_DIR}/room-tunnel-feed-verify" serve \
+    --room-addr "${ROOM_MUXRPC_ADDR}" \
+    --room-feed "${ROOM_FEED}" \
+    --key-file "${SERVE_KEY_FILE}" \
+    --db "${BRIDGE_DB_PATH}" \
+    --source-did "${SOURCE_DID}" \
+    --source-feed "${SOURCE_FEED}" \
+    --expected-uris "${EXPECTED_URIS}" \
+    --ready-file "${READY_FILE}" \
+    --timeout "${PEER_TIMEOUT}" \
+    >"${SERVE_LOG}" 2>&1 &
+  serve_pid=$!
+
+  ready_wait_deadline=$((SECONDS + 15))
+  while [[ ! -f "${READY_FILE}" ]]; do
+    if ! kill -0 "${serve_pid}" >/dev/null 2>&1; then
+      wait "${serve_pid}" || true
+      break
     fi
-    echo "[local-room-verify] attempt ${attempt}/${ATTEMPTS}: peer observed ${msg_count} messages"
-    if [[ "${msg_count}" -ge "${EXPECTED_COUNT}" ]]; then
-      echo "[local-room-verify] strict peer verification passed"
-      exit 0
+    if ((SECONDS >= ready_wait_deadline)); then
+      echo "[local-room-verify] attempt ${attempt}/${ATTEMPTS}: timed out waiting for serve peer readiness" >&2
+      kill "${serve_pid}" >/dev/null 2>&1 || true
+      wait "${serve_pid}" || true
+      break
     fi
+    sleep 0.2
+  done
+
+  if [[ ! -f "${READY_FILE}" ]]; then
+    echo "[local-room-verify] attempt ${attempt}/${ATTEMPTS}: serve peer did not become ready" >&2
+    sed -n '1,120p' "${SERVE_LOG}" >&2 || true
+    attempt=$((attempt + 1))
+    sleep "${SLEEP_SECS}"
+    continue
+  fi
+
+  TARGET_FEED="$(jq -r '.feed // empty' "${READY_FILE}" | tr -d '[:space:]')"
+  if [[ -z "${TARGET_FEED}" ]]; then
+    echo "[local-room-verify] attempt ${attempt}/${ATTEMPTS}: ready file missing target feed" >&2
+    sed -n '1,120p' "${SERVE_LOG}" >&2 || true
+    kill "${serve_pid}" >/dev/null 2>&1 || true
+    wait "${serve_pid}" || true
+    attempt=$((attempt + 1))
+    sleep "${SLEEP_SECS}"
+    continue
+  fi
+
+  if "${BIN_DIR}/room-tunnel-feed-verify" read \
+    --room-addr "${ROOM_MUXRPC_ADDR}" \
+    --room-feed "${ROOM_FEED}" \
+    --key-file "${READ_KEY_FILE}" \
+    --target-feed "${TARGET_FEED}" \
+    --expect-source-feed "${SOURCE_FEED}" \
+    --expected-uris "${EXPECTED_URIS}" \
+    --min-count "${EXPECTED_COUNT}" \
+    --timeout "${PEER_TIMEOUT}" \
+    >"${READ_LOG}" 2>&1; then
+    wait "${serve_pid}" || true
+    echo "[local-room-verify] attempt ${attempt}/${ATTEMPTS}: peer observed tunnel snapshot with expected records"
+    echo "[local-room-verify] strict peer verification passed"
+    exit 0
   else
-    echo "[local-room-verify] attempt ${attempt}/${ATTEMPTS}: feed count query failed" >&2
-    sed -n '1,80p' "${COUNT_ERR_LOG}" >&2 || true
+    echo "[local-room-verify] attempt ${attempt}/${ATTEMPTS}: tunnel read assertion failed" >&2
+    sed -n '1,120p' "${READ_LOG}" >&2 || true
+    sed -n '1,120p' "${SERVE_LOG}" >&2 || true
+    kill "${serve_pid}" >/dev/null 2>&1 || true
+    wait "${serve_pid}" || true
   fi
 
   attempt=$((attempt + 1))
@@ -143,6 +162,6 @@ while [[ "${attempt}" -le "${ATTEMPTS}" ]]; do
 done
 
 echo "[local-room-verify] strict peer verification failed after ${ATTEMPTS} attempts" >&2
-sed -n '1,120p' "${ROOM_ERR_LOG}" >&2 || true
-sed -n '1,120p' "${COUNT_ERR_LOG}" >&2 || true
+sed -n '1,120p' "${READ_LOG}" >&2 || true
+sed -n '1,120p' "${SERVE_LOG}" >&2 || true
 exit 1

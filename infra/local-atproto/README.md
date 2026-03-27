@@ -16,7 +16,7 @@ The stack is intended for local bridge validation where public services must not
 ./scripts/local_atproto_down.sh
 ```
 
-`scripts/local_room_peer_verify.sh` is the default strict verifier used by local live E2E. It checks room health, performs a real room muxrpc handshake from a temporary second peer (`whoami`, `tunnel.isRoom`, `tunnel.announce`), snapshots the bridge repo, and asserts the bridged source feed contains the expected message count using `cmd/ssb-feed-count`.
+`scripts/local_room_peer_verify.sh` is the default strict verifier used by local live E2E. It checks room health, starts an announced peer that serves bridged record refs over a real room `tunnel.connect` stream, and requires a separate second peer to read/validate expected bridged URIs through that tunnel.
 
 ## Data Directory
 

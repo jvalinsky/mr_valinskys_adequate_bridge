@@ -89,7 +89,7 @@ export LIVE_E2E_ENABLED=1
 export LIVE_ATPROTO_IDENTIFIER="<bridged-account-handle-or-email>"
 export LIVE_ATPROTO_PASSWORD="<app-password>"
 export LIVE_ATPROTO_FOLLOW_TARGET_DID="<bridged-target-did>"
-export LIVE_ROOM_PEER_VERIFY_CMD="<command that verifies separate room peer observation>"
+export LIVE_ROOM_PEER_VERIFY_CMD="./scripts/local_room_peer_verify.sh"
 ```
 
 2. Optional overrides.
@@ -135,6 +135,29 @@ export LIVE_ROOM_MODE="community"
    - Require status check `Bridge Live Interop (Pre-release) / Live Relay + Room Peer Interop` on branch `staging`.
    - Gate release promotion on successful run of the same workflow in `release` environment.
 
+7. Verifier policy and temporary rollback procedure:
+   - Default verifier for staging/production promotion is strict tunnel-read proof: `./scripts/local_room_peer_verify.sh`.
+   - If strict tunnel verification flakes in a target environment, temporarily switch to the relaxed verifier:
+
+```bash
+export LIVE_ROOM_PEER_VERIFY_CMD="./scripts/local_room_peer_verify_relaxed.sh"
+./scripts/live_bridge_e2e.sh
+```
+
+   - Roll forward back to strict verifier immediately after incident mitigation:
+
+```bash
+export LIVE_ROOM_PEER_VERIFY_CMD="./scripts/local_room_peer_verify.sh"
+```
+
+8. Expected pass/fail signals for on-call triage:
+   - Pass indicators:
+     - verifier output contains `strict peer verification passed`
+     - live harness output ends with `live interoperability test passed`
+   - Fail indicators:
+     - verifier output contains `peer verification failed` or `tunnel read assertion failed`
+     - bridge logs include `event=publish_failed`, `event=retry_failed`, or room muxrpc stream errors
+
 ## Local Isolated ATProto Stack (No Live Services)
 Use this workflow when you want full bridge E2E coverage without touching public ATProto infrastructure.
 
@@ -178,7 +201,7 @@ Notes:
   - PLC directory: `http://127.0.0.1:2582`
 - `scripts/local_atproto_bootstrap.sh` generates source/target DIDs and writes all required `LIVE_*` variables.
 - Local run defaults `LIVE_ROOM_MODE=open` and `LIVE_ROOM_PEER_VERIFY_CMD=./scripts/local_room_peer_verify.sh`.
-- The default local verifier is strict: it checks room health, uses an ephemeral second SSB peer to complete a real room muxrpc handshake (`whoami`, `tunnel.isRoom`, `tunnel.announce`), then snapshots the bridge repo and counts source-feed messages via `cmd/ssb-feed-count` to assert expected bridged output is readable from native SSB storage.
+- The default local verifier is strict: it checks room health, launches an announced peer that serves bridged record refs over a real `tunnel.connect` duplex stream, and requires a separate second peer to read that tunnel snapshot and validate expected bridged URIs/refs.
 
 ## Go Documentation Maintenance
 - Write package comments and exported declaration comments so `go doc` output stays useful.
