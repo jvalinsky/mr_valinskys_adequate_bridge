@@ -132,6 +132,7 @@ func TestBridgeSmoke(t *testing.T) {
 		ATCID:           "bafy-smoke-fail",
 		ATDID:           did,
 		Type:            mapper.RecordTypePost,
+		MessageState:    db.MessageStateFailed,
 		RawATJson:       `{"text":"forced fail"}`,
 		RawSSBJson:      `{"type":"post","text":"forced fail"}`,
 		PublishError:    "forced failure for smoke visibility",

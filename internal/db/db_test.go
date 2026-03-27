@@ -39,13 +39,14 @@ func TestDB(t *testing.T) {
 
 	// Test adding and getting message
 	msg := Message{
-		ATURI:      "at://did:plc:123/app.bsky.feed.post/456",
-		ATCID:      "bafy123",
-		SSBMsgRef:  "%msg123.sha256",
-		ATDID:      "did:plc:123",
-		Type:       "app.bsky.feed.post",
-		RawATJson:  `{"text":"hello"}`,
-		RawSSBJson: `{"type":"post","text":"hello"}`,
+		ATURI:        "at://did:plc:123/app.bsky.feed.post/456",
+		ATCID:        "bafy123",
+		SSBMsgRef:    "%msg123.sha256",
+		ATDID:        "did:plc:123",
+		Type:         "app.bsky.feed.post",
+		MessageState: MessageStatePublished,
+		RawATJson:    `{"text":"hello"}`,
+		RawSSBJson:   `{"type":"post","text":"hello"}`,
 	}
 
 	if err := db.AddMessage(ctx, msg); err != nil {
@@ -73,6 +74,7 @@ func TestDB(t *testing.T) {
 		SSBMsgRef:            msg.SSBMsgRef,
 		ATDID:                msg.ATDID,
 		Type:                 msg.Type,
+		MessageState:         MessageStateFailed,
 		RawATJson:            msg.RawATJson,
 		RawSSBJson:           msg.RawSSBJson,
 		PublishedAt:          &now,
@@ -185,6 +187,7 @@ func TestDB(t *testing.T) {
 		SSBMsgRef:            "",
 		ATDID:                "did:plc:123",
 		Type:                 "app.bsky.feed.post",
+		MessageState:         MessageStateFailed,
 		RawATJson:            `{"text":"retry me"}`,
 		RawSSBJson:           `{"type":"post","text":"retry me"}`,
 		PublishError:         "publish failed",
@@ -203,5 +206,65 @@ func TestDB(t *testing.T) {
 	}
 	if retryCandidates[0].ATURI != "at://did:plc:123/app.bsky.feed.post/retry" {
 		t.Fatalf("unexpected retry candidate URI %q", retryCandidates[0].ATURI)
+	}
+
+	if err := db.AddMessage(ctx, Message{
+		ATURI:              "at://did:plc:123/app.bsky.feed.like/deferred",
+		ATCID:              "bafy-deferred",
+		ATDID:              "did:plc:123",
+		Type:               "app.bsky.feed.like",
+		MessageState:       MessageStateDeferred,
+		RawATJson:          `{"subject":{"uri":"at://missing"}}`,
+		RawSSBJson:         `{"_atproto_subject":"at://missing"}`,
+		DeferReason:        "_atproto_subject=at://missing",
+		DeferAttempts:      1,
+		LastDeferAttemptAt: &retryAt,
+	}); err != nil {
+		t.Fatalf("failed to add deferred message: %v", err)
+	}
+	deferredCount, err := db.CountDeferredMessages(ctx)
+	if err != nil {
+		t.Fatalf("failed to count deferred messages: %v", err)
+	}
+	if deferredCount != 1 {
+		t.Fatalf("expected 1 deferred message, got %d", deferredCount)
+	}
+	reason, ok, err := db.GetLatestDeferredReason(ctx)
+	if err != nil {
+		t.Fatalf("failed to get latest deferred reason: %v", err)
+	}
+	if !ok || reason == "" {
+		t.Fatalf("expected latest deferred reason")
+	}
+
+	seq := int64(99)
+	if err := db.AddMessage(ctx, Message{
+		ATURI:         "at://did:plc:123/app.bsky.feed.post/deleted",
+		ATCID:         "bafy-deleted",
+		ATDID:         "did:plc:123",
+		Type:          "app.bsky.feed.post",
+		MessageState:  MessageStateDeleted,
+		RawATJson:     `{"op":"delete"}`,
+		RawSSBJson:    `{"type":"bridge/tombstone"}`,
+		DeletedAt:     &retryAt,
+		DeletedSeq:    &seq,
+		DeletedReason: "atproto_delete seq=99",
+	}); err != nil {
+		t.Fatalf("failed to add deleted message: %v", err)
+	}
+	deletedCount, err := db.CountDeletedMessages(ctx)
+	if err != nil {
+		t.Fatalf("failed to count deleted messages: %v", err)
+	}
+	if deletedCount != 1 {
+		t.Fatalf("expected 1 deleted message, got %d", deletedCount)
+	}
+
+	deferredCandidates, err := db.GetDeferredCandidates(ctx, 10)
+	if err != nil {
+		t.Fatalf("failed to query deferred candidates: %v", err)
+	}
+	if len(deferredCandidates) != 1 || deferredCandidates[0].ATURI != "at://did:plc:123/app.bsky.feed.like/deferred" {
+		t.Fatalf("unexpected deferred candidates: %+v", deferredCandidates)
 	}
 }

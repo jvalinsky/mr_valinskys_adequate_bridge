@@ -4,11 +4,16 @@ package firehose
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"log"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/bluesky-social/indigo/api/atproto"
 	"github.com/bluesky-social/indigo/events"
@@ -29,6 +34,12 @@ type Client struct {
 	logger   *log.Logger
 	dialer   *websocket.Dialer
 	cursor   *int64
+}
+
+type ReconnectConfig struct {
+	InitialBackoff time.Duration
+	MaxBackoff     time.Duration
+	Jitter         time.Duration
 }
 
 // ClientOption configures optional Client behavior.
@@ -66,8 +77,11 @@ func (c *Client) Run(ctx context.Context) error {
 	}
 	c.logger.Printf("Connecting to ATProto firehose at %s", streamURL)
 
-	con, _, err := c.dialer.DialContext(ctx, streamURL, http.Header{})
+	con, resp, err := c.dialer.DialContext(ctx, streamURL, http.Header{})
 	if err != nil {
+		if resp != nil {
+			return fmt.Errorf("failed to dial (status=%d): %w", resp.StatusCode, err)
+		}
 		return fmt.Errorf("failed to dial: %w", err)
 	}
 	defer con.Close()
@@ -93,6 +107,94 @@ func (c *Client) Run(ctx context.Context) error {
 
 	sched := sequential.NewScheduler("firehose", callbacks.EventHandler)
 	return events.HandleRepoStream(ctx, con, sched, nil)
+}
+
+func (c *Client) RunWithReconnect(ctx context.Context, cfg ReconnectConfig) error {
+	if cfg.InitialBackoff <= 0 {
+		cfg.InitialBackoff = 2 * time.Second
+	}
+	if cfg.MaxBackoff <= 0 {
+		cfg.MaxBackoff = 60 * time.Second
+	}
+	if cfg.Jitter <= 0 {
+		cfg.Jitter = 750 * time.Millisecond
+	}
+
+	return runWithReconnectLoop(ctx, c.logger, cfg, c.Run)
+}
+
+func runWithReconnectLoop(ctx context.Context, logger *log.Logger, cfg ReconnectConfig, runOnce func(context.Context) error) error {
+	if logger == nil {
+		logger = log.New(io.Discard, "", 0)
+	}
+
+	backoff := cfg.InitialBackoff
+	for {
+		err := runOnce(ctx)
+		if err == nil || errors.Is(err, context.Canceled) {
+			return err
+		}
+		if IsFatalStreamError(err) {
+			return err
+		}
+
+		sleepFor := jitterDuration(backoff, cfg.Jitter)
+		logger.Printf("event=firehose_reconnect_retry backoff=%s err=%v", sleepFor, err)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(sleepFor):
+		}
+
+		backoff *= 2
+		if backoff > cfg.MaxBackoff {
+			backoff = cfg.MaxBackoff
+		}
+	}
+}
+
+func IsFatalStreamError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if errors.Is(err, io.EOF) {
+		return false
+	}
+
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "build stream url") {
+		return true
+	}
+	if strings.Contains(msg, "status=401") || strings.Contains(msg, "status=403") || strings.Contains(msg, "status=404") {
+		return true
+	}
+	if strings.Contains(msg, "unsupported protocol scheme") {
+		return true
+	}
+	if strings.Contains(msg, "malformed") && strings.Contains(msg, "url") {
+		return true
+	}
+
+	return false
+}
+
+func jitterDuration(base, jitter time.Duration) time.Duration {
+	if base <= 0 {
+		base = 2 * time.Second
+	}
+	if jitter <= 0 {
+		return base
+	}
+	n := rand.Int63n(int64(2*jitter) + 1)
+	offset := time.Duration(n) - jitter
+	d := base + offset
+	if d < 250*time.Millisecond {
+		return 250 * time.Millisecond
+	}
+	return d
 }
 
 func (c *Client) streamURL() (string, error) {

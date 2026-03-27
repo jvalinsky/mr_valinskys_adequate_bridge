@@ -57,6 +57,16 @@ func (h *UIHandler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to get failure count", http.StatusInternalServerError)
 		return
 	}
+	deferredCount, err := h.db.CountDeferredMessages(r.Context())
+	if err != nil {
+		http.Error(w, "Failed to get deferred count", http.StatusInternalServerError)
+		return
+	}
+	deletedCount, err := h.db.CountDeletedMessages(r.Context())
+	if err != nil {
+		http.Error(w, "Failed to get deleted count", http.StatusInternalServerError)
+		return
+	}
 
 	blobCount, err := h.db.CountBlobs(r.Context())
 	if err != nil {
@@ -75,6 +85,8 @@ func (h *UIHandler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		MessageCount:        messageCount,
 		PublishedCount:      publishedCount,
 		PublishFailureCount: publishFailureCount,
+		DeferredCount:       deferredCount,
+		DeletedCount:        deletedCount,
 		BlobCount:           blobCount,
 		FirehoseCursor:      cursorValue,
 		Active:              h.active,
@@ -122,8 +134,10 @@ func (h *UIHandler) handleMessages(w http.ResponseWriter, r *http.Request) {
 			ATURI:           message.ATURI,
 			ATDID:           message.ATDID,
 			Type:            message.Type,
+			State:           message.MessageState,
 			SSBMsgRef:       message.SSBMsgRef,
 			PublishError:    message.PublishError,
+			DeferReason:     message.DeferReason,
 			PublishAttempts: message.PublishAttempts,
 			CreatedAt:       message.CreatedAt,
 		})
@@ -148,7 +162,8 @@ func (h *UIHandler) handleFailures(w http.ResponseWriter, r *http.Request) {
 			ATURI:           message.ATURI,
 			ATDID:           message.ATDID,
 			Type:            message.Type,
-			PublishError:    message.PublishError,
+			State:           message.MessageState,
+			Reason:          issueReason(message),
 			PublishAttempts: message.PublishAttempts,
 			CreatedAt:       message.CreatedAt,
 		})
@@ -200,8 +215,36 @@ func (h *UIHandler) handleState(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	deferredCount, err := h.db.CountDeferredMessages(r.Context())
+	if err != nil {
+		http.Error(w, "Failed to get deferred count", http.StatusInternalServerError)
+		return
+	}
+	deletedCount, err := h.db.CountDeletedMessages(r.Context())
+	if err != nil {
+		http.Error(w, "Failed to get deleted count", http.StatusInternalServerError)
+		return
+	}
+	latestReason, _, err := h.db.GetLatestDeferredReason(r.Context())
+	if err != nil {
+		http.Error(w, "Failed to get latest deferred reason", http.StatusInternalServerError)
+		return
+	}
+
 	w.Header().Set("Content-Type", "text/html")
-	if err := templates.RenderState(w, templates.StateData{State: rows}); err != nil {
+	if err := templates.RenderState(w, templates.StateData{
+		State:             rows,
+		DeferredCount:     deferredCount,
+		DeletedCount:      deletedCount,
+		LatestDeferReason: latestReason,
+	}); err != nil {
 		http.Error(w, "Template error", http.StatusInternalServerError)
 	}
+}
+
+func issueReason(message db.Message) string {
+	if message.MessageState == db.MessageStateDeferred && message.DeferReason != "" {
+		return message.DeferReason
+	}
+	return message.PublishError
 }

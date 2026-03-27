@@ -160,15 +160,15 @@ func ReplaceATProtoRefs(msg map[string]interface{}, lookupURI func(string) strin
 	if rootURI, ok := msg["_atproto_reply_root"].(string); ok {
 		if ssbRef := lookupURI(rootURI); ssbRef != "" {
 			msg["root"] = ssbRef
+			delete(msg, "_atproto_reply_root")
 		}
-		delete(msg, "_atproto_reply_root")
 	}
 
 	if parentURI, ok := msg["_atproto_reply_parent"].(string); ok {
 		if ssbRef := lookupURI(parentURI); ssbRef != "" {
 			msg["branch"] = ssbRef
+			delete(msg, "_atproto_reply_parent")
 		}
-		delete(msg, "_atproto_reply_parent")
 	}
 
 	if subjURI, ok := msg["_atproto_subject"].(string); ok {
@@ -176,23 +176,23 @@ func ReplaceATProtoRefs(msg map[string]interface{}, lookupURI func(string) strin
 			if v, isMap := msg["vote"].(map[string]interface{}); isMap {
 				v["link"] = ssbRef
 			}
+			delete(msg, "_atproto_subject")
 		}
-		delete(msg, "_atproto_subject")
 	}
 
 	if repostURI, ok := msg["_atproto_repost_subject"].(string); ok {
 		if ssbRef := lookupURI(repostURI); ssbRef != "" {
 			// Many SSB clients recognize repost intent when the referenced message ID appears in text.
 			msg["text"] = fmt.Sprintf("[%s]", ssbRef)
+			delete(msg, "_atproto_repost_subject")
 		}
-		delete(msg, "_atproto_repost_subject")
 	}
 
 	if contactDID, ok := msg["_atproto_contact"].(string); ok {
 		if ssbFeed := lookupDID(contactDID); ssbFeed != "" {
 			msg["contact"] = ssbFeed
+			delete(msg, "_atproto_contact")
 		}
-		delete(msg, "_atproto_contact")
 	}
 
 	// Resolve mention links that still point at DIDs.
@@ -205,4 +205,23 @@ func ReplaceATProtoRefs(msg map[string]interface{}, lookupURI func(string) strin
 			}
 		}
 	}
+}
+
+// UnresolvedATProtoRefs reports unresolved reference placeholders after replacement.
+func UnresolvedATProtoRefs(msg map[string]interface{}) []string {
+	keys := []string{
+		"_atproto_reply_root",
+		"_atproto_reply_parent",
+		"_atproto_subject",
+		"_atproto_repost_subject",
+		"_atproto_contact",
+	}
+
+	unresolved := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if raw, ok := msg[key]; ok && strings.TrimSpace(fmt.Sprint(raw)) != "" {
+			unresolved = append(unresolved, fmt.Sprintf("%s=%v", key, raw))
+		}
+	}
+	return unresolved
 }

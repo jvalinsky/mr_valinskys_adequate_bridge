@@ -24,5 +24,8 @@ jobs:
       - name: Download modules
         run: go mod download
 
+      - name: Run full test suite
+        run: go test ./...
+
       - name: Run deterministic smoke workflow
         run: ./scripts/smoke_bridge.sh

@@ -75,6 +75,18 @@ const dashboardContent = `
         </div>
         <div class="bg-white overflow-hidden shadow rounded-lg">
             <div class="p-5">
+                <div class="text-sm text-gray-500">Messages Deferred</div>
+                <div class="text-3xl font-semibold text-amber-700">{{.DeferredCount}}</div>
+            </div>
+        </div>
+        <div class="bg-white overflow-hidden shadow rounded-lg">
+            <div class="p-5">
+                <div class="text-sm text-gray-500">Messages Deleted</div>
+                <div class="text-3xl font-semibold text-gray-900">{{.DeletedCount}}</div>
+            </div>
+        </div>
+        <div class="bg-white overflow-hidden shadow rounded-lg">
+            <div class="p-5">
                 <div class="text-sm text-gray-500">Blobs Bridged</div>
                 <div class="text-3xl font-semibold text-gray-900">{{.BlobCount}}</div>
             </div>
@@ -144,8 +156,10 @@ const messagesContent = `
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">AT URI</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Author DID</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Type</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">State</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">SSB Ref</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Attempts</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Defer Reason</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Error</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Created</th>
                 </tr>
@@ -156,14 +170,16 @@ const messagesContent = `
                     <td class="px-6 py-4 text-sm text-gray-900">{{.ATURI}}</td>
                     <td class="px-6 py-4 text-sm text-gray-700">{{.ATDID}}</td>
                     <td class="px-6 py-4 text-sm text-gray-700">{{.Type}}</td>
+                    <td class="px-6 py-4 text-sm text-gray-700">{{.State}}</td>
                     <td class="px-6 py-4 text-sm text-gray-700">{{if .SSBMsgRef}}{{.SSBMsgRef}}{{else}}pending{{end}}</td>
                     <td class="px-6 py-4 text-sm text-gray-700">{{.PublishAttempts}}</td>
+                    <td class="px-6 py-4 text-sm text-amber-700">{{.DeferReason}}</td>
                     <td class="px-6 py-4 text-sm text-red-700">{{.PublishError}}</td>
                     <td class="px-6 py-4 text-sm text-gray-500">{{fmtTime .CreatedAt}}</td>
                 </tr>
                 {{else}}
                 <tr>
-                    <td colspan="7" class="px-6 py-8 text-sm text-gray-500 text-center">No bridged messages yet.</td>
+                    <td colspan="9" class="px-6 py-8 text-sm text-gray-500 text-center">No bridged messages yet.</td>
                 </tr>
                 {{end}}
             </tbody>
@@ -176,7 +192,7 @@ const messagesContent = `
 const failuresContent = `
 {{define "content"}}
 <div class="px-4 py-6 sm:px-0">
-    <h1 class="text-3xl font-bold text-gray-900 mb-6">Publish Failures</h1>
+    <h1 class="text-3xl font-bold text-gray-900 mb-6">Publish/Defer Issues</h1>
 
     <div class="bg-white shadow rounded-lg overflow-hidden">
         <table class="min-w-full divide-y divide-gray-200">
@@ -185,8 +201,9 @@ const failuresContent = `
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">AT URI</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Author DID</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Type</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">State</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Attempts</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Error</th>
+                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Reason</th>
                     <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Created</th>
                 </tr>
             </thead>
@@ -196,13 +213,14 @@ const failuresContent = `
                     <td class="px-6 py-4 text-sm text-gray-900">{{.ATURI}}</td>
                     <td class="px-6 py-4 text-sm text-gray-700">{{.ATDID}}</td>
                     <td class="px-6 py-4 text-sm text-gray-700">{{.Type}}</td>
+                    <td class="px-6 py-4 text-sm text-gray-700">{{.State}}</td>
                     <td class="px-6 py-4 text-sm text-gray-700">{{.PublishAttempts}}</td>
-                    <td class="px-6 py-4 text-sm text-red-700">{{.PublishError}}</td>
+                    <td class="px-6 py-4 text-sm text-red-700">{{.Reason}}</td>
                     <td class="px-6 py-4 text-sm text-gray-500">{{fmtTime .CreatedAt}}</td>
                 </tr>
                 {{else}}
                 <tr>
-                    <td colspan="6" class="px-6 py-8 text-sm text-gray-500 text-center">No publish failures.</td>
+                    <td colspan="7" class="px-6 py-8 text-sm text-gray-500 text-center">No publish/defer issues.</td>
                 </tr>
                 {{end}}
             </tbody>
@@ -254,6 +272,27 @@ const stateContent = `
 <div class="px-4 py-6 sm:px-0">
     <h1 class="text-3xl font-bold text-gray-900 mb-6">Bridge State</h1>
 
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+        <div class="bg-white overflow-hidden shadow rounded-lg">
+            <div class="p-4">
+                <div class="text-sm text-gray-500">Deferred Count</div>
+                <div class="text-2xl font-semibold text-amber-700">{{.DeferredCount}}</div>
+            </div>
+        </div>
+        <div class="bg-white overflow-hidden shadow rounded-lg">
+            <div class="p-4">
+                <div class="text-sm text-gray-500">Deleted Count</div>
+                <div class="text-2xl font-semibold text-gray-900">{{.DeletedCount}}</div>
+            </div>
+        </div>
+        <div class="bg-white overflow-hidden shadow rounded-lg">
+            <div class="p-4">
+                <div class="text-sm text-gray-500">Latest Defer Reason</div>
+                <div class="text-sm font-semibold text-amber-700 break-words">{{if .LatestDeferReason}}{{.LatestDeferReason}}{{else}}(none){{end}}</div>
+            </div>
+        </div>
+    </div>
+
     <div class="bg-white shadow rounded-lg overflow-hidden">
         <table class="min-w-full divide-y divide-gray-200">
             <thead class="bg-gray-50">
@@ -288,6 +327,8 @@ type DashboardData struct {
 	MessageCount        int
 	PublishedCount      int
 	PublishFailureCount int
+	DeferredCount       int
+	DeletedCount        int
 	BlobCount           int
 	FirehoseCursor      string
 	Active              bool
@@ -311,8 +352,10 @@ type MessageRow struct {
 	ATURI           string
 	ATDID           string
 	Type            string
+	State           string
 	SSBMsgRef       string
 	PublishError    string
+	DeferReason     string
 	PublishAttempts int
 	CreatedAt       time.Time
 }
@@ -327,7 +370,8 @@ type FailureRow struct {
 	ATURI           string
 	ATDID           string
 	Type            string
-	PublishError    string
+	State           string
+	Reason          string
 	PublishAttempts int
 	CreatedAt       time.Time
 }
@@ -360,7 +404,10 @@ type StateRow struct {
 
 // StateData is the template model for the state page.
 type StateData struct {
-	State []StateRow
+	State             []StateRow
+	DeferredCount     int
+	DeletedCount      int
+	LatestDeferReason string
 }
 
 // RenderDashboard renders the dashboard page.

@@ -35,12 +35,19 @@ type Message struct {
 	SSBMsgRef            string
 	ATDID                string
 	Type                 string
+	MessageState         string
 	RawATJson            string
 	RawSSBJson           string
 	PublishedAt          *time.Time
 	PublishError         string
 	PublishAttempts      int
 	LastPublishAttemptAt *time.Time
+	DeferReason          string
+	DeferAttempts        int
+	LastDeferAttemptAt   *time.Time
+	DeletedAt            *time.Time
+	DeletedSeq           *int64
+	DeletedReason        string
 	CreatedAt            time.Time
 }
 
@@ -59,6 +66,14 @@ type BridgeState struct {
 	Value     string
 	UpdatedAt time.Time
 }
+
+const (
+	MessageStatePending   = "pending"
+	MessageStatePublished = "published"
+	MessageStateFailed    = "failed"
+	MessageStateDeferred  = "deferred"
+	MessageStateDeleted   = "deleted"
+)
 
 // Open opens (and initializes) the bridge database at dbPath.
 func Open(dbPath string) (*DB, error) {
@@ -101,6 +116,27 @@ func (db *DB) initSchema() error {
 		return err
 	}
 	if err := db.ensureColumn("messages", "last_publish_attempt_at", "DATETIME"); err != nil {
+		return err
+	}
+	if err := db.ensureColumn("messages", "message_state", "TEXT NOT NULL DEFAULT 'pending'"); err != nil {
+		return err
+	}
+	if err := db.ensureColumn("messages", "defer_reason", "TEXT"); err != nil {
+		return err
+	}
+	if err := db.ensureColumn("messages", "defer_attempts", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := db.ensureColumn("messages", "last_defer_attempt_at", "DATETIME"); err != nil {
+		return err
+	}
+	if err := db.ensureColumn("messages", "deleted_at", "DATETIME"); err != nil {
+		return err
+	}
+	if err := db.ensureColumn("messages", "deleted_seq", "INTEGER"); err != nil {
+		return err
+	}
+	if err := db.ensureColumn("messages", "deleted_reason", "TEXT"); err != nil {
 		return err
 	}
 
@@ -212,34 +248,52 @@ func (db *DB) CountActiveBridgedAccounts(ctx context.Context) (int, error) {
 
 // AddMessage inserts or updates a message row keyed by AT URI.
 func (db *DB) AddMessage(ctx context.Context, msg Message) error {
+	if strings.TrimSpace(msg.MessageState) == "" {
+		msg.MessageState = MessageStatePending
+	}
+
 	_, err := db.conn.ExecContext(
 		ctx,
 		`INSERT INTO messages (
-			at_uri, at_cid, ssb_msg_ref, at_did, type, raw_at_json, raw_ssb_json, published_at, publish_error, publish_attempts, last_publish_attempt_at
+			at_uri, at_cid, ssb_msg_ref, at_did, type, message_state, raw_at_json, raw_ssb_json, published_at, publish_error, publish_attempts, last_publish_attempt_at, defer_reason, defer_attempts, last_defer_attempt_at, deleted_at, deleted_seq, deleted_reason
 		)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(at_uri) DO UPDATE SET
 		 	at_cid=excluded.at_cid,
 		 	ssb_msg_ref=excluded.ssb_msg_ref,
 		 	at_did=excluded.at_did,
 		 	type=excluded.type,
+		 	message_state=excluded.message_state,
 		 	raw_at_json=excluded.raw_at_json,
 		 	raw_ssb_json=excluded.raw_ssb_json,
 		 	published_at=excluded.published_at,
 		 	publish_error=excluded.publish_error,
 		 	publish_attempts=messages.publish_attempts + excluded.publish_attempts,
-		 	last_publish_attempt_at=excluded.last_publish_attempt_at`,
+		 	last_publish_attempt_at=excluded.last_publish_attempt_at,
+		 	defer_reason=excluded.defer_reason,
+		 	defer_attempts=messages.defer_attempts + excluded.defer_attempts,
+		 	last_defer_attempt_at=excluded.last_defer_attempt_at,
+		 	deleted_at=excluded.deleted_at,
+		 	deleted_seq=excluded.deleted_seq,
+		 	deleted_reason=excluded.deleted_reason`,
 		msg.ATURI,
 		msg.ATCID,
 		msg.SSBMsgRef,
 		msg.ATDID,
 		msg.Type,
+		msg.MessageState,
 		msg.RawATJson,
 		msg.RawSSBJson,
 		msg.PublishedAt,
 		msg.PublishError,
 		msg.PublishAttempts,
 		msg.LastPublishAttemptAt,
+		msg.DeferReason,
+		msg.DeferAttempts,
+		msg.LastDeferAttemptAt,
+		msg.DeletedAt,
+		msg.DeletedSeq,
+		msg.DeletedReason,
 	)
 	return err
 }
@@ -247,11 +301,12 @@ func (db *DB) AddMessage(ctx context.Context, msg Message) error {
 // GetMessage returns the message row for atURI, or nil when absent.
 func (db *DB) GetMessage(ctx context.Context, atURI string) (*Message, error) {
 	var msg Message
-	var ssbMsgRef, rawATJson, rawSSBJson, publishError sql.NullString
-	var publishedAt, lastPublishAttemptAt sql.NullTime
+	var ssbMsgRef, messageState, rawATJson, rawSSBJson, publishError, deferReason, deletedReason sql.NullString
+	var publishedAt, lastPublishAttemptAt, lastDeferAttemptAt, deletedAt sql.NullTime
+	var deletedSeq sql.NullInt64
 	err := db.conn.QueryRowContext(
 		ctx,
-		`SELECT at_uri, at_cid, ssb_msg_ref, at_did, type, raw_at_json, raw_ssb_json, published_at, publish_error, publish_attempts, last_publish_attempt_at, created_at
+		`SELECT at_uri, at_cid, ssb_msg_ref, at_did, type, message_state, raw_at_json, raw_ssb_json, published_at, publish_error, publish_attempts, last_publish_attempt_at, defer_reason, defer_attempts, last_defer_attempt_at, deleted_at, deleted_seq, deleted_reason, created_at
 		 FROM messages
 		 WHERE at_uri = ?`,
 		atURI,
@@ -261,12 +316,19 @@ func (db *DB) GetMessage(ctx context.Context, atURI string) (*Message, error) {
 		&ssbMsgRef,
 		&msg.ATDID,
 		&msg.Type,
+		&messageState,
 		&rawATJson,
 		&rawSSBJson,
 		&publishedAt,
 		&publishError,
 		&msg.PublishAttempts,
 		&lastPublishAttemptAt,
+		&deferReason,
+		&msg.DeferAttempts,
+		&lastDeferAttemptAt,
+		&deletedAt,
+		&deletedSeq,
+		&deletedReason,
 		&msg.CreatedAt,
 	)
 
@@ -277,9 +339,12 @@ func (db *DB) GetMessage(ctx context.Context, atURI string) (*Message, error) {
 		return nil, err
 	}
 	msg.SSBMsgRef = ssbMsgRef.String
+	msg.MessageState = messageState.String
 	msg.RawATJson = rawATJson.String
 	msg.RawSSBJson = rawSSBJson.String
 	msg.PublishError = publishError.String
+	msg.DeferReason = deferReason.String
+	msg.DeletedReason = deletedReason.String
 	if publishedAt.Valid {
 		t := publishedAt.Time
 		msg.PublishedAt = &t
@@ -287,6 +352,18 @@ func (db *DB) GetMessage(ctx context.Context, atURI string) (*Message, error) {
 	if lastPublishAttemptAt.Valid {
 		t := lastPublishAttemptAt.Time
 		msg.LastPublishAttemptAt = &t
+	}
+	if lastDeferAttemptAt.Valid {
+		t := lastDeferAttemptAt.Time
+		msg.LastDeferAttemptAt = &t
+	}
+	if deletedAt.Valid {
+		t := deletedAt.Time
+		msg.DeletedAt = &t
+	}
+	if deletedSeq.Valid {
+		seq := deletedSeq.Int64
+		msg.DeletedSeq = &seq
 	}
 	return &msg, nil
 }
@@ -309,7 +386,7 @@ func (db *DB) GetRecentMessages(ctx context.Context, limit int) ([]Message, erro
 
 	rows, err := db.conn.QueryContext(
 		ctx,
-		`SELECT at_uri, at_cid, ssb_msg_ref, at_did, type, raw_at_json, raw_ssb_json, published_at, publish_error, publish_attempts, last_publish_attempt_at, created_at
+		`SELECT at_uri, at_cid, ssb_msg_ref, at_did, type, message_state, raw_at_json, raw_ssb_json, published_at, publish_error, publish_attempts, last_publish_attempt_at, defer_reason, defer_attempts, last_defer_attempt_at, deleted_at, deleted_seq, deleted_reason, created_at
 		 FROM messages
 		 ORDER BY created_at DESC
 		 LIMIT ?`,
@@ -323,28 +400,39 @@ func (db *DB) GetRecentMessages(ctx context.Context, limit int) ([]Message, erro
 	var messages []Message
 	for rows.Next() {
 		var msg Message
-		var ssbMsgRef, rawATJson, rawSSBJson, publishError sql.NullString
-		var publishedAt, lastPublishAttemptAt sql.NullTime
+		var ssbMsgRef, messageState, rawATJson, rawSSBJson, publishError, deferReason, deletedReason sql.NullString
+		var publishedAt, lastPublishAttemptAt, lastDeferAttemptAt, deletedAt sql.NullTime
+		var deletedSeq sql.NullInt64
 		if err := rows.Scan(
 			&msg.ATURI,
 			&msg.ATCID,
 			&ssbMsgRef,
 			&msg.ATDID,
 			&msg.Type,
+			&messageState,
 			&rawATJson,
 			&rawSSBJson,
 			&publishedAt,
 			&publishError,
 			&msg.PublishAttempts,
 			&lastPublishAttemptAt,
+			&deferReason,
+			&msg.DeferAttempts,
+			&lastDeferAttemptAt,
+			&deletedAt,
+			&deletedSeq,
+			&deletedReason,
 			&msg.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
 		msg.SSBMsgRef = ssbMsgRef.String
+		msg.MessageState = messageState.String
 		msg.RawATJson = rawATJson.String
 		msg.RawSSBJson = rawSSBJson.String
 		msg.PublishError = publishError.String
+		msg.DeferReason = deferReason.String
+		msg.DeletedReason = deletedReason.String
 		if publishedAt.Valid {
 			t := publishedAt.Time
 			msg.PublishedAt = &t
@@ -352,6 +440,18 @@ func (db *DB) GetRecentMessages(ctx context.Context, limit int) ([]Message, erro
 		if lastPublishAttemptAt.Valid {
 			t := lastPublishAttemptAt.Time
 			msg.LastPublishAttemptAt = &t
+		}
+		if lastDeferAttemptAt.Valid {
+			t := lastDeferAttemptAt.Time
+			msg.LastDeferAttemptAt = &t
+		}
+		if deletedAt.Valid {
+			t := deletedAt.Time
+			msg.DeletedAt = &t
+		}
+		if deletedSeq.Valid {
+			seq := deletedSeq.Int64
+			msg.DeletedSeq = &seq
 		}
 		messages = append(messages, msg)
 	}
@@ -372,7 +472,25 @@ func (db *DB) CountPublishedMessages(ctx context.Context) (int, error) {
 // CountPublishFailures returns the number of messages with a publish error.
 func (db *DB) CountPublishFailures(ctx context.Context) (int, error) {
 	var count int
-	err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE publish_error IS NOT NULL AND publish_error <> ''`).Scan(&count)
+	err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE message_state = ?`, MessageStateFailed).Scan(&count)
+	if err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+func (db *DB) CountDeferredMessages(ctx context.Context) (int, error) {
+	var count int
+	err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE message_state = ?`, MessageStateDeferred).Scan(&count)
+	if err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
+func (db *DB) CountDeletedMessages(ctx context.Context) (int, error) {
+	var count int
+	err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE message_state = ?`, MessageStateDeleted).Scan(&count)
 	if err != nil {
 		return 0, err
 	}
@@ -387,11 +505,13 @@ func (db *DB) GetPublishFailures(ctx context.Context, limit int) ([]Message, err
 
 	rows, err := db.conn.QueryContext(
 		ctx,
-		`SELECT at_uri, at_cid, ssb_msg_ref, at_did, type, raw_at_json, raw_ssb_json, published_at, publish_error, publish_attempts, last_publish_attempt_at, created_at
+		`SELECT at_uri, at_cid, ssb_msg_ref, at_did, type, message_state, raw_at_json, raw_ssb_json, published_at, publish_error, publish_attempts, last_publish_attempt_at, defer_reason, defer_attempts, last_defer_attempt_at, deleted_at, deleted_seq, deleted_reason, created_at
 		 FROM messages
-		 WHERE publish_error IS NOT NULL AND publish_error <> ''
-		 ORDER BY created_at DESC
+		 WHERE message_state IN (?, ?)
+		 ORDER BY COALESCE(last_publish_attempt_at, last_defer_attempt_at, created_at) DESC
 		 LIMIT ?`,
+		MessageStateFailed,
+		MessageStateDeferred,
 		limit,
 	)
 	if err != nil {
@@ -402,28 +522,39 @@ func (db *DB) GetPublishFailures(ctx context.Context, limit int) ([]Message, err
 	var messages []Message
 	for rows.Next() {
 		var msg Message
-		var ssbMsgRef, rawATJson, rawSSBJson, publishError sql.NullString
-		var publishedAt, lastPublishAttemptAt sql.NullTime
+		var ssbMsgRef, messageState, rawATJson, rawSSBJson, publishError, deferReason, deletedReason sql.NullString
+		var publishedAt, lastPublishAttemptAt, lastDeferAttemptAt, deletedAt sql.NullTime
+		var deletedSeq sql.NullInt64
 		if err := rows.Scan(
 			&msg.ATURI,
 			&msg.ATCID,
 			&ssbMsgRef,
 			&msg.ATDID,
 			&msg.Type,
+			&messageState,
 			&rawATJson,
 			&rawSSBJson,
 			&publishedAt,
 			&publishError,
 			&msg.PublishAttempts,
 			&lastPublishAttemptAt,
+			&deferReason,
+			&msg.DeferAttempts,
+			&lastDeferAttemptAt,
+			&deletedAt,
+			&deletedSeq,
+			&deletedReason,
 			&msg.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
 		msg.SSBMsgRef = ssbMsgRef.String
+		msg.MessageState = messageState.String
 		msg.RawATJson = rawATJson.String
 		msg.RawSSBJson = rawSSBJson.String
 		msg.PublishError = publishError.String
+		msg.DeferReason = deferReason.String
+		msg.DeletedReason = deletedReason.String
 		if publishedAt.Valid {
 			t := publishedAt.Time
 			msg.PublishedAt = &t
@@ -431,6 +562,18 @@ func (db *DB) GetPublishFailures(ctx context.Context, limit int) ([]Message, err
 		if lastPublishAttemptAt.Valid {
 			t := lastPublishAttemptAt.Time
 			msg.LastPublishAttemptAt = &t
+		}
+		if lastDeferAttemptAt.Valid {
+			t := lastDeferAttemptAt.Time
+			msg.LastDeferAttemptAt = &t
+		}
+		if deletedAt.Valid {
+			t := deletedAt.Time
+			msg.DeletedAt = &t
+		}
+		if deletedSeq.Valid {
+			seq := deletedSeq.Int64
+			msg.DeletedSeq = &seq
 		}
 		messages = append(messages, msg)
 	}
@@ -449,14 +592,14 @@ func (db *DB) GetRetryCandidates(ctx context.Context, limit int, atDID string, m
 
 	var query strings.Builder
 	query.WriteString(
-		`SELECT at_uri, at_cid, ssb_msg_ref, at_did, type, raw_at_json, raw_ssb_json, published_at, publish_error, publish_attempts, last_publish_attempt_at, created_at
+		`SELECT at_uri, at_cid, ssb_msg_ref, at_did, type, message_state, raw_at_json, raw_ssb_json, published_at, publish_error, publish_attempts, last_publish_attempt_at, defer_reason, defer_attempts, last_defer_attempt_at, deleted_at, deleted_seq, deleted_reason, created_at
 		 FROM messages
-		 WHERE (ssb_msg_ref IS NULL OR ssb_msg_ref = '')
-		   AND publish_error IS NOT NULL AND publish_error <> ''
+		 WHERE message_state = ?
+		   AND (ssb_msg_ref IS NULL OR ssb_msg_ref = '')
 		   AND publish_attempts < ?`,
 	)
 
-	args := []interface{}{maxAttempts}
+	args := []interface{}{MessageStateFailed, maxAttempts}
 	if strings.TrimSpace(atDID) != "" {
 		query.WriteString(" AND at_did = ?")
 		args = append(args, strings.TrimSpace(atDID))
@@ -473,28 +616,39 @@ func (db *DB) GetRetryCandidates(ctx context.Context, limit int, atDID string, m
 	var messages []Message
 	for rows.Next() {
 		var msg Message
-		var ssbMsgRef, rawATJson, rawSSBJson, publishError sql.NullString
-		var publishedAt, lastPublishAttemptAt sql.NullTime
+		var ssbMsgRef, messageState, rawATJson, rawSSBJson, publishError, deferReason, deletedReason sql.NullString
+		var publishedAt, lastPublishAttemptAt, lastDeferAttemptAt, deletedAt sql.NullTime
+		var deletedSeq sql.NullInt64
 		if err := rows.Scan(
 			&msg.ATURI,
 			&msg.ATCID,
 			&ssbMsgRef,
 			&msg.ATDID,
 			&msg.Type,
+			&messageState,
 			&rawATJson,
 			&rawSSBJson,
 			&publishedAt,
 			&publishError,
 			&msg.PublishAttempts,
 			&lastPublishAttemptAt,
+			&deferReason,
+			&msg.DeferAttempts,
+			&lastDeferAttemptAt,
+			&deletedAt,
+			&deletedSeq,
+			&deletedReason,
 			&msg.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
 		msg.SSBMsgRef = ssbMsgRef.String
+		msg.MessageState = messageState.String
 		msg.RawATJson = rawATJson.String
 		msg.RawSSBJson = rawSSBJson.String
 		msg.PublishError = publishError.String
+		msg.DeferReason = deferReason.String
+		msg.DeletedReason = deletedReason.String
 		if publishedAt.Valid {
 			t := publishedAt.Time
 			msg.PublishedAt = &t
@@ -503,10 +657,128 @@ func (db *DB) GetRetryCandidates(ctx context.Context, limit int, atDID string, m
 			t := lastPublishAttemptAt.Time
 			msg.LastPublishAttemptAt = &t
 		}
+		if lastDeferAttemptAt.Valid {
+			t := lastDeferAttemptAt.Time
+			msg.LastDeferAttemptAt = &t
+		}
+		if deletedAt.Valid {
+			t := deletedAt.Time
+			msg.DeletedAt = &t
+		}
+		if deletedSeq.Valid {
+			seq := deletedSeq.Int64
+			msg.DeletedSeq = &seq
+		}
 		messages = append(messages, msg)
 	}
 
 	return messages, nil
+}
+
+func (db *DB) GetDeferredCandidates(ctx context.Context, limit int) ([]Message, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+
+	rows, err := db.conn.QueryContext(
+		ctx,
+		`SELECT at_uri, at_cid, ssb_msg_ref, at_did, type, message_state, raw_at_json, raw_ssb_json, published_at, publish_error, publish_attempts, last_publish_attempt_at, defer_reason, defer_attempts, last_defer_attempt_at, deleted_at, deleted_seq, deleted_reason, created_at
+		 FROM messages
+		 WHERE message_state = ?
+		 ORDER BY COALESCE(last_defer_attempt_at, created_at) ASC
+		 LIMIT ?`,
+		MessageStateDeferred,
+		limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var messages []Message
+	for rows.Next() {
+		var msg Message
+		var ssbMsgRef, messageState, rawATJSON, rawSSBJSON, publishError, deferReason, deletedReason sql.NullString
+		var publishedAt, lastPublishAttemptAt, lastDeferAttemptAt, deletedAt sql.NullTime
+		var deletedSeq sql.NullInt64
+		if err := rows.Scan(
+			&msg.ATURI,
+			&msg.ATCID,
+			&ssbMsgRef,
+			&msg.ATDID,
+			&msg.Type,
+			&messageState,
+			&rawATJSON,
+			&rawSSBJSON,
+			&publishedAt,
+			&publishError,
+			&msg.PublishAttempts,
+			&lastPublishAttemptAt,
+			&deferReason,
+			&msg.DeferAttempts,
+			&lastDeferAttemptAt,
+			&deletedAt,
+			&deletedSeq,
+			&deletedReason,
+			&msg.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		msg.SSBMsgRef = ssbMsgRef.String
+		msg.MessageState = messageState.String
+		msg.RawATJson = rawATJSON.String
+		msg.RawSSBJson = rawSSBJSON.String
+		msg.PublishError = publishError.String
+		msg.DeferReason = deferReason.String
+		msg.DeletedReason = deletedReason.String
+		if publishedAt.Valid {
+			t := publishedAt.Time
+			msg.PublishedAt = &t
+		}
+		if lastPublishAttemptAt.Valid {
+			t := lastPublishAttemptAt.Time
+			msg.LastPublishAttemptAt = &t
+		}
+		if lastDeferAttemptAt.Valid {
+			t := lastDeferAttemptAt.Time
+			msg.LastDeferAttemptAt = &t
+		}
+		if deletedAt.Valid {
+			t := deletedAt.Time
+			msg.DeletedAt = &t
+		}
+		if deletedSeq.Valid {
+			seq := deletedSeq.Int64
+			msg.DeletedSeq = &seq
+		}
+
+		messages = append(messages, msg)
+	}
+
+	return messages, nil
+}
+
+func (db *DB) GetLatestDeferredReason(ctx context.Context) (string, bool, error) {
+	var reason sql.NullString
+	err := db.conn.QueryRowContext(
+		ctx,
+		`SELECT defer_reason
+		 FROM messages
+		 WHERE message_state = ? AND defer_reason IS NOT NULL AND defer_reason <> ''
+		 ORDER BY COALESCE(last_defer_attempt_at, created_at) DESC
+		 LIMIT 1`,
+		MessageStateDeferred,
+	).Scan(&reason)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	if !reason.Valid || strings.TrimSpace(reason.String) == "" {
+		return "", false, nil
+	}
+	return reason.String, true, nil
 }
 
 // AddBlob inserts or updates one blob CID mapping.

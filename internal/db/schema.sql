@@ -13,18 +13,26 @@ CREATE TABLE IF NOT EXISTS messages (
     ssb_msg_ref TEXT,
     at_did TEXT NOT NULL,
     type TEXT NOT NULL,
+    message_state TEXT NOT NULL DEFAULT 'pending',
     raw_at_json TEXT,
     raw_ssb_json TEXT,
     published_at DATETIME,
     publish_error TEXT,
     publish_attempts INTEGER NOT NULL DEFAULT 0,
     last_publish_attempt_at DATETIME,
+    defer_reason TEXT,
+    defer_attempts INTEGER NOT NULL DEFAULT 0,
+    last_defer_attempt_at DATETIME,
+    deleted_at DATETIME,
+    deleted_seq INTEGER,
+    deleted_reason TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(at_did) REFERENCES bridged_accounts(at_did)
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_at_did ON messages(at_did);
 CREATE INDEX IF NOT EXISTS idx_messages_type ON messages(type);
+CREATE INDEX IF NOT EXISTS idx_messages_state ON messages(message_state);
 
 CREATE TABLE IF NOT EXISTS blobs (
     at_cid TEXT PRIMARY KEY,

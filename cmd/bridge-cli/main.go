@@ -202,6 +202,14 @@ func main() {
 					if err != nil {
 						return err
 					}
+					deferredMessages, err := database.CountDeferredMessages(c.Context)
+					if err != nil {
+						return err
+					}
+					deletedMessages, err := database.CountDeletedMessages(c.Context)
+					if err != nil {
+						return err
+					}
 
 					totalBlobs, err := database.CountBlobs(c.Context)
 					if err != nil {
@@ -218,6 +226,8 @@ func main() {
 					fmt.Printf("- Messages bridged: %d\n", totalMessages)
 					fmt.Printf("- Messages published: %d\n", publishedMessages)
 					fmt.Printf("- Publish failures: %d\n", publishFailures)
+					fmt.Printf("- Messages deferred: %d\n", deferredMessages)
+					fmt.Printf("- Messages deleted: %d\n", deletedMessages)
 					fmt.Printf("- Blobs bridged: %d\n", totalBlobs)
 					if cursorVal != "" {
 						fmt.Printf("- Firehose cursor: %s\n", cursorVal)
@@ -230,9 +240,12 @@ func main() {
 				Usage: "Start the bridge engine",
 				Flags: []cli.Flag{
 					&cli.StringFlag{
+						Name:  "repo-path",
+						Usage: "shared SSB repo path for bridge publishing and embedded room runtime (default .ssb-bridge)",
+					},
+					&cli.StringFlag{
 						Name:  "ssb-repo-path",
-						Value: ".ssb-bridge",
-						Usage: "path to SSB repo used for deterministic publishing and blobs",
+						Usage: "deprecated: legacy bridge repo path alias (use --repo-path)",
 					},
 					&cli.StringFlag{
 						Name:  "hmac-key",
@@ -260,8 +273,7 @@ func main() {
 					},
 					&cli.StringFlag{
 						Name:  "room-repo-path",
-						Value: ".ssb-room",
-						Usage: "path to go-ssb-room runtime repository",
+						Usage: "deprecated: legacy room repo path alias (use --repo-path)",
 					},
 					&cli.StringFlag{
 						Name:  "room-mode",
@@ -293,7 +305,12 @@ func main() {
 						return err
 					}
 
-					ssbRuntime, err := ssbruntime.Open(c.String("ssb-repo-path"), []byte(botSeed), hmacKey, bridgeLogger)
+					repoPath, err := resolveSharedRepoPath(c)
+					if err != nil {
+						return err
+					}
+
+					ssbRuntime, err := ssbruntime.Open(repoPath, []byte(botSeed), hmacKey, bridgeLogger)
 					if err != nil {
 						return fmt.Errorf("init ssb runtime: %w", err)
 					}
@@ -335,7 +352,7 @@ func main() {
 						roomRuntime, err = room.Start(runCtx, room.Config{
 							ListenAddr:     c.String("room-listen-addr"),
 							HTTPListenAddr: c.String("room-http-listen-addr"),
-							RepoPath:       c.String("room-repo-path"),
+							RepoPath:       repoPath,
 							Mode:           c.String("room-mode"),
 							HTTPSDomain:    c.String("room-https-domain"),
 						}, roomLogger)
@@ -354,10 +371,15 @@ func main() {
 					client := firehose.NewClient(relayURL, processor, firehoseLogger, firehoseOpts...)
 					errCh := make(chan error, 1)
 					go func() {
-						errCh <- client.Run(runCtx)
+						errCh <- client.RunWithReconnect(runCtx, firehose.ReconnectConfig{
+							InitialBackoff: 2 * time.Second,
+							MaxBackoff:     60 * time.Second,
+							Jitter:         750 * time.Millisecond,
+						})
 					}()
 
 					go runRetryScheduler(runCtx, processor, bridgeLogger)
+					go runDeferredResolverScheduler(runCtx, processor, bridgeLogger)
 
 					fmt.Println("Starting bridge engine...")
 					var runErr error
@@ -401,6 +423,10 @@ func main() {
 				Name:  "backfill",
 				Usage: "Backfill supported records for one or more DIDs using sync.getRepo",
 				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:  "repo-path",
+						Usage: "shared SSB repo path for publish/backfill (default .ssb-bridge)",
+					},
 					&cli.StringSliceFlag{
 						Name:  "did",
 						Usage: "DID to backfill (repeatable)",
@@ -419,8 +445,7 @@ func main() {
 					},
 					&cli.StringFlag{
 						Name:  "ssb-repo-path",
-						Value: ".ssb-bridge",
-						Usage: "path to SSB repo used for deterministic publishing and blobs",
+						Usage: "deprecated: legacy bridge repo path alias (use --repo-path)",
 					},
 					&cli.StringFlag{
 						Name:  "hmac-key",
@@ -463,7 +488,12 @@ func main() {
 						return err
 					}
 
-					ssbRuntime, err := ssbruntime.Open(c.String("ssb-repo-path"), []byte(botSeed), hmacKey, bridgeLogger)
+					repoPath, err := resolveSharedRepoPath(c)
+					if err != nil {
+						return err
+					}
+
+					ssbRuntime, err := ssbruntime.Open(repoPath, []byte(botSeed), hmacKey, bridgeLogger)
 					if err != nil {
 						return fmt.Errorf("init ssb runtime: %w", err)
 					}
@@ -510,6 +540,10 @@ func main() {
 				Name:  "retry-failures",
 				Usage: "Retry failed unpublished bridge messages",
 				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:  "repo-path",
+						Usage: "shared SSB repo path for publish/retry (default .ssb-bridge)",
+					},
 					&cli.IntFlag{
 						Name:  "limit",
 						Value: 100,
@@ -531,8 +565,7 @@ func main() {
 					},
 					&cli.StringFlag{
 						Name:  "ssb-repo-path",
-						Value: ".ssb-bridge",
-						Usage: "path to SSB repo used for deterministic publishing",
+						Usage: "deprecated: legacy bridge repo path alias (use --repo-path)",
 					},
 					&cli.StringFlag{
 						Name:  "hmac-key",
@@ -558,7 +591,12 @@ func main() {
 						return err
 					}
 
-					ssbRuntime, err := ssbruntime.Open(c.String("ssb-repo-path"), []byte(botSeed), hmacKey, bridgeLogger)
+					repoPath, err := resolveSharedRepoPath(c)
+					if err != nil {
+						return err
+					}
+
+					ssbRuntime, err := ssbruntime.Open(repoPath, []byte(botSeed), hmacKey, bridgeLogger)
 					if err != nil {
 						return fmt.Errorf("init ssb runtime: %w", err)
 					}
@@ -780,6 +818,43 @@ func dedupeStrings(in []string) []string {
 	return out
 }
 
+func resolveSharedRepoPath(c *cli.Context) (string, error) {
+	const defaultRepoPath = ".ssb-bridge"
+
+	repoPath := strings.TrimSpace(c.String("repo-path"))
+	repoPathSet := c.IsSet("repo-path")
+
+	legacyValues := make([]string, 0, 2)
+	if c.IsSet("ssb-repo-path") {
+		legacyValues = append(legacyValues, strings.TrimSpace(c.String("ssb-repo-path")))
+	}
+	if c.IsSet("room-repo-path") {
+		legacyValues = append(legacyValues, strings.TrimSpace(c.String("room-repo-path")))
+	}
+
+	legacyValues = dedupeStrings(legacyValues)
+	switch {
+	case repoPathSet:
+		for _, legacy := range legacyValues {
+			if legacy != "" && legacy != repoPath {
+				return "", fmt.Errorf("conflicting repo flags: --repo-path=%q conflicts with legacy repo path %q; use --repo-path only", repoPath, legacy)
+			}
+		}
+	case len(legacyValues) > 0:
+		repoPath = legacyValues[0]
+		if len(legacyValues) > 1 {
+			return "", fmt.Errorf("conflicting legacy repo flags: %q vs %q; use a single --repo-path value", legacyValues[0], legacyValues[1])
+		}
+	default:
+		repoPath = defaultRepoPath
+	}
+
+	if strings.TrimSpace(repoPath) == "" {
+		return "", fmt.Errorf("repo path must not be empty")
+	}
+	return repoPath, nil
+}
+
 // runRetryScheduler periodically retries failed unpublished messages.
 func runRetryScheduler(ctx context.Context, processor *bridge.Processor, logger *log.Logger) {
 	if processor == nil {
@@ -814,6 +889,41 @@ func runRetryScheduler(ctx context.Context, processor *bridge.Processor, logger 
 					result.Published,
 					result.Failed,
 					result.Deferred,
+				)
+			}
+		}
+	}
+}
+
+func runDeferredResolverScheduler(ctx context.Context, processor *bridge.Processor, logger *log.Logger) {
+	if processor == nil {
+		return
+	}
+	if logger == nil {
+		logger = log.New(os.Stdout, "bridge: ", log.LstdFlags)
+	}
+
+	ticker := time.NewTicker(20 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			result, err := processor.ResolveDeferredMessages(ctx, 100)
+			if err != nil {
+				logger.Printf("event=deferred_scheduler_error err=%v", err)
+				continue
+			}
+			if result.Attempted > 0 || result.Deferred > 0 || result.Failed > 0 || result.Published > 0 {
+				logger.Printf(
+					"event=deferred_scheduler selected=%d attempted=%d published=%d deferred=%d failed=%d",
+					result.Selected,
+					result.Attempted,
+					result.Published,
+					result.Deferred,
+					result.Failed,
 				)
 			}
 		}

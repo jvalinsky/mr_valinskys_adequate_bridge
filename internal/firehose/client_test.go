@@ -2,9 +2,11 @@ package firehose
 
 import (
 	"context"
+	"errors"
 	"log"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -60,5 +62,69 @@ func TestClientStreamURLWithCursor(t *testing.T) {
 	}
 	if !strings.Contains(u, "cursor=1234") {
 		t.Fatalf("expected cursor query in URL, got %s", u)
+	}
+}
+
+func TestIsFatalStreamError(t *testing.T) {
+	cases := []struct {
+		err   error
+		fatal bool
+	}{
+		{err: errors.New("build stream URL: parse"), fatal: true},
+		{err: errors.New("failed to dial (status=401): bad handshake"), fatal: true},
+		{err: errors.New("failed to dial (status=403): bad handshake"), fatal: true},
+		{err: errors.New("failed to dial (status=404): bad handshake"), fatal: true},
+		{err: errors.New("unsupported protocol scheme wsx"), fatal: true},
+		{err: errors.New("temporary network reset"), fatal: false},
+		{err: context.Canceled, fatal: false},
+	}
+
+	for _, tc := range cases {
+		if got := IsFatalStreamError(tc.err); got != tc.fatal {
+			t.Fatalf("err=%v expected fatal=%v got=%v", tc.err, tc.fatal, got)
+		}
+	}
+}
+
+func TestRunWithReconnectLoopRetriesTransientAndSucceeds(t *testing.T) {
+	var attempts atomic.Int32
+	cfg := ReconnectConfig{
+		InitialBackoff: 1 * time.Millisecond,
+		MaxBackoff:     5 * time.Millisecond,
+		Jitter:         0,
+	}
+
+	err := runWithReconnectLoop(context.Background(), log.New(os.Stdout, "", 0), cfg, func(context.Context) error {
+		n := attempts.Add(1)
+		if n < 3 {
+			return errors.New("temporary disconnect")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("expected eventual success, got %v", err)
+	}
+	if attempts.Load() != 3 {
+		t.Fatalf("expected 3 attempts, got %d", attempts.Load())
+	}
+}
+
+func TestRunWithReconnectLoopStopsOnFatal(t *testing.T) {
+	var attempts atomic.Int32
+	cfg := ReconnectConfig{
+		InitialBackoff: 1 * time.Millisecond,
+		MaxBackoff:     5 * time.Millisecond,
+		Jitter:         0,
+	}
+
+	err := runWithReconnectLoop(context.Background(), log.New(os.Stdout, "", 0), cfg, func(context.Context) error {
+		attempts.Add(1)
+		return errors.New("failed to dial (status=401): bad handshake")
+	})
+	if err == nil {
+		t.Fatalf("expected fatal error")
+	}
+	if attempts.Load() != 1 {
+		t.Fatalf("expected 1 attempt for fatal error, got %d", attempts.Load())
 	}
 }

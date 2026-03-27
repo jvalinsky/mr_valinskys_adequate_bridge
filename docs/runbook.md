@@ -14,11 +14,10 @@ export BRIDGE_UI_PASSWORD="<strong-password>"
 bridge-cli start \
   --db bridge.sqlite \
   --relay-url wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos \
-  --ssb-repo-path .ssb-bridge \
+  --repo-path .ssb-bridge \
   --room-enable \
   --room-listen-addr 0.0.0.0:8989 \
   --room-http-listen-addr 0.0.0.0:8976 \
-  --room-repo-path .ssb-room \
   --room-mode community \
   --room-https-domain room.example.com \
   --publish-workers 4
@@ -55,7 +54,7 @@ bridge-cli stats --db bridge.sqlite
 ```bash
 bridge-cli retry-failures \
   --db bridge.sqlite \
-  --ssb-repo-path .ssb-bridge \
+  --repo-path .ssb-bridge \
   --publish-workers 4 \
   --limit 200
 ```

@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -66,4 +67,34 @@ func TestRuntimeStartsAndServesHealth(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
+}
+
+func TestRuntimeCloseIsIdempotent(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	rt, err := Start(ctx, Config{
+		ListenAddr:     "127.0.0.1:0",
+		HTTPListenAddr: "127.0.0.1:0",
+		RepoPath:       t.TempDir(),
+		Mode:           "community",
+	}, log.New(io.Discard, "", 0))
+	if err != nil {
+		if strings.Contains(err.Error(), "operation not permitted") {
+			t.Skipf("sandbox does not allow local listen sockets: %v", err)
+		}
+		t.Fatalf("start runtime: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_ = rt.Close()
+	}()
+	go func() {
+		defer wg.Done()
+		_ = rt.Close()
+	}()
+	wg.Wait()
 }

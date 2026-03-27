@@ -158,6 +158,58 @@ func TestProcessRecordResolvesKnownSubjectRefs(t *testing.T) {
 	}
 }
 
+func TestProcessRecordDefersWhenRefsUnresolved(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open memory db: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	processor := NewProcessor(
+		database,
+		log.New(io.Discard, "", 0),
+		WithPublisher(&mockPublisher{ref: "%should-not-publish.sha256"}),
+	)
+
+	likeRecord := []byte(`{
+		"subject": {
+			"uri": "at://did:plc:alice/app.bsky.feed.post/missing",
+			"cid": "bafy-missing"
+		},
+		"createdAt": "2026-01-01T00:00:00Z"
+	}`)
+
+	err = processor.ProcessRecord(
+		ctx,
+		"did:plc:alice",
+		"at://did:plc:alice/app.bsky.feed.like/2",
+		"bafy-like-2",
+		mapper.RecordTypeLike,
+		likeRecord,
+	)
+	if err != nil {
+		t.Fatalf("process like record: %v", err)
+	}
+
+	stored, err := database.GetMessage(ctx, "at://did:plc:alice/app.bsky.feed.like/2")
+	if err != nil {
+		t.Fatalf("get like message: %v", err)
+	}
+	if stored == nil {
+		t.Fatalf("expected stored deferred message")
+	}
+	if stored.MessageState != db.MessageStateDeferred {
+		t.Fatalf("expected deferred message state, got %q", stored.MessageState)
+	}
+	if stored.SSBMsgRef != "" {
+		t.Fatalf("expected no ssb message ref for deferred row, got %q", stored.SSBMsgRef)
+	}
+	if stored.DeferReason == "" {
+		t.Fatalf("expected defer reason")
+	}
+}
+
 func TestProcessRecordPublishesAndPersistsMetadata(t *testing.T) {
 	database, err := db.Open(":memory:")
 	if err != nil {
@@ -294,6 +346,108 @@ func TestProcessRecordBlobFailureFallsBackButPublishes(t *testing.T) {
 	}
 }
 
+func TestResolveDeferredMessagesPublishesWhenDependencyAppears(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open memory db: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	processor := NewProcessor(
+		database,
+		log.New(io.Discard, "", 0),
+		WithPublisher(&mockPublisher{ref: "%resolved.sha256"}),
+	)
+
+	likeURI := "at://did:plc:alice/app.bsky.feed.like/resolve-1"
+	if err := database.AddMessage(ctx, db.Message{
+		ATURI:              likeURI,
+		ATCID:              "bafy-like-resolve",
+		ATDID:              "did:plc:alice",
+		Type:               mapper.RecordTypeLike,
+		MessageState:       db.MessageStateDeferred,
+		RawATJson:          `{"subject":{"uri":"at://did:plc:alice/app.bsky.feed.post/root","cid":"bafy-root"}}`,
+		RawSSBJson:         `{"type":"vote","vote":{"value":1,"expression":"Like"},"_atproto_subject":"at://did:plc:alice/app.bsky.feed.post/root"}`,
+		DeferReason:        "_atproto_subject=at://did:plc:alice/app.bsky.feed.post/root",
+		DeferAttempts:      1,
+		LastDeferAttemptAt: func() *time.Time { v := time.Now().UTC().Add(-time.Minute); return &v }(),
+	}); err != nil {
+		t.Fatalf("seed deferred message: %v", err)
+	}
+
+	if err := database.AddMessage(ctx, db.Message{
+		ATURI:        "at://did:plc:alice/app.bsky.feed.post/root",
+		ATCID:        "bafy-root",
+		ATDID:        "did:plc:alice",
+		Type:         mapper.RecordTypePost,
+		MessageState: db.MessageStatePublished,
+		SSBMsgRef:    "%root.sha256",
+		RawATJson:    `{"text":"root"}`,
+		RawSSBJson:   `{"type":"post","text":"root"}`,
+	}); err != nil {
+		t.Fatalf("seed dependency message: %v", err)
+	}
+
+	result, err := processor.ResolveDeferredMessages(ctx, 10)
+	if err != nil {
+		t.Fatalf("resolve deferred: %v", err)
+	}
+	if result.Published != 1 {
+		t.Fatalf("expected 1 published deferred message, got %+v", result)
+	}
+
+	stored, err := database.GetMessage(ctx, likeURI)
+	if err != nil {
+		t.Fatalf("get deferred message: %v", err)
+	}
+	if stored == nil {
+		t.Fatalf("expected deferred message after resolve")
+	}
+	if stored.MessageState != db.MessageStatePublished {
+		t.Fatalf("expected published state after deferred resolve, got %q", stored.MessageState)
+	}
+	if stored.SSBMsgRef != "%resolved.sha256" {
+		t.Fatalf("expected resolved publish ref, got %q", stored.SSBMsgRef)
+	}
+}
+
+func TestProcessDeleteOpMarksDeletedAndPublishesTombstone(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open memory db: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	processor := NewProcessor(
+		database,
+		log.New(io.Discard, "", 0),
+		WithPublisher(&mockPublisher{ref: "%tombstone.sha256"}),
+	)
+
+	if err := processor.processDeleteOp(ctx, "did:plc:alice", "app.bsky.feed.post/123", 42); err != nil {
+		t.Fatalf("process delete op: %v", err)
+	}
+
+	stored, err := database.GetMessage(ctx, "at://did:plc:alice/app.bsky.feed.post/123")
+	if err != nil {
+		t.Fatalf("get deleted message: %v", err)
+	}
+	if stored == nil {
+		t.Fatalf("expected deleted message row")
+	}
+	if stored.MessageState != db.MessageStateDeleted {
+		t.Fatalf("expected deleted state, got %q", stored.MessageState)
+	}
+	if stored.SSBMsgRef != "%tombstone.sha256" {
+		t.Fatalf("expected tombstone publish ref, got %q", stored.SSBMsgRef)
+	}
+	if stored.DeletedSeq == nil || *stored.DeletedSeq != 42 {
+		t.Fatalf("expected deleted seq 42, got %+v", stored.DeletedSeq)
+	}
+}
+
 func TestRetryFailedMessagesPublishesWhenBackoffElapsed(t *testing.T) {
 	database, err := db.Open(":memory:")
 	if err != nil {
@@ -308,6 +462,7 @@ func TestRetryFailedMessagesPublishesWhenBackoffElapsed(t *testing.T) {
 		ATCID:                "bafy-retry-1",
 		ATDID:                "did:plc:alice",
 		Type:                 mapper.RecordTypePost,
+		MessageState:         db.MessageStateFailed,
 		RawATJson:            `{"text":"retry-1"}`,
 		RawSSBJson:           `{"type":"post","text":"retry-1"}`,
 		PublishError:         "initial failure",
@@ -370,6 +525,7 @@ func TestRetryFailedMessagesDefersUntilBackoff(t *testing.T) {
 		ATCID:                "bafy-retry-2",
 		ATDID:                "did:plc:alice",
 		Type:                 mapper.RecordTypePost,
+		MessageState:         db.MessageStateFailed,
 		RawATJson:            `{"text":"retry-2"}`,
 		RawSSBJson:           `{"type":"post","text":"retry-2"}`,
 		PublishError:         "initial failure",

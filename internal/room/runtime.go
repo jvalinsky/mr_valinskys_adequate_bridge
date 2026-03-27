@@ -36,8 +36,10 @@ type Config struct {
 
 // Runtime wraps the lifecycle of the embedded room adapter and HTTP server.
 type Runtime struct {
-	logger *log.Logger
-	cfg    Config
+	logger     *log.Logger
+	cfg        Config
+	muxrpcAddr string
+	httpAddr   string
 
 	roomAdapter  *roomadapter.Runtime
 	httpServer   *http.Server
@@ -109,6 +111,8 @@ func Start(parentCtx context.Context, cfg Config, logger *log.Logger) (*Runtime,
 		httpServer:   httpServer,
 		httpListener: httpListener,
 		cancel:       cancel,
+		muxrpcAddr:   cfg.ListenAddr,
+		httpAddr:     httpListener.Addr().String(),
 	}
 
 	rt.wg.Add(2)
@@ -120,28 +124,24 @@ func Start(parentCtx context.Context, cfg Config, logger *log.Logger) (*Runtime,
 		_ = rt.Close()
 	}()
 
-	rt.logger.Printf("event=room_runtime_started muxrpc_addr=%s http_addr=%s mode=%s", rt.Addr(), rt.HTTPAddr(), strings.ToLower(cfg.Mode))
+	rt.logger.Printf("event=room_runtime_started muxrpc_addr=%s http_addr=%s mode=%s", rt.muxrpcAddr, rt.httpAddr, strings.ToLower(cfg.Mode))
 	return rt, nil
 }
 
 // Addr returns the muxrpc listen address.
 func (r *Runtime) Addr() string {
-	if r == nil || r.roomAdapter == nil || r.roomAdapter.Server == nil || r.roomAdapter.Server.Network == nil {
+	if r == nil {
 		return ""
 	}
-	addr := r.roomAdapter.Server.Network.GetListenAddr()
-	if addr == nil {
-		return ""
-	}
-	return addr.String()
+	return r.muxrpcAddr
 }
 
 // HTTPAddr returns the HTTP listen address.
 func (r *Runtime) HTTPAddr() string {
-	if r == nil || r.httpListener == nil {
+	if r == nil {
 		return ""
 	}
-	return r.httpListener.Addr().String()
+	return r.httpAddr
 }
 
 // Close stops the room runtime and releases listeners and background loops.
@@ -178,7 +178,7 @@ func (r *Runtime) Close() error {
 		r.wg.Wait()
 		r.closeErr = errors.Join(errs...)
 		if r.closeErr == nil {
-			r.logger.Printf("event=room_runtime_stopped muxrpc_addr=%s http_addr=%s", r.Addr(), r.HTTPAddr())
+			r.logger.Printf("event=room_runtime_stopped muxrpc_addr=%s http_addr=%s", r.muxrpcAddr, r.httpAddr)
 		}
 	})
 
