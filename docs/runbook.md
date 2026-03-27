@@ -86,9 +86,14 @@ Run this gate before release/staging promotion to validate live firehose ingest 
 
 ```bash
 export LIVE_E2E_ENABLED=1
-export LIVE_ATPROTO_IDENTIFIER="<bridged-account-handle-or-email>"
-export LIVE_ATPROTO_PASSWORD="<app-password>"
+export LIVE_ATPROTO_SOURCE_IDENTIFIER="<bridged-source-handle-email-or-did>"
+export LIVE_ATPROTO_SOURCE_APP_PASSWORD="<source-app-password>"
+# choose one target strategy:
+# 1) provide target DID directly
 export LIVE_ATPROTO_FOLLOW_TARGET_DID="<bridged-target-did>"
+# 2) OR provide target account credentials and let the test resolve DID
+# export LIVE_ATPROTO_TARGET_IDENTIFIER="<bridged-target-handle-email-or-did>"
+# export LIVE_ATPROTO_TARGET_APP_PASSWORD="<target-app-password>"
 export LIVE_ROOM_PEER_VERIFY_CMD="./scripts/local_room_peer_verify.sh"
 ```
 
@@ -102,6 +107,9 @@ export LIVE_E2E_TIMEOUT="4m"
 export LIVE_ROOM_MUXRPC_ADDR="127.0.0.1:9898"
 export LIVE_ROOM_HTTP_ADDR="127.0.0.1:9876"
 export LIVE_ROOM_MODE="community"
+# Optional env-file/config path consumed by scripts/live_bridge_e2e.sh and the Go test:
+# export LIVE_ATPROTO_ENV_FILE="/secure/path/live-e2e.env"
+# export LIVE_ATPROTO_CONFIG_FILE="/secure/path/live-e2e.env"
 ```
 
 3. Run the live gate locally.
@@ -118,9 +126,11 @@ export LIVE_ROOM_MODE="community"
 5. GitHub environment wiring for promotion gates:
    - Workflow routes to environment `staging` for staging pushes/manual staging runs, and `release` for release/manual release runs.
    - Configure required environment secrets in both `staging` and `release`:
-     - `LIVE_ATPROTO_IDENTIFIER`
-     - `LIVE_ATPROTO_PASSWORD`
-     - `LIVE_ATPROTO_FOLLOW_TARGET_DID`
+     - `LIVE_ATPROTO_SOURCE_IDENTIFIER`
+     - `LIVE_ATPROTO_SOURCE_APP_PASSWORD`
+     - `LIVE_ATPROTO_FOLLOW_TARGET_DID` (or target account credentials below)
+     - `LIVE_ATPROTO_TARGET_IDENTIFIER` (optional, required if `LIVE_ATPROTO_FOLLOW_TARGET_DID` unset)
+     - `LIVE_ATPROTO_TARGET_APP_PASSWORD` (optional, required if `LIVE_ATPROTO_FOLLOW_TARGET_DID` unset)
      - `LIVE_BRIDGE_BOT_SEED` (recommended, optional in code)
    - Configure optional environment variables in both `staging` and `release`:
      - `LIVE_ATPROTO_HOST`
@@ -200,6 +210,9 @@ Notes:
   - Relay URL for bridge: `ws://127.0.0.1:2583/xrpc/com.atproto.sync.subscribeRepos`
   - PLC directory: `http://127.0.0.1:2582`
 - `scripts/local_atproto_bootstrap.sh` generates source/target DIDs and writes all required `LIVE_*` variables.
+- Legacy live credential variables are still accepted for backward compatibility:
+  - `LIVE_ATPROTO_IDENTIFIER` -> source identifier
+  - `LIVE_ATPROTO_PASSWORD` -> source app password
 - Local run defaults `LIVE_ROOM_MODE=open` and `LIVE_ROOM_PEER_VERIFY_CMD=./scripts/local_room_peer_verify.sh`.
 - The default local verifier is strict: it checks room health, launches an announced peer that serves bridged record refs over a real `tunnel.connect` duplex stream, and requires a separate second peer to read that tunnel snapshot and validate expected bridged URIs/refs.
 

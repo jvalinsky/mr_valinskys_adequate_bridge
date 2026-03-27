@@ -18,6 +18,13 @@ The stack is intended for local bridge validation where public services must not
 
 `scripts/local_room_peer_verify.sh` is the default strict verifier used by local live E2E. It checks room health, starts an announced peer that serves bridged record refs over a real room `tunnel.connect` stream, and requires a separate second peer to read/validate expected bridged URIs through that tunnel.
 
+`scripts/local_atproto_bootstrap.sh` writes both legacy and per-account credential variables into the generated env file, including:
+- `LIVE_ATPROTO_SOURCE_IDENTIFIER`
+- `LIVE_ATPROTO_SOURCE_APP_PASSWORD`
+- `LIVE_ATPROTO_TARGET_IDENTIFIER`
+- `LIVE_ATPROTO_TARGET_APP_PASSWORD`
+- `LIVE_ATPROTO_FOLLOW_TARGET_DID`
+
 ## Data Directory
 
 Container state defaults to `/tmp/mvab-local-atproto` and can be overridden:

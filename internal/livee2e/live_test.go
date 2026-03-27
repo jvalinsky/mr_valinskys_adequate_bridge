@@ -1,8 +1,10 @@
 package livee2e
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -20,14 +22,15 @@ import (
 )
 
 func TestBridgeLiveInterop(t *testing.T) {
-	if os.Getenv("LIVE_E2E_ENABLED") != "1" {
-		t.Skip("set LIVE_E2E_ENABLED=1 to run live relay/room interoperability test")
+	if !liveE2EEnabled(os.Getenv) {
+		t.Skip("set LIVE_E2E_ENABLED=1 (or provide it via LIVE_ATPROTO_ENV_FILE/LIVE_ATPROTO_CONFIG_FILE) to run live relay/room interoperability test")
 	}
 
 	host := strings.TrimSpace(getEnvDefault("LIVE_ATPROTO_HOST", "https://bsky.social"))
-	identifier := requireEnv(t, "LIVE_ATPROTO_IDENTIFIER")
-	password := requireEnv(t, "LIVE_ATPROTO_PASSWORD")
-	targetDID := requireEnv(t, "LIVE_ATPROTO_FOLLOW_TARGET_DID")
+	authCfg, err := resolveLiveAuthConfig(os.Getenv)
+	if err != nil {
+		t.Fatalf("resolve live auth config: %v", err)
+	}
 	peerVerifyCmd := requireEnv(t, "LIVE_ROOM_PEER_VERIFY_CMD")
 	relayURL := strings.TrimSpace(getEnvDefault("LIVE_RELAY_URL", "wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos"))
 	seed := strings.TrimSpace(getEnvDefault("LIVE_BRIDGE_BOT_SEED", "live-e2e-seed-change-me"))
@@ -42,10 +45,7 @@ func TestBridgeLiveInterop(t *testing.T) {
 	defer cancel()
 
 	xrpcc := &xrpc.Client{Host: strings.TrimRight(host, "/")}
-	session, err := atproto.ServerCreateSession(ctx, xrpcc, &atproto.ServerCreateSession_Input{
-		Identifier: identifier,
-		Password:   password,
-	})
+	session, err := createSession(ctx, xrpcc, authCfg.SourceIdentifier, authCfg.SourceAppPassword)
 	if err != nil {
 		t.Fatalf("create atproto session: %v", err)
 	}
@@ -55,6 +55,18 @@ func TestBridgeLiveInterop(t *testing.T) {
 		RefreshJwt: session.RefreshJwt,
 		Did:        session.Did,
 		Handle:     session.Handle,
+	}
+	targetDID := authCfg.FollowTargetDID
+	if targetDID == "" {
+		targetClient := &xrpc.Client{Host: strings.TrimRight(host, "/")}
+		targetSession, err := createSession(ctx, targetClient, authCfg.TargetIdentifier, authCfg.TargetAppPassword)
+		if err != nil {
+			t.Fatalf("derive follow target DID via target app-password session: %v", err)
+		}
+		targetDID = strings.TrimSpace(targetSession.Did)
+		if targetDID == "" {
+			t.Fatalf("derive follow target DID via target app-password session: session did is empty")
+		}
 	}
 
 	tempDir := t.TempDir()
@@ -159,6 +171,154 @@ func TestBridgeLiveInterop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("peer verification failed: %v\noutput:\n%s\nbridge logs:\n%s", err, string(verifyOut), summarizeLogs(bridgeLogs.String()))
 	}
+}
+
+type liveAuthConfig struct {
+	SourceIdentifier  string
+	SourceAppPassword string
+	TargetIdentifier  string
+	TargetAppPassword string
+	FollowTargetDID   string
+	ConfigPath        string
+}
+
+func resolveLiveAuthConfig(getenv func(string) string) (liveAuthConfig, error) {
+	cfgPath := getConfigPath(getenv)
+
+	fileValues := map[string]string{}
+	if cfgPath != "" {
+		var err error
+		fileValues, err = parseShellEnvFile(cfgPath)
+		if err != nil {
+			return liveAuthConfig{}, fmt.Errorf("parse %s: %w", cfgPath, err)
+		}
+	}
+
+	lookup := func(key string) string {
+		if val := strings.TrimSpace(getenv(key)); val != "" {
+			return val
+		}
+		return strings.TrimSpace(fileValues[key])
+	}
+
+	cfg := liveAuthConfig{
+		ConfigPath: cfgPath,
+		SourceIdentifier: firstNonEmpty(
+			lookup("LIVE_ATPROTO_SOURCE_IDENTIFIER"),
+			lookup("LIVE_ATPROTO_IDENTIFIER"),
+		),
+		SourceAppPassword: firstNonEmpty(
+			lookup("LIVE_ATPROTO_SOURCE_APP_PASSWORD"),
+			lookup("LIVE_ATPROTO_PASSWORD"),
+		),
+		TargetIdentifier: firstNonEmpty(
+			lookup("LIVE_ATPROTO_TARGET_IDENTIFIER"),
+		),
+		TargetAppPassword: firstNonEmpty(
+			lookup("LIVE_ATPROTO_TARGET_APP_PASSWORD"),
+		),
+		FollowTargetDID: firstNonEmpty(
+			lookup("LIVE_ATPROTO_FOLLOW_TARGET_DID"),
+			lookup("LIVE_ATPROTO_TARGET_DID"),
+		),
+	}
+
+	if cfg.SourceIdentifier == "" {
+		return liveAuthConfig{}, errors.New("missing source identifier: set LIVE_ATPROTO_SOURCE_IDENTIFIER (or legacy LIVE_ATPROTO_IDENTIFIER)")
+	}
+	if cfg.SourceAppPassword == "" {
+		return liveAuthConfig{}, errors.New("missing source app password: set LIVE_ATPROTO_SOURCE_APP_PASSWORD (or legacy LIVE_ATPROTO_PASSWORD)")
+	}
+	if cfg.FollowTargetDID == "" && (cfg.TargetIdentifier == "" || cfg.TargetAppPassword == "") {
+		return liveAuthConfig{}, errors.New("missing follow target auth: set LIVE_ATPROTO_FOLLOW_TARGET_DID or both LIVE_ATPROTO_TARGET_IDENTIFIER and LIVE_ATPROTO_TARGET_APP_PASSWORD")
+	}
+
+	return cfg, nil
+}
+
+func liveE2EEnabled(getenv func(string) string) bool {
+	if strings.TrimSpace(getenv("LIVE_E2E_ENABLED")) == "1" {
+		return true
+	}
+
+	cfgPath := getConfigPath(getenv)
+	if cfgPath == "" {
+		return false
+	}
+	values, err := parseShellEnvFile(cfgPath)
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(values["LIVE_E2E_ENABLED"]) == "1"
+}
+
+func getConfigPath(getenv func(string) string) string {
+	return strings.TrimSpace(firstNonEmpty(
+		getenv("LIVE_ATPROTO_CONFIG_FILE"),
+		getenv("LIVE_ATPROTO_ENV_FILE"),
+	))
+}
+
+func parseShellEnvFile(path string) (map[string]string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	values := make(map[string]string)
+	scanner := bufio.NewScanner(f)
+	lineNum := 0
+	for scanner.Scan() {
+		lineNum++
+		raw := strings.TrimSpace(scanner.Text())
+		if raw == "" || strings.HasPrefix(raw, "#") {
+			continue
+		}
+		raw = strings.TrimPrefix(raw, "export ")
+		key, val, ok := strings.Cut(raw, "=")
+		if !ok {
+			return nil, fmt.Errorf("line %d: expected KEY=VALUE", lineNum)
+		}
+		key = strings.TrimSpace(key)
+		val = strings.TrimSpace(val)
+		if key == "" {
+			return nil, fmt.Errorf("line %d: empty key", lineNum)
+		}
+		values[key] = trimOptionalMatchingQuotes(val)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return values, nil
+}
+
+func trimOptionalMatchingQuotes(raw string) string {
+	if len(raw) < 2 {
+		return raw
+	}
+	first := raw[0]
+	last := raw[len(raw)-1]
+	if (first == '\'' && last == '\'') || (first == '"' && last == '"') {
+		return raw[1 : len(raw)-1]
+	}
+	return raw
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if trimmed := strings.TrimSpace(v); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func createSession(ctx context.Context, xrpcc *xrpc.Client, identifier, password string) (*atproto.ServerCreateSession_Output, error) {
+	return atproto.ServerCreateSession(ctx, xrpcc, &atproto.ServerCreateSession_Input{
+		Identifier: identifier,
+		Password:   password,
+	})
 }
 
 func runBridgeCommand(ctx context.Context, t *testing.T, moduleRoot, label string, args []string) {
