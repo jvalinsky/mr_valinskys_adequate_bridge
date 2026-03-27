@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -41,5 +42,23 @@ func TestFirehoseClient(t *testing.T) {
 		t.Log("Warning: No commits received in 5 seconds")
 	} else {
 		t.Logf("Received %d commits", handler.commits)
+	}
+}
+
+func TestClientStreamURLWithCursor(t *testing.T) {
+	handler := &mockHandler{}
+	client := NewClient(
+		"wss://example.com/xrpc/com.atproto.sync.subscribeRepos",
+		handler,
+		log.New(os.Stdout, "", 0),
+		WithCursor(1234),
+	)
+
+	u, err := client.streamURL()
+	if err != nil {
+		t.Fatalf("streamURL: %v", err)
+	}
+	if !strings.Contains(u, "cursor=1234") {
+		t.Fatalf("expected cursor query in URL, got %s", u)
 	}
 }

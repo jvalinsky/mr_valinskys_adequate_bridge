@@ -2,15 +2,41 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
+	"net/http"
+	"net/url"
 	"os"
+	"os/signal"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
 
+	"github.com/bluesky-social/indigo/xrpc"
+	"github.com/go-chi/chi/v5"
+	"github.com/mr_valinskys_adequate_bridge/internal/backfill"
+	"github.com/mr_valinskys_adequate_bridge/internal/blobbridge"
+	"github.com/mr_valinskys_adequate_bridge/internal/bots"
+	"github.com/mr_valinskys_adequate_bridge/internal/bridge"
 	"github.com/mr_valinskys_adequate_bridge/internal/db"
+	"github.com/mr_valinskys_adequate_bridge/internal/firehose"
+	"github.com/mr_valinskys_adequate_bridge/internal/publishqueue"
+	"github.com/mr_valinskys_adequate_bridge/internal/room"
+	"github.com/mr_valinskys_adequate_bridge/internal/ssbruntime"
+	"github.com/mr_valinskys_adequate_bridge/internal/web/handlers"
+	websecurity "github.com/mr_valinskys_adequate_bridge/internal/web/security"
 	"github.com/urfave/cli/v2"
 )
 
-var dbPath string
+var (
+	dbPath   string
+	relayURL string
+	botSeed  string
+)
 
 func main() {
 	app := &cli.App{
@@ -22,6 +48,19 @@ func main() {
 				Value:       "bridge.sqlite",
 				Usage:       "path to the sqlite database",
 				Destination: &dbPath,
+			},
+			&cli.StringFlag{
+				Name:        "relay-url",
+				Value:       "wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos",
+				Usage:       "ATProto subscribeRepos endpoint",
+				Destination: &relayURL,
+			},
+			&cli.StringFlag{
+				Name:        "bot-seed",
+				Value:       "dev-insecure-seed-change-me",
+				EnvVars:     []string{"BRIDGE_BOT_SEED"},
+				Usage:       "seed used for deterministic AT DID -> SSB feed derivation",
+				Destination: &botSeed,
 			},
 		},
 		Commands: []*cli.Command{
@@ -71,11 +110,15 @@ func main() {
 							}
 							defer database.Close()
 
-							// TODO: integrate with bot manager to derive actual SSB Feed ID
-							// For now, use a placeholder
+							manager := bots.NewManager([]byte(botSeed), nil, nil, nil)
+							feedRef, err := manager.GetFeedID(did)
+							if err != nil {
+								return fmt.Errorf("derive feed id: %w", err)
+							}
+
 							acc := db.BridgedAccount{
 								ATDID:     did,
-								SSBFeedID: "@placeholder.ed25519",
+								SSBFeedID: feedRef.Ref(),
 								Active:    true,
 							}
 
@@ -126,18 +169,511 @@ func main() {
 				Name:  "stats",
 				Usage: "Show bridge statistics",
 				Action: func(c *cli.Context) error {
-					fmt.Println("Stats: Not implemented yet")
+					database, err := db.Open(dbPath)
+					if err != nil {
+						return err
+					}
+					defer database.Close()
+
+					totalAccounts, err := database.CountBridgedAccounts(c.Context)
+					if err != nil {
+						return err
+					}
+
+					activeAccounts, err := database.CountActiveBridgedAccounts(c.Context)
+					if err != nil {
+						return err
+					}
+
+					totalMessages, err := database.CountMessages(c.Context)
+					if err != nil {
+						return err
+					}
+
+					publishedMessages, err := database.CountPublishedMessages(c.Context)
+					if err != nil {
+						return err
+					}
+
+					publishFailures, err := database.CountPublishFailures(c.Context)
+					if err != nil {
+						return err
+					}
+
+					totalBlobs, err := database.CountBlobs(c.Context)
+					if err != nil {
+						return err
+					}
+
+					cursorVal, _, err := database.GetBridgeState(c.Context, "firehose_seq")
+					if err != nil {
+						return err
+					}
+
+					fmt.Printf("Bridge stats\n")
+					fmt.Printf("- Accounts: %d total (%d active)\n", totalAccounts, activeAccounts)
+					fmt.Printf("- Messages bridged: %d\n", totalMessages)
+					fmt.Printf("- Messages published: %d\n", publishedMessages)
+					fmt.Printf("- Publish failures: %d\n", publishFailures)
+					fmt.Printf("- Blobs bridged: %d\n", totalBlobs)
+					if cursorVal != "" {
+						fmt.Printf("- Firehose cursor: %s\n", cursorVal)
+					}
 					return nil
 				},
 			},
 			{
 				Name:  "start",
 				Usage: "Start the bridge engine",
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:  "ssb-repo-path",
+						Value: ".ssb-bridge",
+						Usage: "path to SSB repo used for deterministic publishing and blobs",
+					},
+					&cli.StringFlag{
+						Name:  "hmac-key",
+						Usage: "optional 32-byte HMAC key (base64, hex, or raw) for SSB message signing",
+					},
+					&cli.IntFlag{
+						Name:  "publish-workers",
+						Value: 1,
+						Usage: "publish worker count (default 1 keeps deterministic ordering)",
+					},
+					&cli.BoolFlag{
+						Name:  "room-enable",
+						Value: true,
+						Usage: "start embedded room runtime alongside bridge processor",
+					},
+					&cli.StringFlag{
+						Name:  "room-listen-addr",
+						Value: "127.0.0.1:8989",
+						Usage: "Room2 muxrpc listen address",
+					},
+					&cli.StringFlag{
+						Name:  "room-http-listen-addr",
+						Value: "127.0.0.1:8976",
+						Usage: "Room2 HTTP interface listen address",
+					},
+					&cli.StringFlag{
+						Name:  "room-repo-path",
+						Value: ".ssb-room",
+						Usage: "path to go-ssb-room runtime repository",
+					},
+					&cli.StringFlag{
+						Name:  "room-mode",
+						Value: "community",
+						Usage: "Room2 mode: open|community|restricted",
+					},
+					&cli.StringFlag{
+						Name:  "room-https-domain",
+						Usage: "Room2 HTTPS domain (required for non-loopback room exposure)",
+					},
+					&cli.StringFlag{
+						Name:  "xrpc-host",
+						Usage: "optional ATProto XRPC host for blob fetches (derived from relay-url when omitted)",
+					},
+				},
 				Action: func(c *cli.Context) error {
+					database, err := db.Open(dbPath)
+					if err != nil {
+						return err
+					}
+					defer database.Close()
+
+					bridgeLogger := log.New(os.Stdout, "bridge: ", log.LstdFlags)
+					firehoseLogger := log.New(os.Stdout, "firehose: ", log.LstdFlags)
+					roomLogger := log.New(os.Stdout, "room: ", log.LstdFlags)
+
+					hmacKey, err := parseHMACKey(c.String("hmac-key"))
+					if err != nil {
+						return err
+					}
+
+					ssbRuntime, err := ssbruntime.Open(c.String("ssb-repo-path"), []byte(botSeed), hmacKey, bridgeLogger)
+					if err != nil {
+						return fmt.Errorf("init ssb runtime: %w", err)
+					}
+
+					xrpcHost, err := resolveXRPCHost(c.String("xrpc-host"), relayURL)
+					if err != nil {
+						_ = ssbRuntime.Close()
+						return err
+					}
+					xrpcClient := &xrpc.Client{Host: xrpcHost}
+
+					workerPublisher := publishqueue.New(ssbRuntime, c.Int("publish-workers"), bridgeLogger)
+					defer workerPublisher.Close()
+
+					blobBridge := blobbridge.New(database, ssbRuntime.BlobStore(), xrpcClient, bridgeLogger)
+					processor := bridge.NewProcessor(
+						database,
+						bridgeLogger,
+						bridge.WithPublisher(workerPublisher),
+						bridge.WithBlobBridge(blobBridge),
+					)
+
+					firehoseOpts := []firehose.ClientOption{}
+					if cursor, ok, err := readFirehoseCursor(c.Context, database); err != nil {
+						_ = ssbRuntime.Close()
+						return err
+					} else if ok {
+						firehoseOpts = append(firehoseOpts, firehose.WithCursor(cursor))
+						bridgeLogger.Printf("event=cursor_resume seq=%d", cursor)
+					}
+
+					ctx, stop := signal.NotifyContext(c.Context, os.Interrupt, syscall.SIGTERM)
+					defer stop()
+					runCtx, cancelRun := context.WithCancel(ctx)
+					defer cancelRun()
+
+					var roomRuntime *room.Runtime
+					if c.Bool("room-enable") {
+						roomRuntime, err = room.Start(runCtx, room.Config{
+							ListenAddr:     c.String("room-listen-addr"),
+							HTTPListenAddr: c.String("room-http-listen-addr"),
+							RepoPath:       c.String("room-repo-path"),
+							Mode:           c.String("room-mode"),
+							HTTPSDomain:    c.String("room-https-domain"),
+						}, roomLogger)
+						if err != nil {
+							_ = ssbRuntime.Close()
+							return fmt.Errorf("start room runtime: %w", err)
+						}
+						bridgeLogger.Printf(
+							"event=room_enabled muxrpc_addr=%s http_addr=%s mode=%s",
+							roomRuntime.Addr(),
+							roomRuntime.HTTPAddr(),
+							strings.ToLower(c.String("room-mode")),
+						)
+					}
+
+					client := firehose.NewClient(relayURL, processor, firehoseLogger, firehoseOpts...)
+					errCh := make(chan error, 1)
+					go func() {
+						errCh <- client.Run(runCtx)
+					}()
+
+					go runRetryScheduler(runCtx, processor, bridgeLogger)
+
 					fmt.Println("Starting bridge engine...")
-					// TODO: wire up firehose client, mapper, and bot manager
-					<-c.Context.Done()
+					var runErr error
+					firehoseDone := false
+					select {
+					case <-ctx.Done():
+						cancelRun()
+					case err := <-errCh:
+						firehoseDone = true
+						if err != nil && !errors.Is(err, context.Canceled) {
+							runErr = err
+						}
+						cancelRun()
+					}
+
+					if !firehoseDone {
+						select {
+						case err := <-errCh:
+							if err != nil && !errors.Is(err, context.Canceled) && runErr == nil {
+								runErr = err
+							}
+						case <-time.After(5 * time.Second):
+							bridgeLogger.Printf("event=firehose_shutdown_timeout timeout=5s")
+						}
+					}
+
+					var shutdownErr error
+					if roomRuntime != nil {
+						if err := roomRuntime.Close(); err != nil {
+							shutdownErr = errors.Join(shutdownErr, fmt.Errorf("shutdown room runtime: %w", err))
+						}
+					}
+					if err := ssbRuntime.Close(); err != nil {
+						shutdownErr = errors.Join(shutdownErr, fmt.Errorf("close ssb runtime: %w", err))
+					}
+
+					return errors.Join(runErr, shutdownErr)
+				},
+			},
+			{
+				Name:  "backfill",
+				Usage: "Backfill supported records for one or more DIDs using sync.getRepo",
+				Flags: []cli.Flag{
+					&cli.StringSliceFlag{
+						Name:  "did",
+						Usage: "DID to backfill (repeatable)",
+					},
+					&cli.BoolFlag{
+						Name:  "active-accounts",
+						Usage: "backfill all currently active bridged accounts from the local DB",
+					},
+					&cli.StringFlag{
+						Name:  "since",
+						Usage: "timestamp or sequence marker for filtering (timestamp filtering is applied when available)",
+					},
+					&cli.StringFlag{
+						Name:  "xrpc-host",
+						Usage: "optional ATProto XRPC host (derived from relay-url when omitted)",
+					},
+					&cli.StringFlag{
+						Name:  "ssb-repo-path",
+						Value: ".ssb-bridge",
+						Usage: "path to SSB repo used for deterministic publishing and blobs",
+					},
+					&cli.StringFlag{
+						Name:  "hmac-key",
+						Usage: "optional 32-byte HMAC key (base64, hex, or raw) for SSB message signing",
+					},
+					&cli.IntFlag{
+						Name:  "publish-workers",
+						Value: 1,
+						Usage: "publish worker count (default 1 keeps deterministic ordering)",
+					},
+				},
+				Action: func(c *cli.Context) error {
+					database, err := db.Open(dbPath)
+					if err != nil {
+						return err
+					}
+					defer database.Close()
+
+					bridgeLogger := log.New(os.Stdout, "bridge: ", log.LstdFlags)
+
+					dids := append([]string{}, c.StringSlice("did")...)
+					if c.Bool("active-accounts") {
+						accounts, err := database.GetAllBridgedAccounts(c.Context)
+						if err != nil {
+							return err
+						}
+						for _, account := range accounts {
+							if account.Active {
+								dids = append(dids, account.ATDID)
+							}
+						}
+					}
+					dids = dedupeStrings(dids)
+					if len(dids) == 0 {
+						return fmt.Errorf("backfill requires at least one --did or --active-accounts")
+					}
+
+					hmacKey, err := parseHMACKey(c.String("hmac-key"))
+					if err != nil {
+						return err
+					}
+
+					ssbRuntime, err := ssbruntime.Open(c.String("ssb-repo-path"), []byte(botSeed), hmacKey, bridgeLogger)
+					if err != nil {
+						return fmt.Errorf("init ssb runtime: %w", err)
+					}
+					defer ssbRuntime.Close()
+
+					xrpcHost, err := resolveXRPCHost(c.String("xrpc-host"), relayURL)
+					if err != nil {
+						return err
+					}
+					xrpcClient := &xrpc.Client{Host: xrpcHost}
+
+					workerPublisher := publishqueue.New(ssbRuntime, c.Int("publish-workers"), bridgeLogger)
+					defer workerPublisher.Close()
+
+					blobBridge := blobbridge.New(database, ssbRuntime.BlobStore(), xrpcClient, bridgeLogger)
+					processor := bridge.NewProcessor(
+						database,
+						bridgeLogger,
+						bridge.WithPublisher(workerPublisher),
+						bridge.WithBlobBridge(blobBridge),
+					)
+
+					sinceFilter, err := backfill.ParseSince(c.String("since"))
+					if err != nil {
+						return err
+					}
+
+					total := backfill.Stats{}
+					for _, did := range dids {
+						stats, err := backfill.RunForDID(c.Context, xrpcClient, did, sinceFilter, processor, bridgeLogger)
+						if err != nil {
+							return err
+						}
+						total.Processed += stats.Processed
+						total.Skipped += stats.Skipped
+						total.Errors += stats.Errors
+					}
+
+					fmt.Printf("Backfill complete: dids=%d processed=%d skipped=%d errors=%d\n", len(dids), total.Processed, total.Skipped, total.Errors)
 					return nil
+				},
+			},
+			{
+				Name:  "retry-failures",
+				Usage: "Retry failed unpublished bridge messages",
+				Flags: []cli.Flag{
+					&cli.IntFlag{
+						Name:  "limit",
+						Value: 100,
+						Usage: "maximum number of candidate failures to inspect",
+					},
+					&cli.StringFlag{
+						Name:  "did",
+						Usage: "optional DID filter for retries",
+					},
+					&cli.IntFlag{
+						Name:  "max-attempts",
+						Value: 8,
+						Usage: "maximum publish attempts before a record is excluded from retries",
+					},
+					&cli.DurationFlag{
+						Name:  "base-backoff",
+						Value: 5 * time.Second,
+						Usage: "base retry backoff duration (doubles per attempt)",
+					},
+					&cli.StringFlag{
+						Name:  "ssb-repo-path",
+						Value: ".ssb-bridge",
+						Usage: "path to SSB repo used for deterministic publishing",
+					},
+					&cli.StringFlag{
+						Name:  "hmac-key",
+						Usage: "optional 32-byte HMAC key (base64, hex, or raw) for SSB message signing",
+					},
+					&cli.IntFlag{
+						Name:  "publish-workers",
+						Value: 1,
+						Usage: "publish worker count",
+					},
+				},
+				Action: func(c *cli.Context) error {
+					database, err := db.Open(dbPath)
+					if err != nil {
+						return err
+					}
+					defer database.Close()
+
+					bridgeLogger := log.New(os.Stdout, "bridge: ", log.LstdFlags)
+
+					hmacKey, err := parseHMACKey(c.String("hmac-key"))
+					if err != nil {
+						return err
+					}
+
+					ssbRuntime, err := ssbruntime.Open(c.String("ssb-repo-path"), []byte(botSeed), hmacKey, bridgeLogger)
+					if err != nil {
+						return fmt.Errorf("init ssb runtime: %w", err)
+					}
+					defer ssbRuntime.Close()
+
+					workerPublisher := publishqueue.New(ssbRuntime, c.Int("publish-workers"), bridgeLogger)
+					defer workerPublisher.Close()
+
+					processor := bridge.NewProcessor(
+						database,
+						bridgeLogger,
+						bridge.WithPublisher(workerPublisher),
+					)
+
+					result, err := processor.RetryFailedMessages(c.Context, bridge.RetryConfig{
+						Limit:       c.Int("limit"),
+						ATDID:       c.String("did"),
+						MaxAttempts: c.Int("max-attempts"),
+						BaseBackoff: c.Duration("base-backoff"),
+					})
+					if err != nil {
+						return err
+					}
+
+					fmt.Printf(
+						"Retry complete: selected=%d attempted=%d published=%d failed=%d deferred=%d\n",
+						result.Selected,
+						result.Attempted,
+						result.Published,
+						result.Failed,
+						result.Deferred,
+					)
+					return nil
+				},
+			},
+			{
+				Name:  "serve-ui",
+				Usage: "Run the bridge admin web UI",
+				Flags: []cli.Flag{
+					&cli.StringFlag{
+						Name:  "listen-addr",
+						Value: "127.0.0.1:8080",
+						Usage: "listen address for the web admin UI",
+					},
+					&cli.StringFlag{
+						Name:  "ui-auth-user",
+						Usage: "HTTP Basic auth username for the admin UI",
+					},
+					&cli.StringFlag{
+						Name:  "ui-auth-pass-env",
+						Usage: "environment variable containing HTTP Basic auth password for the admin UI",
+					},
+				},
+				Action: func(c *cli.Context) error {
+					database, err := db.Open(dbPath)
+					if err != nil {
+						return err
+					}
+					defer database.Close()
+
+					listenAddr := c.String("listen-addr")
+					authUser := strings.TrimSpace(c.String("ui-auth-user"))
+					authPassEnv := strings.TrimSpace(c.String("ui-auth-pass-env"))
+					authPass := ""
+					if authPassEnv != "" {
+						authPass = os.Getenv(authPassEnv)
+						if strings.TrimSpace(authPass) == "" {
+							return fmt.Errorf("ui auth password env %q is empty or unset", authPassEnv)
+						}
+					}
+
+					if authUser == "" && authPassEnv != "" {
+						return fmt.Errorf("--ui-auth-user is required when --ui-auth-pass-env is set")
+					}
+					if authUser != "" && authPassEnv == "" {
+						return fmt.Errorf("--ui-auth-pass-env is required when --ui-auth-user is set")
+					}
+
+					authConfigured := authUser != "" && authPass != ""
+					if websecurity.RequireAuthForBind(listenAddr) && !authConfigured {
+						return fmt.Errorf("refusing to serve UI on non-loopback address %q without auth; configure --ui-auth-user and --ui-auth-pass-env", listenAddr)
+					}
+
+					uiLogger := log.New(os.Stdout, "ui: ", log.LstdFlags)
+					r := chi.NewRouter()
+					r.Use(websecurity.RequestLogMiddleware(uiLogger))
+					if authConfigured {
+						r.Use(websecurity.BasicAuthMiddleware(authUser, authPass))
+					}
+
+					ui := handlers.NewUIHandler(database)
+					ui.Mount(r)
+
+					server := &http.Server{
+						Addr:    listenAddr,
+						Handler: r,
+					}
+
+					ctx, stop := signal.NotifyContext(c.Context, os.Interrupt, syscall.SIGTERM)
+					defer stop()
+
+					errCh := make(chan error, 1)
+					go func() {
+						errCh <- server.ListenAndServe()
+					}()
+
+					fmt.Printf("Serving UI at http://%s (auth=%t)\n", listenAddr, authConfigured)
+					select {
+					case <-ctx.Done():
+						shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+						defer cancel()
+						return server.Shutdown(shutdownCtx)
+					case err := <-errCh:
+						if err != nil && !errors.Is(err, http.ErrServerClosed) {
+							return err
+						}
+						return nil
+					}
 				},
 			},
 		},
@@ -145,5 +681,133 @@ func main() {
 
 	if err := app.RunContext(context.Background(), os.Args); err != nil {
 		log.Fatal(err)
+	}
+}
+
+func parseHMACKey(raw string) (*[32]byte, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+
+	decoders := []func(string) ([]byte, error){
+		base64.StdEncoding.DecodeString,
+		hex.DecodeString,
+	}
+
+	for _, decode := range decoders {
+		b, err := decode(raw)
+		if err != nil {
+			continue
+		}
+		if len(b) == 32 {
+			var key [32]byte
+			copy(key[:], b)
+			return &key, nil
+		}
+	}
+
+	if len(raw) == 32 {
+		var key [32]byte
+		copy(key[:], []byte(raw))
+		return &key, nil
+	}
+
+	return nil, fmt.Errorf("hmac key must decode to 32 bytes")
+}
+
+func resolveXRPCHost(explicitHost, relay string) (string, error) {
+	if explicitHost != "" {
+		return strings.TrimRight(explicitHost, "/"), nil
+	}
+
+	if relay == "" {
+		relay = "wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos"
+	}
+	u, err := url.Parse(relay)
+	if err != nil {
+		return "", fmt.Errorf("parse relay URL %q: %w", relay, err)
+	}
+
+	scheme := "https"
+	switch u.Scheme {
+	case "ws":
+		scheme = "http"
+	case "wss":
+		scheme = "https"
+	case "http", "https":
+		scheme = u.Scheme
+	}
+	if u.Host == "" {
+		return "", fmt.Errorf("relay URL missing host: %q", relay)
+	}
+	return fmt.Sprintf("%s://%s", scheme, u.Host), nil
+}
+
+func readFirehoseCursor(ctx context.Context, database *db.DB) (int64, bool, error) {
+	value, ok, err := database.GetBridgeState(ctx, "firehose_seq")
+	if err != nil || !ok || strings.TrimSpace(value) == "" {
+		return 0, ok, err
+	}
+	seq, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	if err != nil {
+		return 0, false, fmt.Errorf("parse firehose_seq state %q: %w", value, err)
+	}
+	return seq, true, nil
+}
+
+func dedupeStrings(in []string) []string {
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, v := range in {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	return out
+}
+
+func runRetryScheduler(ctx context.Context, processor *bridge.Processor, logger *log.Logger) {
+	if processor == nil {
+		return
+	}
+	if logger == nil {
+		logger = log.New(os.Stdout, "bridge: ", log.LstdFlags)
+	}
+
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			result, err := processor.RetryFailedMessages(ctx, bridge.RetryConfig{
+				Limit:       100,
+				MaxAttempts: 8,
+				BaseBackoff: 5 * time.Second,
+			})
+			if err != nil {
+				logger.Printf("event=retry_scheduler_error err=%v", err)
+				continue
+			}
+			if result.Attempted > 0 || result.Deferred > 0 || result.Failed > 0 {
+				logger.Printf(
+					"event=retry_scheduler selected=%d attempted=%d published=%d failed=%d deferred=%d",
+					result.Selected,
+					result.Attempted,
+					result.Published,
+					result.Failed,
+					result.Deferred,
+				)
+			}
+		}
 	}
 }

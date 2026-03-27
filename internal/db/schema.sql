@@ -15,6 +15,10 @@ CREATE TABLE IF NOT EXISTS messages (
     type TEXT NOT NULL,
     raw_at_json TEXT,
     raw_ssb_json TEXT,
+    published_at DATETIME,
+    publish_error TEXT,
+    publish_attempts INTEGER NOT NULL DEFAULT 0,
+    last_publish_attempt_at DATETIME,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(at_did) REFERENCES bridged_accounts(at_did)
 );
@@ -28,4 +32,10 @@ CREATE TABLE IF NOT EXISTS blobs (
     size INTEGER,
     mime_type TEXT,
     downloaded_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS bridge_state (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );

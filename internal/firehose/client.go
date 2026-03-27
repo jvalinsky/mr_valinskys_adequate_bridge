@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
+	"strconv"
 
 	"github.com/bluesky-social/indigo/api/atproto"
 	"github.com/bluesky-social/indigo/events"
@@ -23,24 +25,41 @@ type Client struct {
 	handler  EventHandler
 	logger   *log.Logger
 	dialer   *websocket.Dialer
+	cursor   *int64
 }
 
-func NewClient(relayURL string, handler EventHandler, logger *log.Logger) *Client {
+type ClientOption func(*Client)
+
+func WithCursor(cursor int64) ClientOption {
+	return func(c *Client) {
+		c.cursor = &cursor
+	}
+}
+
+func NewClient(relayURL string, handler EventHandler, logger *log.Logger, opts ...ClientOption) *Client {
 	if relayURL == "" {
 		relayURL = "wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos"
 	}
-	return &Client{
+	client := &Client{
 		relayURL: relayURL,
 		handler:  handler,
 		logger:   logger,
 		dialer:   websocket.DefaultDialer,
 	}
+	for _, opt := range opts {
+		opt(client)
+	}
+	return client
 }
 
 func (c *Client) Run(ctx context.Context) error {
-	c.logger.Printf("Connecting to ATProto firehose at %s", c.relayURL)
+	streamURL, err := c.streamURL()
+	if err != nil {
+		return fmt.Errorf("build stream URL: %w", err)
+	}
+	c.logger.Printf("Connecting to ATProto firehose at %s", streamURL)
 
-	con, _, err := c.dialer.DialContext(ctx, c.relayURL, http.Header{})
+	con, _, err := c.dialer.DialContext(ctx, streamURL, http.Header{})
 	if err != nil {
 		return fmt.Errorf("failed to dial: %w", err)
 	}
@@ -67,6 +86,22 @@ func (c *Client) Run(ctx context.Context) error {
 
 	sched := sequential.NewScheduler("firehose", callbacks.EventHandler)
 	return events.HandleRepoStream(ctx, con, sched, nil)
+}
+
+func (c *Client) streamURL() (string, error) {
+	if c.cursor == nil || *c.cursor <= 0 {
+		return c.relayURL, nil
+	}
+
+	parsed, err := url.Parse(c.relayURL)
+	if err != nil {
+		return "", err
+	}
+
+	query := parsed.Query()
+	query.Set("cursor", strconv.FormatInt(*c.cursor, 10))
+	parsed.RawQuery = query.Encode()
+	return parsed.String(), nil
 }
 
 // ParseCommit is a helper to parse the CAR blocks inside a commit
