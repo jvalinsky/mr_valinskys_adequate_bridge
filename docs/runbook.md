@@ -216,6 +216,17 @@ Notes:
 - Local run defaults `LIVE_ROOM_MODE=open` and `LIVE_ROOM_PEER_VERIFY_CMD=./scripts/local_room_peer_verify.sh`.
 - The default local verifier is strict: it checks room health, launches an announced peer that serves bridged record refs over a real `tunnel.connect` duplex stream, and requires a separate second peer to read that tunnel snapshot and validate expected bridged URIs/refs.
 
+## ATProto Harness Profiles
+Use `./scripts/atproto_harness_e2e.sh mini` for the existing fully local harness flow, or `./scripts/atproto_harness_e2e.sh testnet` for a verdverm/testnet-backed stack.
+
+Testnet profile defaults:
+- `TESTNET_REPO_URL=https://github.com/verdverm/testnet`
+- `TESTNET_REF=7e862f5`
+- `TESTNET_DIR=/tmp/mvab-testnet`
+- `TESTNET_PROJECT_NAME=mvab-testnet`
+
+The testnet profile is additive operator tooling only. It does not change the current prerelease workflow or the default strict room-peer verifier policy.
+
 ## Go Documentation Maintenance
 - Write package comments and exported declaration comments so `go doc` output stays useful.
 - Start declaration comments with the declaration name (or `A`/`An` + type name) and use complete sentences.

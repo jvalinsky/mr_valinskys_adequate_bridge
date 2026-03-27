@@ -1,0 +1,26 @@
+name: Bridge Harness Testnet Smoke
+
+on:
+  workflow_dispatch:
+
+jobs:
+  testnet-harness:
+    name: Bring Up Testnet Harness
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Bring up testnet harness
+        run: ./scripts/testnet_atproto_up.sh
+
+      - name: Validate testnet harness readiness
+        run: ./scripts/testnet_atproto_wait.sh
+
+      - name: Tear down testnet harness
+        if: always()
+        run: ./scripts/testnet_atproto_down.sh
