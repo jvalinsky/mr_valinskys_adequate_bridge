@@ -1,3 +1,4 @@
+// Package handlers wires HTTP routes for the bridge admin UI.
 package handlers
 
 import (
@@ -8,11 +9,13 @@ import (
 	"github.com/mr_valinskys_adequate_bridge/internal/web/templates"
 )
 
+// UIHandler serves admin pages backed by bridge database state.
 type UIHandler struct {
 	db     *db.DB
 	active bool
 }
 
+// NewUIHandler creates a UIHandler bound to database.
 func NewUIHandler(database *db.DB) *UIHandler {
 	return &UIHandler{
 		db:     database,
@@ -20,6 +23,7 @@ func NewUIHandler(database *db.DB) *UIHandler {
 	}
 }
 
+// Mount registers admin UI routes on r.
 func (h *UIHandler) Mount(r chi.Router) {
 	r.Get("/", h.handleDashboard)
 	r.Get("/accounts", h.handleAccounts)

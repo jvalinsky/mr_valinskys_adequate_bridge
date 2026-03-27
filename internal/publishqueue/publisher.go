@@ -1,3 +1,4 @@
+// Package publishqueue provides per-DID publish ordering with bounded worker parallelism.
 package publishqueue
 
 import (
@@ -9,10 +10,12 @@ import (
 	"sync"
 )
 
+// Publisher publishes a mapped record for a single ATProto DID.
 type Publisher interface {
 	Publish(ctx context.Context, atDID string, content map[string]interface{}) (string, error)
 }
 
+// WorkerPublisher dispatches publish requests to worker lanes based on DID hashing.
 type WorkerPublisher struct {
 	logger   *log.Logger
 	delegate Publisher
@@ -36,6 +39,7 @@ type publishResponse struct {
 	err error
 }
 
+// New constructs a WorkerPublisher that preserves publish order per DID.
 func New(delegate Publisher, workers int, logger *log.Logger) *WorkerPublisher {
 	if logger == nil {
 		logger = log.New(io.Discard, "", 0)
@@ -60,6 +64,7 @@ func New(delegate Publisher, workers int, logger *log.Logger) *WorkerPublisher {
 	return wp
 }
 
+// Publish enqueues a publish request onto the lane chosen for atDID.
 func (p *WorkerPublisher) Publish(ctx context.Context, atDID string, content map[string]interface{}) (string, error) {
 	if p == nil || p.delegate == nil {
 		return "", fmt.Errorf("worker publisher delegate is nil")
@@ -87,6 +92,7 @@ func (p *WorkerPublisher) Publish(ctx context.Context, atDID string, content map
 	}
 }
 
+// Close shuts down worker lanes and waits for in-flight publishes to finish.
 func (p *WorkerPublisher) Close() error {
 	if p == nil {
 		return nil

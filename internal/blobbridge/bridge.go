@@ -1,3 +1,4 @@
+// Package blobbridge mirrors ATProto blobs into the local SSB blob store.
 package blobbridge
 
 import (
@@ -16,6 +17,7 @@ import (
 	"github.com/mr_valinskys_adequate_bridge/internal/db"
 )
 
+// Bridge fetches ATProto blobs, stores them in SSB, and persists CID mappings.
 type Bridge struct {
 	db        *db.DB
 	blobStore ssb.BlobStore
@@ -23,6 +25,7 @@ type Bridge struct {
 	logger    *log.Logger
 }
 
+// New constructs a blob Bridge.
 func New(database *db.DB, blobStore ssb.BlobStore, xrpcClient lexutil.LexClient, logger *log.Logger) *Bridge {
 	if logger == nil {
 		logger = log.New(io.Discard, "", 0)
@@ -35,6 +38,7 @@ func New(database *db.DB, blobStore ssb.BlobStore, xrpcClient lexutil.LexClient,
 	}
 }
 
+// BridgeRecordBlobs resolves blobs referenced by a mapped record into SSB blob refs.
 func (b *Bridge) BridgeRecordBlobs(ctx context.Context, atDID string, mapped map[string]interface{}, rawRecordJSON []byte) error {
 	candidates, err := collectBlobCandidates(mapped, rawRecordJSON)
 	if err != nil {

@@ -1,3 +1,4 @@
+// Package bridge coordinates firehose ingestion, mapping, publishing, and persistence.
 package bridge
 
 import (
@@ -23,6 +24,7 @@ var supportedCollections = map[string]struct{}{
 	mapper.RecordTypeRepost: {},
 }
 
+// Processor processes ATProto commits into persisted and optionally published SSB messages.
 type Processor struct {
 	db         *db.DB
 	logger     *log.Logger
@@ -30,6 +32,7 @@ type Processor struct {
 	blobBridge BlobBridge
 }
 
+// RetryConfig controls retry candidate selection and scheduling.
 type RetryConfig struct {
 	Limit       int
 	ATDID       string
@@ -37,6 +40,7 @@ type RetryConfig struct {
 	BaseBackoff time.Duration
 }
 
+// RetryResult summarizes one retry run.
 type RetryResult struct {
 	Selected  int
 	Attempted int
@@ -45,28 +49,34 @@ type RetryResult struct {
 	Deferred  int
 }
 
+// Publisher publishes one mapped message for a DID.
 type Publisher interface {
 	Publish(ctx context.Context, atDID string, content map[string]interface{}) (string, error)
 }
 
+// BlobBridge maps ATProto blobs onto SSB blob refs for one record payload.
 type BlobBridge interface {
 	BridgeRecordBlobs(ctx context.Context, atDID string, mapped map[string]interface{}, rawRecordJSON []byte) error
 }
 
+// Option configures Processor behavior.
 type Option func(*Processor)
 
+// WithPublisher sets the publish implementation used by Processor.
 func WithPublisher(p Publisher) Option {
 	return func(proc *Processor) {
 		proc.publisher = p
 	}
 }
 
+// WithBlobBridge sets the blob bridge implementation used by Processor.
 func WithBlobBridge(b BlobBridge) Option {
 	return func(proc *Processor) {
 		proc.blobBridge = b
 	}
 }
 
+// NewProcessor constructs a Processor with optional publisher/blob integrations.
 func NewProcessor(database *db.DB, logger *log.Logger, opts ...Option) *Processor {
 	if logger == nil {
 		logger = log.New(io.Discard, "", 0)
@@ -81,7 +91,7 @@ func NewProcessor(database *db.DB, logger *log.Logger, opts ...Option) *Processo
 	return proc
 }
 
-// HandleCommit satisfies firehose.EventHandler and stores mapped records in SQLite.
+// HandleCommit satisfies firehose.EventHandler and persists supported records.
 func (p *Processor) HandleCommit(ctx context.Context, evt *atproto.SyncSubscribeRepos_Commit) error {
 	if evt == nil || evt.Repo == "" {
 		return nil
@@ -156,7 +166,7 @@ func (p *Processor) processOp(ctx context.Context, rr *indigorepo.Repo, atDID, p
 	return nil
 }
 
-// ProcessRecord maps and persists a single ATProto record.
+// ProcessRecord maps, resolves, publishes, and persists one ATProto record.
 func (p *Processor) ProcessRecord(ctx context.Context, atDID, atURI, atCID, collection string, recordJSON []byte) error {
 	mapped, err := mapper.MapRecord(collection, recordJSON)
 	if err != nil {
@@ -242,6 +252,7 @@ func (p *Processor) ProcessRecord(ctx context.Context, atDID, atURI, atCID, coll
 	return nil
 }
 
+// RetryFailedMessages retries previously failed unpublished records.
 func (p *Processor) RetryFailedMessages(ctx context.Context, cfg RetryConfig) (RetryResult, error) {
 	if p.publisher == nil {
 		return RetryResult{}, fmt.Errorf("retry requires configured publisher")

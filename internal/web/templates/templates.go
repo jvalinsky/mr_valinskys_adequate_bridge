@@ -1,3 +1,4 @@
+// Package templates renders HTML views for the bridge admin UI.
 package templates
 
 import (
@@ -281,6 +282,7 @@ const stateContent = `
 {{end}}
 `
 
+// DashboardData contains summary metrics for the dashboard page.
 type DashboardData struct {
 	AccountCount        int
 	MessageCount        int
@@ -291,6 +293,7 @@ type DashboardData struct {
 	Active              bool
 }
 
+// AccountRow is one bridged account row in the accounts table.
 type AccountRow struct {
 	ATDID     string
 	SSBFeedID string
@@ -298,10 +301,12 @@ type AccountRow struct {
 	CreatedAt time.Time
 }
 
+// AccountsData is the template model for the accounts page.
 type AccountsData struct {
 	Accounts []AccountRow
 }
 
+// MessageRow is one bridged message row in the messages table.
 type MessageRow struct {
 	ATURI           string
 	ATDID           string
@@ -312,10 +317,12 @@ type MessageRow struct {
 	CreatedAt       time.Time
 }
 
+// MessagesData is the template model for the messages page.
 type MessagesData struct {
 	Messages []MessageRow
 }
 
+// FailureRow is one failed publish row in the failures table.
 type FailureRow struct {
 	ATURI           string
 	ATDID           string
@@ -325,10 +332,12 @@ type FailureRow struct {
 	CreatedAt       time.Time
 }
 
+// FailuresData is the template model for the failures page.
 type FailuresData struct {
 	Failures []FailureRow
 }
 
+// BlobRow is one bridged blob row in the blobs table.
 type BlobRow struct {
 	ATCID        string
 	SSBBlobRef   string
@@ -337,40 +346,49 @@ type BlobRow struct {
 	DownloadedAt time.Time
 }
 
+// BlobsData is the template model for the blobs page.
 type BlobsData struct {
 	Blobs []BlobRow
 }
 
+// StateRow is one key/value entry from bridge state.
 type StateRow struct {
 	Key       string
 	Value     string
 	UpdatedAt time.Time
 }
 
+// StateData is the template model for the state page.
 type StateData struct {
 	State []StateRow
 }
 
+// RenderDashboard renders the dashboard page.
 func RenderDashboard(w io.Writer, data DashboardData) error {
 	return dashboardTemplate.Execute(w, data)
 }
 
+// RenderAccounts renders the accounts page.
 func RenderAccounts(w io.Writer, data AccountsData) error {
 	return accountsTemplate.Execute(w, data)
 }
 
+// RenderMessages renders the messages page.
 func RenderMessages(w io.Writer, data MessagesData) error {
 	return messagesTemplate.Execute(w, data)
 }
 
+// RenderFailures renders the failures page.
 func RenderFailures(w io.Writer, data FailuresData) error {
 	return failuresTemplate.Execute(w, data)
 }
 
+// RenderBlobs renders the blobs page.
 func RenderBlobs(w io.Writer, data BlobsData) error {
 	return blobsTemplate.Execute(w, data)
 }
 
+// RenderState renders the bridge-state page.
 func RenderState(w io.Writer, data StateData) error {
 	return stateTemplate.Execute(w, data)
 }

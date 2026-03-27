@@ -1,3 +1,4 @@
+// Package bots manages deterministic SSB identities derived from ATProto DIDs.
 package bots
 
 import (
@@ -14,6 +15,7 @@ import (
 	refs "go.mindeco.de/ssb-refs"
 )
 
+// Manager derives per-DID keypairs and caches corresponding publishers.
 type Manager struct {
 	mu         sync.Mutex
 	publishers map[string]ssb.Publisher
@@ -76,7 +78,7 @@ func (m *Manager) GetPublisher(atDID string) (ssb.Publisher, error) {
 	return pub, nil
 }
 
-// GetFeedID returns the SSB Feed ID for a given AT DID without creating a publisher
+// GetFeedID returns the SSB feed ID for atDID without creating a publisher.
 func (m *Manager) GetFeedID(atDID string) (refs.FeedRef, error) {
 	kp, err := m.deriveKeyPair(atDID)
 	if err != nil {
@@ -85,13 +87,13 @@ func (m *Manager) GetFeedID(atDID string) (refs.FeedRef, error) {
 	return kp.ID(), nil
 }
 
-// deriveKeyPair uses HMAC-SHA256 to deterministically generate an Ed25519 seed from the AT DID
+// deriveKeyPair deterministically derives an Ed25519 keypair from atDID.
 func (m *Manager) deriveKeyPair(atDID string) (ssb.KeyPair, error) {
 	mac := hmac.New(sha256.New, m.masterSeed)
 	mac.Write([]byte(atDID))
 	seed := mac.Sum(nil)
 
-	// Ed25519 seed is 32 bytes
+	// Ed25519 seeds are always 32 bytes.
 	privKey := ed25519.NewKeyFromSeed(seed[:ed25519.SeedSize])
 	pubKey := privKey.Public().(ed25519.PublicKey)
 

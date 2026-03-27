@@ -1,3 +1,4 @@
+// Package db provides SQLite-backed persistence for bridge state and mappings.
 package db
 
 import (
@@ -14,10 +15,12 @@ import (
 //go:embed schema.sql
 var schemaSQL string
 
+// DB wraps a SQLite connection used by bridge components.
 type DB struct {
 	conn *sql.DB
 }
 
+// BridgedAccount stores the DID-to-SSB identity mapping and activation status.
 type BridgedAccount struct {
 	ATDID     string
 	SSBFeedID string
@@ -25,6 +28,7 @@ type BridgedAccount struct {
 	Active    bool
 }
 
+// Message stores one bridged record and publish lifecycle metadata.
 type Message struct {
 	ATURI                string
 	ATCID                string
@@ -40,6 +44,7 @@ type Message struct {
 	CreatedAt            time.Time
 }
 
+// Blob stores one ATProto CID to SSB blob reference mapping.
 type Blob struct {
 	ATCID        string
 	SSBBlobRef   string
@@ -48,12 +53,14 @@ type Blob struct {
 	DownloadedAt time.Time
 }
 
+// BridgeState stores small key/value runtime state such as cursors.
 type BridgeState struct {
 	Key       string
 	Value     string
 	UpdatedAt time.Time
 }
 
+// Open opens (and initializes) the bridge database at dbPath.
 func Open(dbPath string) (*DB, error) {
 	conn, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
@@ -72,6 +79,7 @@ func Open(dbPath string) (*DB, error) {
 	return db, nil
 }
 
+// Close closes the underlying SQLite connection.
 func (db *DB) Close() error {
 	return db.conn.Close()
 }
@@ -134,6 +142,7 @@ func (db *DB) columnExists(table, column string) (bool, error) {
 	return false, rows.Err()
 }
 
+// AddBridgedAccount inserts or updates a bridged account row.
 func (db *DB) AddBridgedAccount(ctx context.Context, acc BridgedAccount) error {
 	_, err := db.conn.ExecContext(
 		ctx,
@@ -144,6 +153,7 @@ func (db *DB) AddBridgedAccount(ctx context.Context, acc BridgedAccount) error {
 	return err
 }
 
+// GetBridgedAccount returns the account row for atDID, or nil when absent.
 func (db *DB) GetBridgedAccount(ctx context.Context, atDID string) (*BridgedAccount, error) {
 	var acc BridgedAccount
 	err := db.conn.QueryRowContext(
@@ -161,6 +171,7 @@ func (db *DB) GetBridgedAccount(ctx context.Context, atDID string) (*BridgedAcco
 	return &acc, nil
 }
 
+// GetAllBridgedAccounts returns all bridged accounts sorted by newest first.
 func (db *DB) GetAllBridgedAccounts(ctx context.Context) ([]BridgedAccount, error) {
 	rows, err := db.conn.QueryContext(ctx, `SELECT at_did, ssb_feed_id, created_at, active FROM bridged_accounts ORDER BY created_at DESC`)
 	if err != nil {
@@ -179,6 +190,7 @@ func (db *DB) GetAllBridgedAccounts(ctx context.Context) ([]BridgedAccount, erro
 	return accounts, nil
 }
 
+// CountBridgedAccounts returns the total number of bridged accounts.
 func (db *DB) CountBridgedAccounts(ctx context.Context) (int, error) {
 	var count int
 	err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM bridged_accounts`).Scan(&count)
@@ -188,6 +200,7 @@ func (db *DB) CountBridgedAccounts(ctx context.Context) (int, error) {
 	return count, nil
 }
 
+// CountActiveBridgedAccounts returns the number of active bridged accounts.
 func (db *DB) CountActiveBridgedAccounts(ctx context.Context) (int, error) {
 	var count int
 	err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM bridged_accounts WHERE active = 1`).Scan(&count)
@@ -197,6 +210,7 @@ func (db *DB) CountActiveBridgedAccounts(ctx context.Context) (int, error) {
 	return count, nil
 }
 
+// AddMessage inserts or updates a message row keyed by AT URI.
 func (db *DB) AddMessage(ctx context.Context, msg Message) error {
 	_, err := db.conn.ExecContext(
 		ctx,
@@ -230,6 +244,7 @@ func (db *DB) AddMessage(ctx context.Context, msg Message) error {
 	return err
 }
 
+// GetMessage returns the message row for atURI, or nil when absent.
 func (db *DB) GetMessage(ctx context.Context, atURI string) (*Message, error) {
 	var msg Message
 	var ssbMsgRef, rawATJson, rawSSBJson, publishError sql.NullString
@@ -276,6 +291,7 @@ func (db *DB) GetMessage(ctx context.Context, atURI string) (*Message, error) {
 	return &msg, nil
 }
 
+// CountMessages returns the total number of stored messages.
 func (db *DB) CountMessages(ctx context.Context) (int, error) {
 	var count int
 	err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages`).Scan(&count)
@@ -285,6 +301,7 @@ func (db *DB) CountMessages(ctx context.Context) (int, error) {
 	return count, nil
 }
 
+// GetRecentMessages returns the newest messages up to limit.
 func (db *DB) GetRecentMessages(ctx context.Context, limit int) ([]Message, error) {
 	if limit <= 0 {
 		limit = 50
@@ -342,6 +359,7 @@ func (db *DB) GetRecentMessages(ctx context.Context, limit int) ([]Message, erro
 	return messages, nil
 }
 
+// CountPublishedMessages returns the number of messages with an SSB message ref.
 func (db *DB) CountPublishedMessages(ctx context.Context) (int, error) {
 	var count int
 	err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE ssb_msg_ref IS NOT NULL AND ssb_msg_ref <> ''`).Scan(&count)
@@ -351,6 +369,7 @@ func (db *DB) CountPublishedMessages(ctx context.Context) (int, error) {
 	return count, nil
 }
 
+// CountPublishFailures returns the number of messages with a publish error.
 func (db *DB) CountPublishFailures(ctx context.Context) (int, error) {
 	var count int
 	err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE publish_error IS NOT NULL AND publish_error <> ''`).Scan(&count)
@@ -360,6 +379,7 @@ func (db *DB) CountPublishFailures(ctx context.Context) (int, error) {
 	return count, nil
 }
 
+// GetPublishFailures returns failed message rows up to limit.
 func (db *DB) GetPublishFailures(ctx context.Context, limit int) ([]Message, error) {
 	if limit <= 0 {
 		limit = 50
@@ -418,6 +438,7 @@ func (db *DB) GetPublishFailures(ctx context.Context, limit int) ([]Message, err
 	return messages, nil
 }
 
+// GetRetryCandidates returns failed unpublished messages eligible for retry.
 func (db *DB) GetRetryCandidates(ctx context.Context, limit int, atDID string, maxAttempts int) ([]Message, error) {
 	if limit <= 0 {
 		limit = 50
@@ -488,6 +509,7 @@ func (db *DB) GetRetryCandidates(ctx context.Context, limit int, atDID string, m
 	return messages, nil
 }
 
+// AddBlob inserts or updates one blob CID mapping.
 func (db *DB) AddBlob(ctx context.Context, blob Blob) error {
 	_, err := db.conn.ExecContext(
 		ctx,
@@ -503,6 +525,7 @@ func (db *DB) AddBlob(ctx context.Context, blob Blob) error {
 	return err
 }
 
+// GetBlob returns the blob row for atCID, or nil when absent.
 func (db *DB) GetBlob(ctx context.Context, atCID string) (*Blob, error) {
 	var blob Blob
 	var mimeType sql.NullString
@@ -523,6 +546,7 @@ func (db *DB) GetBlob(ctx context.Context, atCID string) (*Blob, error) {
 	return &blob, nil
 }
 
+// CountBlobs returns the total number of bridged blobs.
 func (db *DB) CountBlobs(ctx context.Context) (int, error) {
 	var count int
 	err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM blobs`).Scan(&count)
@@ -532,6 +556,7 @@ func (db *DB) CountBlobs(ctx context.Context) (int, error) {
 	return count, nil
 }
 
+// GetRecentBlobs returns the most recently downloaded blobs up to limit.
 func (db *DB) GetRecentBlobs(ctx context.Context, limit int) ([]Blob, error) {
 	if limit <= 0 {
 		limit = 50
@@ -564,6 +589,7 @@ func (db *DB) GetRecentBlobs(ctx context.Context, limit int) ([]Blob, error) {
 	return blobs, nil
 }
 
+// SetBridgeState upserts a key/value runtime state entry.
 func (db *DB) SetBridgeState(ctx context.Context, key, value string) error {
 	_, err := db.conn.ExecContext(
 		ctx,
@@ -576,6 +602,7 @@ func (db *DB) SetBridgeState(ctx context.Context, key, value string) error {
 	return err
 }
 
+// GetBridgeState returns the value for key and whether it exists.
 func (db *DB) GetBridgeState(ctx context.Context, key string) (string, bool, error) {
 	var value string
 	err := db.conn.QueryRowContext(ctx, `SELECT value FROM bridge_state WHERE key = ?`, key).Scan(&value)
@@ -588,6 +615,7 @@ func (db *DB) GetBridgeState(ctx context.Context, key string) (string, bool, err
 	return value, true, nil
 }
 
+// GetAllBridgeState returns all runtime state entries sorted by key.
 func (db *DB) GetAllBridgeState(ctx context.Context) ([]BridgeState, error) {
 	rows, err := db.conn.QueryContext(
 		ctx,

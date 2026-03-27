@@ -1,3 +1,4 @@
+// Package backfill replays supported records from ATProto repositories via sync.getRepo.
 package backfill
 
 import (
@@ -19,16 +20,19 @@ import (
 	"github.com/mr_valinskys_adequate_bridge/internal/mapper"
 )
 
+// RecordProcessor handles a decoded record during backfill traversal.
 type RecordProcessor interface {
 	ProcessRecord(ctx context.Context, atDID, atURI, atCID, collection string, recordJSON []byte) error
 }
 
+// Stats summarizes backfill processing results.
 type Stats struct {
 	Processed int
 	Skipped   int
 	Errors    int
 }
 
+// SinceFilter controls optional timestamp or sequence-based backfill filtering.
 type SinceFilter struct {
 	Raw            string
 	Timestamp      *time.Time
@@ -36,6 +40,7 @@ type SinceFilter struct {
 	SequenceNotice string
 }
 
+// ParseSince parses a --since value as either a sequence number or timestamp.
 func ParseSince(raw string) (SinceFilter, error) {
 	filter := SinceFilter{Raw: strings.TrimSpace(raw)}
 	if filter.Raw == "" {
@@ -64,6 +69,7 @@ func ParseSince(raw string) (SinceFilter, error) {
 	return filter, fmt.Errorf("invalid --since value %q (expected unix-seq integer or timestamp)", raw)
 }
 
+// Include reports whether recordJSON passes the filter.
 func (f SinceFilter) Include(recordJSON []byte) bool {
 	if f.Timestamp == nil {
 		return true
@@ -86,6 +92,7 @@ func (f SinceFilter) Include(recordJSON []byte) bool {
 	return !created.UTC().Before(*f.Timestamp)
 }
 
+// RunForDID backfills supported records for a single DID.
 func RunForDID(ctx context.Context, client *xrpc.Client, did string, since SinceFilter, processor RecordProcessor, logger *log.Logger) (Stats, error) {
 	if logger == nil {
 		logger = log.New(io.Discard, "", 0)

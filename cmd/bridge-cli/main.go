@@ -1,3 +1,6 @@
+// Bridge-cli manages and runs the ATProto-to-SSB bridge.
+//
+// It provides account management, runtime orchestration, backfill, retry, and admin UI commands.
 package main
 
 import (
@@ -684,6 +687,7 @@ func main() {
 	}
 }
 
+// parseHMACKey parses a 32-byte key from base64, hex, or raw input.
 func parseHMACKey(raw string) (*[32]byte, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -716,6 +720,7 @@ func parseHMACKey(raw string) (*[32]byte, error) {
 	return nil, fmt.Errorf("hmac key must decode to 32 bytes")
 }
 
+// resolveXRPCHost resolves the XRPC host from an explicit value or relay URL.
 func resolveXRPCHost(explicitHost, relay string) (string, error) {
 	if explicitHost != "" {
 		return strings.TrimRight(explicitHost, "/"), nil
@@ -744,6 +749,7 @@ func resolveXRPCHost(explicitHost, relay string) (string, error) {
 	return fmt.Sprintf("%s://%s", scheme, u.Host), nil
 }
 
+// readFirehoseCursor reads and parses the persisted firehose cursor sequence.
 func readFirehoseCursor(ctx context.Context, database *db.DB) (int64, bool, error) {
 	value, ok, err := database.GetBridgeState(ctx, "firehose_seq")
 	if err != nil || !ok || strings.TrimSpace(value) == "" {
@@ -756,6 +762,7 @@ func readFirehoseCursor(ctx context.Context, database *db.DB) (int64, bool, erro
 	return seq, true, nil
 }
 
+// dedupeStrings trims values, drops empties, and preserves first-seen order.
 func dedupeStrings(in []string) []string {
 	seen := make(map[string]struct{}, len(in))
 	out := make([]string, 0, len(in))
@@ -773,6 +780,7 @@ func dedupeStrings(in []string) []string {
 	return out
 }
 
+// runRetryScheduler periodically retries failed unpublished messages.
 func runRetryScheduler(ctx context.Context, processor *bridge.Processor, logger *log.Logger) {
 	if processor == nil {
 		return

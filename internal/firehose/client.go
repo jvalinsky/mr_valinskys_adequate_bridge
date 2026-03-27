@@ -1,3 +1,4 @@
+// Package firehose streams ATProto repository commits from subscribeRepos.
 package firehose
 
 import (
@@ -16,10 +17,12 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// EventHandler handles repository commit events emitted by the firehose stream.
 type EventHandler interface {
 	HandleCommit(ctx context.Context, evt *atproto.SyncSubscribeRepos_Commit) error
 }
 
+// Client connects to subscribeRepos and forwards commits to an EventHandler.
 type Client struct {
 	relayURL string
 	handler  EventHandler
@@ -28,14 +31,17 @@ type Client struct {
 	cursor   *int64
 }
 
+// ClientOption configures optional Client behavior.
 type ClientOption func(*Client)
 
+// WithCursor starts the stream from a specific firehose cursor sequence.
 func WithCursor(cursor int64) ClientOption {
 	return func(c *Client) {
 		c.cursor = &cursor
 	}
 }
 
+// NewClient creates a firehose Client with optional configuration.
 func NewClient(relayURL string, handler EventHandler, logger *log.Logger, opts ...ClientOption) *Client {
 	if relayURL == "" {
 		relayURL = "wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos"
@@ -52,6 +58,7 @@ func NewClient(relayURL string, handler EventHandler, logger *log.Logger, opts .
 	return client
 }
 
+// Run opens the websocket stream and blocks until the stream exits or ctx is canceled.
 func (c *Client) Run(ctx context.Context) error {
 	streamURL, err := c.streamURL()
 	if err != nil {
@@ -104,7 +111,7 @@ func (c *Client) streamURL() (string, error) {
 	return parsed.String(), nil
 }
 
-// ParseCommit is a helper to parse the CAR blocks inside a commit
+// ParseCommit parses the CAR payload embedded in a commit event.
 func ParseCommit(ctx context.Context, evt *atproto.SyncSubscribeRepos_Commit) (*repo.Repo, error) {
 	if evt.Blocks == nil {
 		return nil, fmt.Errorf("no blocks in commit")
@@ -118,7 +125,7 @@ func ParseCommit(ctx context.Context, evt *atproto.SyncSubscribeRepos_Commit) (*
 	return rr, nil
 }
 
-// ProcessOps processes the ops in a commit and returns parsed records
+// ProcessOps validates that create/update operations can be decoded from the CAR.
 func ProcessOps(ctx context.Context, rr *repo.Repo, evt *atproto.SyncSubscribeRepos_Commit) error {
 	for _, op := range evt.Ops {
 		if op.Action != "create" && op.Action != "update" {

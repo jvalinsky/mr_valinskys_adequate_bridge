@@ -1,3 +1,4 @@
+// Package security provides HTTP middleware for admin UI exposure hardening.
 package security
 
 import (
@@ -13,10 +14,12 @@ import (
 
 var sensitiveQueryTerms = []string{"pass", "password", "token", "secret", "auth", "key"}
 
+// RequireAuthForBind reports whether listenAddr should require HTTP auth.
 func RequireAuthForBind(listenAddr string) bool {
 	return !IsLoopbackBindAddr(listenAddr)
 }
 
+// IsLoopbackBindAddr reports whether listenAddr resolves to a loopback host.
 func IsLoopbackBindAddr(listenAddr string) bool {
 	host, _, err := net.SplitHostPort(strings.TrimSpace(listenAddr))
 	if err != nil {
@@ -38,6 +41,7 @@ func IsLoopbackBindAddr(listenAddr string) bool {
 	return ip.IsLoopback()
 }
 
+// BasicAuthMiddleware enforces constant-time HTTP Basic authentication.
 func BasicAuthMiddleware(username, password string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -52,6 +56,7 @@ func BasicAuthMiddleware(username, password string) func(http.Handler) http.Hand
 	}
 }
 
+// RequestLogMiddleware logs request metadata with sensitive query values redacted.
 func RequestLogMiddleware(logger *log.Logger) func(http.Handler) http.Handler {
 	if logger == nil {
 		logger = log.New(io.Discard, "", 0)

@@ -79,3 +79,13 @@ bridge-cli retry-failures --db bridge.sqlite --did did:plc:example --limit 200
    - isolate by DID (`--did`).
    - capture failing `at_uri` rows from UI.
    - preserve DB and logs for postmortem.
+
+## Go Documentation Maintenance
+- Write package comments and exported declaration comments so `go doc` output stays useful.
+- Start declaration comments with the declaration name (or `A`/`An` + type name) and use complete sentences.
+- Keep comments focused on behavior/contract and avoid repeating obvious implementation details.
+- Use these references when updating comments:
+  - https://go.dev/doc/comment
+  - https://go.dev/doc/effective_go#commentary
+  - https://go.dev/wiki/CodeReviewComments
+  - https://google.github.io/styleguide/go/decisions.html#doc-comments

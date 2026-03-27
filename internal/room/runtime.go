@@ -1,3 +1,4 @@
+// Package room embeds and supervises the go-ssb-room runtime.
 package room
 
 import (
@@ -33,6 +34,7 @@ type Config struct {
 	HTTPSDomain    string
 }
 
+// Runtime wraps the lifecycle of the embedded room adapter and HTTP server.
 type Runtime struct {
 	logger *log.Logger
 	cfg    Config
@@ -48,6 +50,7 @@ type Runtime struct {
 	closeErr  error
 }
 
+// Start boots the embedded room runtime and returns a managed Runtime.
 func Start(parentCtx context.Context, cfg Config, logger *log.Logger) (*Runtime, error) {
 	if logger == nil {
 		logger = log.New(io.Discard, "", 0)
@@ -121,6 +124,7 @@ func Start(parentCtx context.Context, cfg Config, logger *log.Logger) (*Runtime,
 	return rt, nil
 }
 
+// Addr returns the muxrpc listen address.
 func (r *Runtime) Addr() string {
 	if r == nil || r.roomAdapter == nil || r.roomAdapter.Server == nil || r.roomAdapter.Server.Network == nil {
 		return ""
@@ -132,6 +136,7 @@ func (r *Runtime) Addr() string {
 	return addr.String()
 }
 
+// HTTPAddr returns the HTTP listen address.
 func (r *Runtime) HTTPAddr() string {
 	if r == nil || r.httpListener == nil {
 		return ""
@@ -139,6 +144,7 @@ func (r *Runtime) HTTPAddr() string {
 	return r.httpListener.Addr().String()
 }
 
+// Close stops the room runtime and releases listeners and background loops.
 func (r *Runtime) Close() error {
 	if r == nil {
 		return nil

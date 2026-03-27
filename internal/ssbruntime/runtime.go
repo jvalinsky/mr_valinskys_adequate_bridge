@@ -1,3 +1,4 @@
+// Package ssbruntime manages local SSB storage and publishing dependencies.
 package ssbruntime
 
 import (
@@ -19,7 +20,7 @@ import (
 	"github.com/mr_valinskys_adequate_bridge/internal/bots"
 )
 
-// Runtime owns local SSB storage dependencies needed for deterministic per-DID publishing.
+// Runtime owns local SSB dependencies needed for deterministic per-DID publishing.
 type Runtime struct {
 	logger        *log.Logger
 	receiveLog    margaret.Log
@@ -29,6 +30,7 @@ type Runtime struct {
 	manager       *bots.Manager
 }
 
+// Open initializes an SSB runtime rooted at repoPath.
 func Open(repoPath string, masterSeed []byte, hmacKey *[32]byte, logger *log.Logger) (*Runtime, error) {
 	if logger == nil {
 		logger = log.New(io.Discard, "", 0)
@@ -75,6 +77,7 @@ func Open(repoPath string, masterSeed []byte, hmacKey *[32]byte, logger *log.Log
 	return rt, nil
 }
 
+// Publish signs and appends one mapped message for atDID.
 func (r *Runtime) Publish(ctx context.Context, atDID string, content map[string]interface{}) (string, error) {
 	if err := r.refreshUserFeeds(ctx); err != nil {
 		return "", err
@@ -98,6 +101,7 @@ func (r *Runtime) Publish(ctx context.Context, atDID string, content map[string]
 	return msgRef.Ref(), nil
 }
 
+// BlobStore returns the underlying SSB blob store used by this runtime.
 func (r *Runtime) BlobStore() ssb.BlobStore {
 	return r.blobStore
 }
@@ -114,6 +118,7 @@ func (r *Runtime) refreshUserFeeds(ctx context.Context) error {
 	return nil
 }
 
+// Close releases runtime indexes and logs.
 func (r *Runtime) Close() error {
 	var errs []error
 

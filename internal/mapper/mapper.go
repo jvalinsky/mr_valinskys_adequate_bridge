@@ -1,3 +1,4 @@
+// Package mapper converts supported ATProto records into SSB-compatible payloads.
 package mapper
 
 import (
@@ -8,7 +9,7 @@ import (
 	appbsky "github.com/bluesky-social/indigo/api/bsky"
 )
 
-// RecordType constants
+// RecordType* constants identify supported ATProto collections.
 const (
 	RecordTypePost    = "app.bsky.feed.post"
 	RecordTypeLike    = "app.bsky.feed.like"
@@ -18,7 +19,7 @@ const (
 	RecordTypeProfile = "app.bsky.actor.profile"
 )
 
-// MapRecord takes a raw ATProto record JSON and its type, returning an SSB message map
+// MapRecord maps one ATProto record payload into an SSB message map.
 func MapRecord(recordType string, rawJSON []byte) (map[string]interface{}, error) {
 	switch recordType {
 	case RecordTypePost:
@@ -49,19 +50,15 @@ func mapPost(rawJSON []byte) (map[string]interface{}, error) {
 		"text": post.Text,
 	}
 
-	// Basic mentions mapping
-	// In SSB, mentions are typically included in the text as @name
-	// and there's a "mentions" array of feed refs
+	// Preserve mention metadata so it can be resolved to SSB feed refs later.
 	if len(post.Facets) > 0 {
 		var mentions []map[string]string
 		for _, facet := range post.Facets {
 			for _, feat := range facet.Features {
 				if feat.RichtextFacet_Mention != nil {
-					// We'd ideally need a way to lookup the DID to SSB Feed ID here.
-					// For now, we'll store the DID in a generic way, or just an AT URI.
 					mentions = append(mentions, map[string]string{
 						"link": feat.RichtextFacet_Mention.Did,
-						"name": "atproto_user", // Placeholder
+						"name": "atproto_user", // Placeholder until DID->feed resolution is available.
 					})
 				}
 			}
@@ -71,13 +68,8 @@ func mapPost(rawJSON []byte) (map[string]interface{}, error) {
 		}
 	}
 
-	// Handle reply refs
+	// Preserve reply references as AT URIs for a later resolution pass.
 	if post.Reply != nil {
-		// In SSB, replies have "root" and "branch"
-		// Root is the first message in thread, branch is the message being replied to
-		// Here we'd need to resolve AT URIs to SSB msg refs.
-		// We'll store AT URIs for the bridge to resolve later before publishing, or store as AT URIs.
-		// For a pure mapper, let's include the AT URIs and expect a post-processing step to replace them.
 		res["_atproto_reply_root"] = post.Reply.Root.Uri
 		res["_atproto_reply_parent"] = post.Reply.Parent.Uri
 	}
@@ -106,7 +98,7 @@ func mapRepost(rawJSON []byte) (map[string]interface{}, error) {
 
 	return map[string]interface{}{
 		"type":                    "post",
-		"text":                    "", // Retweets usually don't have text in AT unless quote post (not standard repost)
+		"text":                    "", // Reposts typically contain no text unless they are quote-post variants.
 		"_atproto_repost_subject": repost.Subject.Uri,
 	}, nil
 }
@@ -156,15 +148,14 @@ func mapProfile(rawJSON []byte) (map[string]interface{}, error) {
 	}
 
 	if profile.Avatar != nil {
-		// Would need to fetch and store blob, returning blob ref
+		// Keep the CID so blob bridging can fetch and replace it with an SSB blob ref.
 		res["_atproto_avatar_cid"] = profile.Avatar.Ref.String()
 	}
 
 	return res, nil
 }
 
-// ReplaceATProtoRefs is a post-processing function to replace ATProto URIs/DIDs with SSB refs
-// using a provided lookup function.
+// ReplaceATProtoRefs resolves ATProto URI and DID placeholders in msg to SSB refs.
 func ReplaceATProtoRefs(msg map[string]interface{}, lookupURI func(string) string, lookupDID func(string) string) {
 	if rootURI, ok := msg["_atproto_reply_root"].(string); ok {
 		if ssbRef := lookupURI(rootURI); ssbRef != "" {
@@ -191,8 +182,7 @@ func ReplaceATProtoRefs(msg map[string]interface{}, lookupURI func(string) strin
 
 	if repostURI, ok := msg["_atproto_repost_subject"].(string); ok {
 		if ssbRef := lookupURI(repostURI); ssbRef != "" {
-			// standard SSB retweet approach uses a 'repost' or 'share' link in 'text' or 'branch'
-			// or sometimes just mentioning the root. In many SSB clients, mentioning the message ID works.
+			// Many SSB clients recognize repost intent when the referenced message ID appears in text.
 			msg["text"] = fmt.Sprintf("[%s]", ssbRef)
 		}
 		delete(msg, "_atproto_repost_subject")
@@ -205,7 +195,7 @@ func ReplaceATProtoRefs(msg map[string]interface{}, lookupURI func(string) strin
 		delete(msg, "_atproto_contact")
 	}
 
-	// Mentions
+	// Resolve mention links that still point at DIDs.
 	if mentions, ok := msg["mentions"].([]map[string]string); ok {
 		for i, m := range mentions {
 			if did, hasLink := m["link"]; hasLink && strings.HasPrefix(did, "did:") {
