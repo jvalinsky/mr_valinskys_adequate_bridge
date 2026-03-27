@@ -8,18 +8,13 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"os"
-	"path/filepath"
-	"reflect"
 	"strings"
 	"sync"
 	"time"
 
-	kitlog "go.mindeco.de/log"
-
+	roomadapter "github.com/ssbc/go-ssb-room/v2/bridgeadapter"
 	"github.com/ssbc/go-ssb-room/v2/roomdb"
-	roomsqlite "github.com/ssbc/go-ssb-room/v2/roomdb/sqlite"
-	"github.com/ssbc/go-ssb-room/v2/roomsrv"
+	kitlog "go.mindeco.de/log"
 )
 
 const (
@@ -42,8 +37,7 @@ type Runtime struct {
 	logger *log.Logger
 	cfg    Config
 
-	roomServer   *roomsrv.Server
-	roomDB       *roomsqlite.Database
+	roomAdapter  *roomadapter.Runtime
 	httpServer   *http.Server
 	httpListener net.Listener
 
@@ -64,57 +58,26 @@ func Start(parentCtx context.Context, cfg Config, logger *log.Logger) (*Runtime,
 		return nil, err
 	}
 
-	if err := ensureRepoPath(cfg.RepoPath); err != nil {
-		return nil, err
-	}
-
 	ctx, cancel := context.WithCancel(parentCtx)
 
-	rdb, err := roomsqlite.Open(repoAdapter{basePath: cfg.RepoPath})
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("open roomdb sqlite: %w", err)
-	}
-
 	mode := roomdb.ParsePrivacyMode(strings.ToLower(strings.TrimSpace(cfg.Mode)))
-	if mode == roomdb.ModeUnknown {
-		_ = rdb.Close()
-		cancel()
-		return nil, fmt.Errorf("invalid room mode %q", cfg.Mode)
-	}
-	if err := rdb.Config.SetPrivacyMode(ctx, mode); err != nil {
-		_ = rdb.Close()
-		cancel()
-		return nil, fmt.Errorf("set room privacy mode: %w", err)
-	}
-
-	netInfo, err := buildServerEndpointDetails(cfg)
-	if err != nil {
-		_ = rdb.Close()
-		cancel()
-		return nil, err
-	}
-
 	roomLogger := kitlog.NewLogfmtLogger(kitlog.NewSyncWriter(logger.Writer()))
-	options := []roomsrv.Option{
-		roomsrv.WithContext(ctx),
-		roomsrv.WithRepoPath(cfg.RepoPath),
-		roomsrv.WithUNIXSocket(false),
-		roomsrv.WithLogger(roomLogger),
-	}
-
-	srv, err := newRoomServer(rdb, netInfo, options)
+	adapter, err := roomadapter.Start(ctx, roomadapter.Config{
+		RepoPath:          cfg.RepoPath,
+		MUXRPCListenAddr:  cfg.ListenAddr,
+		HTTPListenAddr:    cfg.HTTPListenAddr,
+		HTTPSDomain:       cfg.HTTPSDomain,
+		Mode:              mode,
+		AliasesSubdomains: false,
+	}, roomLogger)
 	if err != nil {
-		_ = rdb.Close()
 		cancel()
-		return nil, err
+		return nil, fmt.Errorf("start room adapter: %w", err)
 	}
 
 	httpListener, err := net.Listen("tcp", cfg.HTTPListenAddr)
 	if err != nil {
-		srv.Shutdown()
-		_ = srv.Close()
-		_ = rdb.Close()
+		_ = adapter.Close()
 		cancel()
 		return nil, fmt.Errorf("listen room http interface: %w", err)
 	}
@@ -130,7 +93,7 @@ func Start(parentCtx context.Context, cfg Config, logger *log.Logger) (*Runtime,
 	})
 
 	httpServer := &http.Server{
-		Handler:           srv.Network.WebsockHandler(mux),
+		Handler:           adapter.Server.Network.WebsockHandler(mux),
 		ReadHeaderTimeout: 15 * time.Second,
 		WriteTimeout:      3 * time.Minute,
 		IdleTimeout:       3 * time.Minute,
@@ -139,8 +102,7 @@ func Start(parentCtx context.Context, cfg Config, logger *log.Logger) (*Runtime,
 	rt := &Runtime{
 		logger:       logger,
 		cfg:          cfg,
-		roomServer:   srv,
-		roomDB:       rdb,
+		roomAdapter:  adapter,
 		httpServer:   httpServer,
 		httpListener: httpListener,
 		cancel:       cancel,
@@ -160,10 +122,10 @@ func Start(parentCtx context.Context, cfg Config, logger *log.Logger) (*Runtime,
 }
 
 func (r *Runtime) Addr() string {
-	if r == nil || r.roomServer == nil || r.roomServer.Network == nil {
+	if r == nil || r.roomAdapter == nil || r.roomAdapter.Server == nil || r.roomAdapter.Server.Network == nil {
 		return ""
 	}
-	addr := r.roomServer.Network.GetListenAddr()
+	addr := r.roomAdapter.Server.Network.GetListenAddr()
 	if addr == nil {
 		return ""
 	}
@@ -201,17 +163,9 @@ func (r *Runtime) Close() error {
 				errs = append(errs, fmt.Errorf("close room http listener: %w", err))
 			}
 		}
-
-		if r.roomServer != nil {
-			r.roomServer.Shutdown()
-			if err := r.roomServer.Close(); err != nil {
-				errs = append(errs, fmt.Errorf("close room server: %w", err))
-			}
-		}
-
-		if r.roomDB != nil {
-			if err := r.roomDB.Close(); err != nil {
-				errs = append(errs, fmt.Errorf("close roomdb: %w", err))
+		if r.roomAdapter != nil {
+			if err := r.roomAdapter.Close(); err != nil {
+				errs = append(errs, fmt.Errorf("close room adapter: %w", err))
 			}
 		}
 
@@ -238,7 +192,7 @@ func (r *Runtime) serveMUXRPC(ctx context.Context) {
 	defer r.wg.Done()
 
 	for {
-		err := r.roomServer.Network.Serve(ctx)
+		err := r.roomAdapter.Server.Network.Serve(ctx)
 		if err != nil && !errors.Is(err, context.Canceled) {
 			r.logger.Printf("event=room_muxrpc_serve_error err=%v", err)
 		}
@@ -312,129 +266,4 @@ func addrIsLoopback(listenAddr string) bool {
 		return false
 	}
 	return ip.IsLoopback()
-}
-
-func ensureRepoPath(repoPath string) error {
-	if err := os.MkdirAll(repoPath, 0o700); err != nil {
-		return fmt.Errorf("create room repo path: %w", err)
-	}
-	return nil
-}
-
-func buildServerEndpointDetails(cfg Config) (reflect.Value, error) {
-	newFnType := reflect.TypeOf(roomsrv.New)
-	if newFnType.NumIn() < 7 {
-		return reflect.Value{}, fmt.Errorf("roomsrv.New signature changed: expected >=7 args, got %d", newFnType.NumIn())
-	}
-
-	netInfoType := newFnType.In(6)
-	if netInfoType.Kind() != reflect.Struct {
-		return reflect.Value{}, fmt.Errorf("roomsrv.New arg 7 is not a struct type")
-	}
-
-	host, portStr, err := net.SplitHostPort(cfg.HTTPListenAddr)
-	if err != nil {
-		return reflect.Value{}, fmt.Errorf("split room HTTP listen addr: %w", err)
-	}
-	port, err := net.LookupPort("tcp", portStr)
-	if err != nil {
-		return reflect.Value{}, fmt.Errorf("resolve room HTTP listen port: %w", err)
-	}
-
-	netInfo := reflect.New(netInfoType).Elem()
-	if err := setStructField(netInfo, "ListenAddressMUXRPC", cfg.ListenAddr); err != nil {
-		return reflect.Value{}, err
-	}
-	if err := setStructField(netInfo, "PortHTTPS", uint(port)); err != nil {
-		return reflect.Value{}, err
-	}
-	if err := setStructField(netInfo, "UseSubdomainForAliases", false); err != nil {
-		return reflect.Value{}, err
-	}
-
-	domain := cfg.HTTPSDomain
-	development := false
-	if domain == "" {
-		domain = "localhost"
-		development = true
-	}
-	if addrIsLoopback(net.JoinHostPort(host, portStr)) && cfg.HTTPSDomain == "" {
-		development = true
-	}
-
-	if err := setStructField(netInfo, "Domain", domain); err != nil {
-		return reflect.Value{}, err
-	}
-	if err := setStructField(netInfo, "Development", development); err != nil {
-		return reflect.Value{}, err
-	}
-
-	return netInfo, nil
-}
-
-func setStructField(v reflect.Value, field string, value interface{}) error {
-	f := v.FieldByName(field)
-	if !f.IsValid() {
-		return fmt.Errorf("room netInfo missing field %q", field)
-	}
-	if !f.CanSet() {
-		return fmt.Errorf("room netInfo field %q is not settable", field)
-	}
-
-	val := reflect.ValueOf(value)
-	if !val.Type().AssignableTo(f.Type()) {
-		if val.Type().ConvertibleTo(f.Type()) {
-			val = val.Convert(f.Type())
-		} else {
-			return fmt.Errorf("cannot assign %T to room netInfo field %q (%s)", value, field, f.Type())
-		}
-	}
-
-	f.Set(val)
-	return nil
-}
-
-func newRoomServer(roomDB *roomsqlite.Database, netInfo reflect.Value, options []roomsrv.Option) (*roomsrv.Server, error) {
-	newFn := reflect.ValueOf(roomsrv.New)
-	newFnType := newFn.Type()
-	if newFnType.NumIn() < 8 {
-		return nil, fmt.Errorf("roomsrv.New signature changed: expected >=8 args, got %d", newFnType.NumIn())
-	}
-
-	args := []reflect.Value{
-		reflect.ValueOf(roomDB.Members),
-		reflect.ValueOf(roomDB.DeniedKeys),
-		reflect.ValueOf(roomDB.Aliases),
-		reflect.ValueOf(roomDB.AuthWithSSB),
-		reflect.Zero(newFnType.In(4)),
-		reflect.ValueOf(roomDB.Config),
-		netInfo,
-	}
-	for _, opt := range options {
-		args = append(args, reflect.ValueOf(opt))
-	}
-
-	results := newFn.Call(args)
-	if len(results) != 2 {
-		return nil, fmt.Errorf("roomsrv.New returned unexpected result arity: %d", len(results))
-	}
-
-	if !results[1].IsNil() {
-		return nil, fmt.Errorf("start room server: %w", results[1].Interface().(error))
-	}
-
-	srv, ok := results[0].Interface().(*roomsrv.Server)
-	if !ok || srv == nil {
-		return nil, fmt.Errorf("roomsrv.New did not return *roomsrv.Server")
-	}
-
-	return srv, nil
-}
-
-type repoAdapter struct {
-	basePath string
-}
-
-func (r repoAdapter) GetPath(parts ...string) string {
-	return filepath.Join(append([]string{r.basePath}, parts...)...)
 }

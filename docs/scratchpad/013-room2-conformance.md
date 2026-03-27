@@ -33,6 +33,6 @@ Replace the embedded room HTTP stub with a real `go-ssb-room/v2` runtime integra
   - starts runtime and serves `/healthz`
 
 ## Risks and Follow-ups
-- `go-ssb-room/v2` exported API uses internal package types in constructor signatures; adapter uses reflection for `roomsrv.New` network-details construction.
-- The sign-in bridge argument is passed as nil in this adapter path, so Sign-in-with-SSB paths should be treated as out-of-scope unless explicitly validated and wired.
+- Reflection-based constructor wiring has been removed by introducing a typed adapter layer at `reference/go-ssb-room/bridgeadapter/runtime.go`.
+- The adapter now provides a concrete Sign-in-with-SSB bridge object; end-to-end Sign-in-with-SSB behavior should still be validated separately before relying on it operationally.
 - Additional integration tests should assert Room websocket/muxrpc behavior under signal shutdown and restart loops.
