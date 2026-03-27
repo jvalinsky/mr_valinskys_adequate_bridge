@@ -11,15 +11,13 @@ import (
 
 // UIHandler serves admin pages backed by bridge database state.
 type UIHandler struct {
-	db     *db.DB
-	active bool
+	db *db.DB
 }
 
 // NewUIHandler creates a UIHandler bound to database.
 func NewUIHandler(database *db.DB) *UIHandler {
 	return &UIHandler{
-		db:     database,
-		active: false,
+		db: database,
 	}
 }
 
@@ -79,6 +77,19 @@ func (h *UIHandler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to get cursor state", http.StatusInternalServerError)
 		return
 	}
+	bridgeStatus, ok, err := h.db.GetBridgeState(r.Context(), "bridge_runtime_status")
+	if err != nil {
+		http.Error(w, "Failed to get bridge status", http.StatusInternalServerError)
+		return
+	}
+	if !ok || bridgeStatus == "" {
+		bridgeStatus = "unknown"
+	}
+	lastHeartbeat, _, err := h.db.GetBridgeState(r.Context(), "bridge_runtime_last_heartbeat_at")
+	if err != nil {
+		http.Error(w, "Failed to get bridge heartbeat", http.StatusInternalServerError)
+		return
+	}
 
 	data := templates.DashboardData{
 		AccountCount:        accountCount,
@@ -89,7 +100,8 @@ func (h *UIHandler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		DeletedCount:        deletedCount,
 		BlobCount:           blobCount,
 		FirehoseCursor:      cursorValue,
-		Active:              h.active,
+		BridgeStatus:        bridgeStatus,
+		LastHeartbeat:       lastHeartbeat,
 	}
 
 	w.Header().Set("Content-Type", "text/html")

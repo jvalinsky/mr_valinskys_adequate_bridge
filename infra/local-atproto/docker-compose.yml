@@ -1,0 +1,47 @@
+services:
+  plc:
+    image: node:20-alpine
+    command: ["node", "/app/plc/server.mjs"]
+    environment:
+      PLC_PORT: "2582"
+      PLC_DATA_FILE: /data/state.json
+    ports:
+      - "2582:2582"
+    volumes:
+      - ./plc:/app/plc:ro
+      - ${LOCAL_ATPROTO_DATA_DIR:-/tmp/mvab-local-atproto}/plc:/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:2582/_health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  pds:
+    image: ghcr.io/bluesky-social/pds:0.4
+    depends_on:
+      plc:
+        condition: service_healthy
+    environment:
+      PDS_PORT: "2583"
+      PDS_HOSTNAME: localhost
+      PDS_SERVICE_HANDLE_DOMAINS: .test
+      PDS_DEV_MODE: "true"
+      PDS_RATE_LIMITS_ENABLED: "false"
+      PDS_INVITE_REQUIRED: "false"
+      PDS_CRAWLERS: ""
+      PDS_ENABLE_DID_DOC_WITH_SESSION: "true"
+      PDS_DID_PLC_URL: http://plc:2582
+      PDS_JWT_SECRET: local-dev-jwt-secret-change-me
+      PDS_ADMIN_PASSWORD: local-dev-admin-password
+      PDS_PLC_ROTATION_KEY_K256_PRIVATE_KEY_HEX: "1111111111111111111111111111111111111111111111111111111111111111"
+      PDS_DATA_DIRECTORY: /pds
+      PDS_BLOBSTORE_DISK_LOCATION: /pds/blocks
+    ports:
+      - "2583:2583"
+    volumes:
+      - ${LOCAL_ATPROTO_DATA_DIR:-/tmp/mvab-local-atproto}/pds:/pds
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:2583/xrpc/_health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 2s
+      timeout: 2s
+      retries: 60

@@ -41,6 +41,15 @@ var (
 	botSeed  string
 )
 
+const (
+	bridgeRuntimeStatusKey        = "bridge_runtime_status"
+	bridgeRuntimeStartedAtKey     = "bridge_runtime_started_at"
+	bridgeRuntimeLastHeartbeatKey = "bridge_runtime_last_heartbeat_at"
+	bridgeRuntimeStoppingAtKey    = "bridge_runtime_stopping_at"
+	bridgeRuntimeStoppedAtKey     = "bridge_runtime_stopped_at"
+	bridgeRuntimeLastErrorKey     = "bridge_runtime_last_error"
+)
+
 func main() {
 	app := &cli.App{
 		Name:  "bridge-cli",
@@ -346,6 +355,11 @@ func main() {
 					defer stop()
 					runCtx, cancelRun := context.WithCancel(ctx)
 					defer cancelRun()
+					startedAt := time.Now().UTC()
+					setBridgeStateBestEffort(runCtx, database, bridgeRuntimeStatusKey, "starting", bridgeLogger)
+					setBridgeStateBestEffort(runCtx, database, bridgeRuntimeStartedAtKey, startedAt.Format(time.RFC3339), bridgeLogger)
+					setBridgeStateBestEffort(runCtx, database, bridgeRuntimeLastHeartbeatKey, startedAt.Format(time.RFC3339), bridgeLogger)
+					setBridgeStateBestEffort(runCtx, database, bridgeRuntimeLastErrorKey, "", bridgeLogger)
 
 					var roomRuntime *room.Runtime
 					if c.Bool("room-enable") {
@@ -380,18 +394,25 @@ func main() {
 
 					go runRetryScheduler(runCtx, processor, bridgeLogger)
 					go runDeferredResolverScheduler(runCtx, processor, bridgeLogger)
+					go runRuntimeHeartbeatScheduler(runCtx, database, bridgeLogger, 10*time.Second)
+					setBridgeStateBestEffort(runCtx, database, bridgeRuntimeStatusKey, "live", bridgeLogger)
+					setBridgeStateBestEffort(runCtx, database, bridgeRuntimeLastHeartbeatKey, time.Now().UTC().Format(time.RFC3339), bridgeLogger)
 
 					fmt.Println("Starting bridge engine...")
 					var runErr error
 					firehoseDone := false
 					select {
 					case <-ctx.Done():
+						setBridgeStateBestEffort(context.Background(), database, bridgeRuntimeStatusKey, "stopping", bridgeLogger)
+						setBridgeStateBestEffort(context.Background(), database, bridgeRuntimeStoppingAtKey, time.Now().UTC().Format(time.RFC3339), bridgeLogger)
 						cancelRun()
 					case err := <-errCh:
 						firehoseDone = true
 						if err != nil && !errors.Is(err, context.Canceled) {
 							runErr = err
 						}
+						setBridgeStateBestEffort(context.Background(), database, bridgeRuntimeStatusKey, "stopping", bridgeLogger)
+						setBridgeStateBestEffort(context.Background(), database, bridgeRuntimeStoppingAtKey, time.Now().UTC().Format(time.RFC3339), bridgeLogger)
 						cancelRun()
 					}
 
@@ -414,6 +435,11 @@ func main() {
 					}
 					if err := ssbRuntime.Close(); err != nil {
 						shutdownErr = errors.Join(shutdownErr, fmt.Errorf("close ssb runtime: %w", err))
+					}
+					setBridgeStateBestEffort(context.Background(), database, bridgeRuntimeStatusKey, "stopped", bridgeLogger)
+					setBridgeStateBestEffort(context.Background(), database, bridgeRuntimeStoppedAtKey, time.Now().UTC().Format(time.RFC3339), bridgeLogger)
+					if err := errors.Join(runErr, shutdownErr); err != nil {
+						setBridgeStateBestEffort(context.Background(), database, bridgeRuntimeLastErrorKey, err.Error(), bridgeLogger)
 					}
 
 					return errors.Join(runErr, shutdownErr)
@@ -853,6 +879,44 @@ func resolveSharedRepoPath(c *cli.Context) (string, error) {
 		return "", fmt.Errorf("repo path must not be empty")
 	}
 	return repoPath, nil
+}
+
+func runRuntimeHeartbeatScheduler(ctx context.Context, database *db.DB, logger *log.Logger, interval time.Duration) {
+	if database == nil {
+		return
+	}
+	if logger == nil {
+		logger = log.New(os.Stdout, "bridge: ", log.LstdFlags)
+	}
+	if interval <= 0 {
+		interval = 10 * time.Second
+	}
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			now := time.Now().UTC().Format(time.RFC3339)
+			setBridgeStateBestEffort(ctx, database, bridgeRuntimeStatusKey, "live", logger)
+			setBridgeStateBestEffort(ctx, database, bridgeRuntimeLastHeartbeatKey, now, logger)
+		}
+	}
+}
+
+func setBridgeStateBestEffort(ctx context.Context, database *db.DB, key, value string, logger *log.Logger) {
+	if database == nil || strings.TrimSpace(key) == "" {
+		return
+	}
+	if logger == nil {
+		logger = log.New(os.Stdout, "bridge: ", log.LstdFlags)
+	}
+	if err := database.SetBridgeState(ctx, key, value); err != nil {
+		logger.Printf("event=bridge_state_persist_error key=%s err=%v", key, err)
+	}
 }
 
 // runRetryScheduler periodically retries failed unpublished messages.

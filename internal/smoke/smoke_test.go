@@ -32,22 +32,25 @@ func TestBridgeSmoke(t *testing.T) {
 	defer database.Close()
 
 	const (
-		did  = "did:plc:smoketest"
-		seed = "smoke-seed-001"
+		didSource = "did:plc:smoketest"
+		didTarget = "did:plc:smoke-follow-target"
+		seed      = "smoke-seed-001"
 	)
 
 	manager := bots.NewManager([]byte(seed), nil, nil, nil)
-	feedRef, err := manager.GetFeedID(did)
-	if err != nil {
-		t.Fatalf("derive feed id: %v", err)
-	}
+	for _, did := range []string{didSource, didTarget} {
+		feedRef, err := manager.GetFeedID(did)
+		if err != nil {
+			t.Fatalf("derive feed id for %s: %v", did, err)
+		}
 
-	if err := database.AddBridgedAccount(ctx, db.BridgedAccount{
-		ATDID:     did,
-		SSBFeedID: feedRef.Ref(),
-		Active:    true,
-	}); err != nil {
-		t.Fatalf("add bridged account: %v", err)
+		if err := database.AddBridgedAccount(ctx, db.BridgedAccount{
+			ATDID:     did,
+			SSBFeedID: feedRef.Ref(),
+			Active:    true,
+		}); err != nil {
+			t.Fatalf("add bridged account %s: %v", did, err)
+		}
 	}
 
 	ssbRuntime, err := ssbruntime.Open(filepath.Join(tmpDir, "ssb-repo"), []byte(seed), nil, log.New(io.Discard, "", 0))
@@ -102,10 +105,19 @@ func TestBridgeSmoke(t *testing.T) {
 				"createdAt": "2026-01-01T00:00:02Z"
 			}`,
 		},
+		{
+			collection: mapper.RecordTypeFollow,
+			atURI:      "at://did:plc:smoketest/app.bsky.graph.follow/1",
+			atCID:      "bafy-smoke-follow",
+			payload: `{
+				"subject": "did:plc:smoke-follow-target",
+				"createdAt": "2026-01-01T00:00:03Z"
+			}`,
+		},
 	}
 
 	for _, f := range fixtures {
-		if err := processor.ProcessRecord(ctx, did, f.atURI, f.atCID, f.collection, []byte(f.payload)); err != nil {
+		if err := processor.ProcessRecord(ctx, didSource, f.atURI, f.atCID, f.collection, []byte(f.payload)); err != nil {
 			t.Fatalf("process fixture %s: %v", f.collection, err)
 		}
 	}
@@ -130,7 +142,7 @@ func TestBridgeSmoke(t *testing.T) {
 	if err := database.AddMessage(ctx, db.Message{
 		ATURI:           "at://did:plc:smoketest/app.bsky.feed.post/fail",
 		ATCID:           "bafy-smoke-fail",
-		ATDID:           did,
+		ATDID:           didSource,
 		Type:            mapper.RecordTypePost,
 		MessageState:    db.MessageStateFailed,
 		RawATJson:       `{"text":"forced fail"}`,

@@ -22,6 +22,7 @@ var supportedCollections = map[string]struct{}{
 	mapper.RecordTypePost:   {},
 	mapper.RecordTypeLike:   {},
 	mapper.RecordTypeRepost: {},
+	mapper.RecordTypeFollow: {},
 }
 
 // Processor processes ATProto commits into persisted and optionally published SSB messages.

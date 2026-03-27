@@ -40,3 +40,9 @@ func TestSinceFilterInclude(t *testing.T) {
 		t.Fatalf("expected record without createdAt to be included")
 	}
 }
+
+func TestIsSupportedCollectionIncludesFollow(t *testing.T) {
+	if !isSupportedCollection("app.bsky.graph.follow") {
+		t.Fatalf("expected app.bsky.graph.follow to be supported")
+	}
+}

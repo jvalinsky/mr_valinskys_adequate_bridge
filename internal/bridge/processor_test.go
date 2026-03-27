@@ -210,6 +210,52 @@ func TestProcessRecordDefersWhenRefsUnresolved(t *testing.T) {
 	}
 }
 
+func TestProcessRecordFollowDefersWhenContactUnresolved(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open memory db: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	processor := NewProcessor(
+		database,
+		log.New(io.Discard, "", 0),
+		WithPublisher(&mockPublisher{ref: "%should-not-publish-follow.sha256"}),
+	)
+
+	followRecord := []byte(`{
+		"subject": "did:plc:bob",
+		"createdAt": "2026-01-01T00:00:00Z"
+	}`)
+
+	err = processor.ProcessRecord(
+		ctx,
+		"did:plc:alice",
+		"at://did:plc:alice/app.bsky.graph.follow/1",
+		"bafy-follow-1",
+		mapper.RecordTypeFollow,
+		followRecord,
+	)
+	if err != nil {
+		t.Fatalf("process follow record: %v", err)
+	}
+
+	stored, err := database.GetMessage(ctx, "at://did:plc:alice/app.bsky.graph.follow/1")
+	if err != nil {
+		t.Fatalf("get follow message: %v", err)
+	}
+	if stored == nil {
+		t.Fatalf("expected stored follow message")
+	}
+	if stored.MessageState != db.MessageStateDeferred {
+		t.Fatalf("expected deferred follow message state, got %q", stored.MessageState)
+	}
+	if !strings.Contains(stored.DeferReason, "_atproto_contact=") {
+		t.Fatalf("expected follow defer reason to include contact placeholder, got %q", stored.DeferReason)
+	}
+}
+
 func TestProcessRecordPublishesAndPersistsMetadata(t *testing.T) {
 	database, err := db.Open(":memory:")
 	if err != nil {
@@ -412,6 +458,66 @@ func TestResolveDeferredMessagesPublishesWhenDependencyAppears(t *testing.T) {
 	}
 }
 
+func TestResolveDeferredMessagesPublishesFollowWhenContactAppears(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open memory db: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	processor := NewProcessor(
+		database,
+		log.New(io.Discard, "", 0),
+		WithPublisher(&mockPublisher{ref: "%resolved-follow.sha256"}),
+	)
+
+	if err := database.AddMessage(ctx, db.Message{
+		ATURI:              "at://did:plc:alice/app.bsky.graph.follow/resolve-1",
+		ATCID:              "bafy-follow-resolve",
+		ATDID:              "did:plc:alice",
+		Type:               mapper.RecordTypeFollow,
+		MessageState:       db.MessageStateDeferred,
+		RawATJson:          `{"subject":"did:plc:bob","createdAt":"2026-01-01T00:00:00Z"}`,
+		RawSSBJson:         `{"type":"contact","following":true,"_atproto_contact":"did:plc:bob"}`,
+		DeferReason:        "_atproto_contact=did:plc:bob",
+		DeferAttempts:      1,
+		LastDeferAttemptAt: func() *time.Time { v := time.Now().UTC().Add(-time.Minute); return &v }(),
+	}); err != nil {
+		t.Fatalf("seed deferred follow message: %v", err)
+	}
+
+	if err := database.AddBridgedAccount(ctx, db.BridgedAccount{
+		ATDID:     "did:plc:bob",
+		SSBFeedID: "@bob.ed25519",
+		Active:    true,
+	}); err != nil {
+		t.Fatalf("seed bridged account: %v", err)
+	}
+
+	result, err := processor.ResolveDeferredMessages(ctx, 10)
+	if err != nil {
+		t.Fatalf("resolve deferred follow: %v", err)
+	}
+	if result.Published != 1 {
+		t.Fatalf("expected 1 published deferred follow, got %+v", result)
+	}
+
+	stored, err := database.GetMessage(ctx, "at://did:plc:alice/app.bsky.graph.follow/resolve-1")
+	if err != nil {
+		t.Fatalf("get resolved follow message: %v", err)
+	}
+	if stored == nil {
+		t.Fatalf("expected resolved follow message")
+	}
+	if stored.MessageState != db.MessageStatePublished {
+		t.Fatalf("expected follow message state published, got %q", stored.MessageState)
+	}
+	if stored.SSBMsgRef != "%resolved-follow.sha256" {
+		t.Fatalf("expected resolved follow publish ref, got %q", stored.SSBMsgRef)
+	}
+}
+
 func TestProcessDeleteOpMarksDeletedAndPublishesTombstone(t *testing.T) {
 	database, err := db.Open(":memory:")
 	if err != nil {
@@ -445,6 +551,39 @@ func TestProcessDeleteOpMarksDeletedAndPublishesTombstone(t *testing.T) {
 	}
 	if stored.DeletedSeq == nil || *stored.DeletedSeq != 42 {
 		t.Fatalf("expected deleted seq 42, got %+v", stored.DeletedSeq)
+	}
+}
+
+func TestProcessDeleteOpMarksFollowDeletedAndPublishesTombstone(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open memory db: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	processor := NewProcessor(
+		database,
+		log.New(io.Discard, "", 0),
+		WithPublisher(&mockPublisher{ref: "%follow-tombstone.sha256"}),
+	)
+
+	if err := processor.processDeleteOp(ctx, "did:plc:alice", "app.bsky.graph.follow/123", 77); err != nil {
+		t.Fatalf("process follow delete op: %v", err)
+	}
+
+	stored, err := database.GetMessage(ctx, "at://did:plc:alice/app.bsky.graph.follow/123")
+	if err != nil {
+		t.Fatalf("get deleted follow message: %v", err)
+	}
+	if stored == nil {
+		t.Fatalf("expected deleted follow message row")
+	}
+	if stored.MessageState != db.MessageStateDeleted {
+		t.Fatalf("expected follow deleted state, got %q", stored.MessageState)
+	}
+	if stored.SSBMsgRef != "%follow-tombstone.sha256" {
+		t.Fatalf("expected follow tombstone publish ref, got %q", stored.SSBMsgRef)
 	}
 }
 

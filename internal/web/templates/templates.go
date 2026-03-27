@@ -94,7 +94,13 @@ const dashboardContent = `
         <div class="bg-white overflow-hidden shadow rounded-lg">
             <div class="p-5">
                 <div class="text-sm text-gray-500">Bridge Status</div>
-                <div class="text-xl font-semibold text-gray-900">{{if .Active}}Active{{else}}Stopped{{end}}</div>
+                <div class="text-xl font-semibold text-gray-900">{{.BridgeStatus}}</div>
+            </div>
+        </div>
+        <div class="bg-white overflow-hidden shadow rounded-lg">
+            <div class="p-5">
+                <div class="text-sm text-gray-500">Last Heartbeat</div>
+                <div class="text-lg font-semibold text-gray-900">{{if .LastHeartbeat}}{{.LastHeartbeat}}{{else}}(not set){{end}}</div>
             </div>
         </div>
     </div>
@@ -331,7 +337,8 @@ type DashboardData struct {
 	DeletedCount        int
 	BlobCount           int
 	FirehoseCursor      string
-	Active              bool
+	BridgeStatus        string
+	LastHeartbeat       string
 }
 
 // AccountRow is one bridged account row in the accounts table.

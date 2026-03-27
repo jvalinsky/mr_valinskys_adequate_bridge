@@ -1,9 +1,15 @@
 package main
 
 import (
+	"context"
 	"flag"
+	"io"
+	"log"
+	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/mr_valinskys_adequate_bridge/internal/db"
 	"github.com/urfave/cli/v2"
 )
 
@@ -68,4 +74,34 @@ func testCLIContext(t *testing.T, args ...string) *cli.Context {
 	}
 
 	return cli.NewContext(nil, set, nil)
+}
+
+func TestRunRuntimeHeartbeatSchedulerUpdatesBridgeState(t *testing.T) {
+	database, err := db.Open(filepath.Join(t.TempDir(), "bridge.sqlite"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer database.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go runRuntimeHeartbeatScheduler(ctx, database, log.New(io.Discard, "", 0), 5*time.Millisecond)
+
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		status, ok, err := database.GetBridgeState(context.Background(), bridgeRuntimeStatusKey)
+		if err != nil {
+			t.Fatalf("read bridge status: %v", err)
+		}
+		heartbeat, hbOK, err := database.GetBridgeState(context.Background(), bridgeRuntimeLastHeartbeatKey)
+		if err != nil {
+			t.Fatalf("read bridge heartbeat: %v", err)
+		}
+		if ok && hbOK && status == "live" && heartbeat != "" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatalf("runtime heartbeat scheduler did not write expected bridge state keys")
 }
