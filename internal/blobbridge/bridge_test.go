@@ -12,6 +12,7 @@ import (
 	ssbrepo "go.cryptoscope.co/ssb/repo"
 
 	"github.com/mr_valinskys_adequate_bridge/internal/db"
+	"github.com/mr_valinskys_adequate_bridge/internal/mapper"
 )
 
 type fakeLexClient struct {
@@ -29,7 +30,7 @@ func (f *fakeLexClient) LexDo(_ context.Context, _ string, _ string, _ string, _
 
 var _ lexutil.LexClient = (*fakeLexClient)(nil)
 
-func TestBridgeRecordBlobsFetchesStoresAndMaps(t *testing.T) {
+func TestBridgeRecordBlobsMapsPostImagesToMentionsAndMarkdown(t *testing.T) {
 	database, err := db.Open(":memory:")
 	if err != nil {
 		t.Fatalf("open db: %v", err)
@@ -50,29 +51,40 @@ func TestBridgeRecordBlobsFetchesStoresAndMaps(t *testing.T) {
 	)
 
 	mapped := map[string]interface{}{
-		"type":                "about",
-		"_atproto_avatar_cid": "bafy-avatar",
+		"type": "post",
+		"text": "hello",
 	}
 	raw := []byte(`{
-		"avatar": {
-			"$type": "blob",
-			"ref": {"$link": "bafy-avatar"},
-			"mimeType": "image/png"
-		}
+		"text":"hello",
+		"embed":{
+			"$type":"app.bsky.embed.images",
+			"images":[
+				{
+					"alt":"Sunset",
+					"aspectRatio":{"width":800,"height":600},
+					"image":{"$type":"blob","ref":{"$link":"bafyreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"},"mimeType":"image/png","size":1234}
+				}
+			]
+		},
+		"createdAt":"2023-01-01T00:00:00Z"
 	}`)
 
-	if err := bridge.BridgeRecordBlobs(context.Background(), "did:plc:alice", mapped, raw); err != nil {
+	if err := bridge.BridgeRecordBlobs(context.Background(), "did:plc:alice", mapper.RecordTypePost, mapped, raw); err != nil {
 		t.Fatalf("bridge record blobs: %v", err)
 	}
 
-	if _, ok := mapped["image"].(string); !ok {
-		t.Fatalf("expected mapped image field")
+	mentions, ok := mapped["mentions"].([]map[string]interface{})
+	if !ok || len(mentions) != 1 {
+		t.Fatalf("expected one blob mention, got %+v", mapped["mentions"])
 	}
-	if _, ok := mapped["blob_refs"].([]string); !ok {
-		t.Fatalf("expected blob_refs field")
+	if mentions[0]["name"] != "Sunset" || mentions[0]["type"] != "image/png" {
+		t.Fatalf("unexpected blob mention metadata: %+v", mentions[0])
+	}
+	if got := mapped["text"]; got == nil || got.(string) == "hello" {
+		t.Fatalf("expected markdown attachment text, got %v", got)
 	}
 
-	blob, err := database.GetBlob(context.Background(), "bafy-avatar")
+	blob, err := database.GetBlob(context.Background(), "bafyreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku")
 	if err != nil {
 		t.Fatalf("get blob mapping: %v", err)
 	}
@@ -81,7 +93,52 @@ func TestBridgeRecordBlobsFetchesStoresAndMaps(t *testing.T) {
 	}
 }
 
-func TestBridgeRecordBlobsUsesExistingMappingWithoutFetch(t *testing.T) {
+func TestBridgeRecordBlobsIgnoresExternalThumbs(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer database.Close()
+
+	repo := ssbrepo.New(filepath.Join(t.TempDir(), "repo"))
+	blobStore, err := ssbrepo.OpenBlobStore(repo)
+	if err != nil {
+		t.Fatalf("open blobstore: %v", err)
+	}
+
+	bridge := New(database, blobStore, nil, log.New(io.Discard, "", 0))
+
+	mapped := map[string]interface{}{
+		"type": "post",
+		"text": "hello",
+	}
+	raw := []byte(`{
+		"text":"hello",
+		"embed":{
+			"$type":"app.bsky.embed.external",
+			"external":{
+				"uri":"https://example.com",
+				"title":"Example",
+				"description":"Desc",
+				"thumb":{"$type":"blob","ref":{"$link":"bafyreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"},"mimeType":"image/jpeg","size":321}
+			}
+		},
+		"createdAt":"2023-01-01T00:00:00Z"
+	}`)
+
+	if err := bridge.BridgeRecordBlobs(context.Background(), "did:plc:alice", mapper.RecordTypePost, mapped, raw); err != nil {
+		t.Fatalf("bridge record blobs: %v", err)
+	}
+
+	if _, ok := mapped["mentions"]; ok {
+		t.Fatalf("expected no blob mention for external thumb: %+v", mapped)
+	}
+	if mapped["text"] != "hello" {
+		t.Fatalf("expected unchanged text, got %v", mapped["text"])
+	}
+}
+
+func TestBridgeRecordBlobsMapsProfileAvatarUsingExistingBlob(t *testing.T) {
 	database, err := db.Open(":memory:")
 	if err != nil {
 		t.Fatalf("open db: %v", err)
@@ -89,7 +146,7 @@ func TestBridgeRecordBlobsUsesExistingMappingWithoutFetch(t *testing.T) {
 	defer database.Close()
 
 	if err := database.AddBlob(context.Background(), db.Blob{
-		ATCID:      "bafy-avatar",
+		ATCID:      "bafyreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku",
 		SSBBlobRef: "&existing.sha256",
 		Size:       42,
 		MimeType:   "image/png",
@@ -103,23 +160,25 @@ func TestBridgeRecordBlobsUsesExistingMappingWithoutFetch(t *testing.T) {
 		t.Fatalf("open blobstore: %v", err)
 	}
 
-	bridge := New(
-		database,
-		blobStore,
-		nil,
-		log.New(io.Discard, "", 0),
-	)
+	bridge := New(database, blobStore, nil, log.New(io.Discard, "", 0))
 
 	mapped := map[string]interface{}{
-		"type":                "about",
-		"_atproto_avatar_cid": "bafy-avatar",
+		"type": "about",
 	}
+	raw := []byte(`{
+		"displayName":"Alice",
+		"avatar":{"$type":"blob","ref":{"$link":"bafyreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"},"mimeType":"image/png","size":42}
+	}`)
 
-	if err := bridge.BridgeRecordBlobs(context.Background(), "did:plc:alice", mapped, nil); err != nil {
+	if err := bridge.BridgeRecordBlobs(context.Background(), "did:plc:alice", mapper.RecordTypeProfile, mapped, raw); err != nil {
 		t.Fatalf("bridge record blobs: %v", err)
 	}
 
-	if mapped["image"] != "&existing.sha256" {
-		t.Fatalf("expected existing blob ref to be used, got %v", mapped["image"])
+	image, ok := mapped["image"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected image metadata map, got %T", mapped["image"])
+	}
+	if image["link"] != "&existing.sha256" || image["type"] != "image/png" {
+		t.Fatalf("unexpected profile image mapping: %+v", image)
 	}
 }

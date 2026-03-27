@@ -4,6 +4,7 @@ package mapper
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	appbsky "github.com/bluesky-social/indigo/api/bsky"
@@ -20,7 +21,7 @@ const (
 )
 
 // MapRecord maps one ATProto record payload into an SSB message map.
-func MapRecord(recordType string, rawJSON []byte) (map[string]interface{}, error) {
+func MapRecord(recordType, atDID string, rawJSON []byte) (map[string]interface{}, error) {
 	switch recordType {
 	case RecordTypePost:
 		return mapPost(rawJSON)
@@ -33,7 +34,7 @@ func MapRecord(recordType string, rawJSON []byte) (map[string]interface{}, error
 	case RecordTypeBlock:
 		return mapBlock(rawJSON)
 	case RecordTypeProfile:
-		return mapProfile(rawJSON)
+		return mapProfile(atDID, rawJSON)
 	default:
 		return nil, fmt.Errorf("unsupported record type: %s", recordType)
 	}
@@ -45,33 +46,26 @@ func mapPost(rawJSON []byte) (map[string]interface{}, error) {
 		return nil, err
 	}
 
+	text, mentions := rewriteRichText(post.Text, post.Facets, post.Tags)
 	res := map[string]interface{}{
 		"type": "post",
-		"text": post.Text,
+		"text": text,
+	}
+	if len(mentions) > 0 {
+		res["mentions"] = mentions
 	}
 
-	// Preserve mention metadata so it can be resolved to SSB feed refs later.
-	if len(post.Facets) > 0 {
-		var mentions []map[string]string
-		for _, facet := range post.Facets {
-			for _, feat := range facet.Features {
-				if feat.RichtextFacet_Mention != nil {
-					mentions = append(mentions, map[string]string{
-						"link": feat.RichtextFacet_Mention.Did,
-						"name": "atproto_user", // Placeholder until DID->feed resolution is available.
-					})
-				}
-			}
-		}
-		if len(mentions) > 0 {
-			res["mentions"] = mentions
-		}
-	}
-
-	// Preserve reply references as AT URIs for a later resolution pass.
 	if post.Reply != nil {
-		res["_atproto_reply_root"] = post.Reply.Root.Uri
-		res["_atproto_reply_parent"] = post.Reply.Parent.Uri
+		if post.Reply.Root != nil {
+			res["_atproto_reply_root"] = post.Reply.Root.Uri
+		}
+		if post.Reply.Parent != nil {
+			res["_atproto_reply_parent"] = post.Reply.Parent.Uri
+		}
+	}
+
+	if quoteURI := quoteSubjectURI(post.Embed); quoteURI != "" {
+		res["_atproto_quote_subject"] = quoteURI
 	}
 
 	return res, nil
@@ -98,7 +92,7 @@ func mapRepost(rawJSON []byte) (map[string]interface{}, error) {
 
 	return map[string]interface{}{
 		"type":                    "post",
-		"text":                    "", // Reposts typically contain no text unless they are quote-post variants.
+		"text":                    "",
 		"_atproto_repost_subject": repost.Subject.Uri,
 	}, nil
 }
@@ -112,6 +106,7 @@ func mapFollow(rawJSON []byte) (map[string]interface{}, error) {
 	return map[string]interface{}{
 		"type":             "contact",
 		"following":        true,
+		"blocking":         false,
 		"_atproto_contact": follow.Subject,
 	}, nil
 }
@@ -124,19 +119,21 @@ func mapBlock(rawJSON []byte) (map[string]interface{}, error) {
 
 	return map[string]interface{}{
 		"type":             "contact",
+		"following":        false,
 		"blocking":         true,
 		"_atproto_contact": block.Subject,
 	}, nil
 }
 
-func mapProfile(rawJSON []byte) (map[string]interface{}, error) {
+func mapProfile(atDID string, rawJSON []byte) (map[string]interface{}, error) {
 	var profile appbsky.ActorProfile
 	if err := json.Unmarshal(rawJSON, &profile); err != nil {
 		return nil, err
 	}
 
 	res := map[string]interface{}{
-		"type": "about",
+		"type":               "about",
+		"_atproto_about_did": atDID,
 	}
 
 	if profile.DisplayName != nil {
@@ -147,12 +144,128 @@ func mapProfile(rawJSON []byte) (map[string]interface{}, error) {
 		res["description"] = *profile.Description
 	}
 
-	if profile.Avatar != nil {
-		// Keep the CID so blob bridging can fetch and replace it with an SSB blob ref.
-		res["_atproto_avatar_cid"] = profile.Avatar.Ref.String()
+	return res, nil
+}
+
+type textFacet struct {
+	start int
+	end   int
+	facet *appbsky.RichtextFacet
+}
+
+func rewriteRichText(text string, facets []*appbsky.RichtextFacet, tags []string) (string, []map[string]interface{}) {
+	textBytes := []byte(text)
+	ranged := make([]textFacet, 0, len(facets))
+	for _, facet := range facets {
+		if facet == nil || facet.Index == nil {
+			continue
+		}
+		ranged = append(ranged, textFacet{
+			start: int(facet.Index.ByteStart),
+			end:   int(facet.Index.ByteEnd),
+			facet: facet,
+		})
+	}
+	sort.Slice(ranged, func(i, j int) bool {
+		if ranged[i].start == ranged[j].start {
+			return ranged[i].end < ranged[j].end
+		}
+		return ranged[i].start < ranged[j].start
+	})
+
+	var builder strings.Builder
+	mentions := make([]map[string]interface{}, 0, len(facets)+len(tags))
+	seenMentions := make(map[string]struct{})
+	prev := 0
+	for _, current := range ranged {
+		if current.start < prev || current.start < 0 || current.end < current.start || current.end > len(textBytes) {
+			continue
+		}
+		builder.Write(textBytes[prev:current.start])
+
+		segment := string(textBytes[current.start:current.end])
+		builder.WriteString(rewriteFacetSegment(segment, current.facet))
+		mentions = appendFacetMentions(mentions, seenMentions, segment, current.facet)
+		prev = current.end
+	}
+	builder.Write(textBytes[prev:])
+
+	for _, tag := range tags {
+		tag = strings.TrimSpace(strings.TrimPrefix(tag, "#"))
+		if tag == "" {
+			continue
+		}
+		mentions = appendUniqueMention(mentions, seenMentions, map[string]interface{}{
+			"link": "#" + tag,
+			"name": "#" + tag,
+		})
 	}
 
-	return res, nil
+	return builder.String(), mentions
+}
+
+func rewriteFacetSegment(segment string, facet *appbsky.RichtextFacet) string {
+	if facet == nil {
+		return segment
+	}
+	for _, feature := range facet.Features {
+		if feature == nil || feature.RichtextFacet_Link == nil {
+			continue
+		}
+		uri := strings.TrimSpace(feature.RichtextFacet_Link.Uri)
+		if uri == "" || strings.TrimSpace(segment) == uri {
+			return segment
+		}
+		return fmt.Sprintf("[%s](%s)", segment, uri)
+	}
+	return segment
+}
+
+func appendFacetMentions(mentions []map[string]interface{}, seen map[string]struct{}, segment string, facet *appbsky.RichtextFacet) []map[string]interface{} {
+	if facet == nil {
+		return mentions
+	}
+	for _, feature := range facet.Features {
+		if feature == nil {
+			continue
+		}
+		switch {
+		case feature.RichtextFacet_Mention != nil:
+			mentions = appendUniqueMention(mentions, seen, map[string]interface{}{
+				"link": feature.RichtextFacet_Mention.Did,
+				"name": segment,
+			})
+		case feature.RichtextFacet_Tag != nil:
+			tag := strings.TrimSpace(strings.TrimPrefix(feature.RichtextFacet_Tag.Tag, "#"))
+			if tag == "" {
+				continue
+			}
+			name := segment
+			if strings.TrimSpace(name) == "" {
+				name = "#" + tag
+			}
+			mentions = appendUniqueMention(mentions, seen, map[string]interface{}{
+				"link": "#" + tag,
+				"name": name,
+			})
+		}
+	}
+	return mentions
+}
+
+func quoteSubjectURI(embed *appbsky.FeedPost_Embed) string {
+	if embed == nil {
+		return ""
+	}
+	if embed.EmbedRecord != nil && embed.EmbedRecord.Record != nil {
+		return strings.TrimSpace(embed.EmbedRecord.Record.Uri)
+	}
+	if embed.EmbedRecordWithMedia != nil &&
+		embed.EmbedRecordWithMedia.Record != nil &&
+		embed.EmbedRecordWithMedia.Record.Record != nil {
+		return strings.TrimSpace(embed.EmbedRecordWithMedia.Record.Record.Uri)
+	}
+	return ""
 }
 
 // ReplaceATProtoRefs resolves ATProto URI and DID placeholders in msg to SSB refs.
@@ -180,11 +293,16 @@ func ReplaceATProtoRefs(msg map[string]interface{}, lookupURI func(string) strin
 		}
 	}
 
-	if repostURI, ok := msg["_atproto_repost_subject"].(string); ok {
-		if ssbRef := lookupURI(repostURI); ssbRef != "" {
-			// Many SSB clients recognize repost intent when the referenced message ID appears in text.
-			msg["text"] = fmt.Sprintf("[%s]", ssbRef)
-			delete(msg, "_atproto_repost_subject")
+	if quoteURI, ok := msg["_atproto_quote_subject"].(string); ok {
+		if ssbRef := lookupURI(quoteURI); ssbRef != "" {
+			mentions := normalizedMentions(msg["mentions"])
+			mentions = appendUniqueMention(mentions, make(map[string]struct{}), map[string]interface{}{
+				"link": ssbRef,
+				"name": "quoted post",
+			})
+			msg["mentions"] = mentions
+			msg["text"] = appendMarkdownBlock(asString(msg["text"]), fmt.Sprintf("[quoted post](%s)", ssbRef))
+			delete(msg, "_atproto_quote_subject")
 		}
 	}
 
@@ -195,15 +313,30 @@ func ReplaceATProtoRefs(msg map[string]interface{}, lookupURI func(string) strin
 		}
 	}
 
-	// Resolve mention links that still point at DIDs.
-	if mentions, ok := msg["mentions"].([]map[string]string); ok {
-		for i, m := range mentions {
-			if did, hasLink := m["link"]; hasLink && strings.HasPrefix(did, "did:") {
-				if ssbFeed := lookupDID(did); ssbFeed != "" {
-					mentions[i]["link"] = ssbFeed
-				}
-			}
+	if aboutDID, ok := msg["_atproto_about_did"].(string); ok {
+		if ssbFeed := lookupDID(aboutDID); ssbFeed != "" {
+			msg["about"] = ssbFeed
+			delete(msg, "_atproto_about_did")
 		}
+	}
+
+	mentions := normalizedMentions(msg["mentions"])
+	resolved := make([]map[string]interface{}, 0, len(mentions))
+	for _, mention := range mentions {
+		link, _ := mention["link"].(string)
+		if !strings.HasPrefix(link, "did:") {
+			resolved = append(resolved, mention)
+			continue
+		}
+		if ssbFeed := lookupDID(link); ssbFeed != "" {
+			mention["link"] = ssbFeed
+			resolved = append(resolved, mention)
+		}
+	}
+	if len(resolved) > 0 {
+		msg["mentions"] = resolved
+	} else {
+		delete(msg, "mentions")
 	}
 }
 
@@ -213,8 +346,9 @@ func UnresolvedATProtoRefs(msg map[string]interface{}) []string {
 		"_atproto_reply_root",
 		"_atproto_reply_parent",
 		"_atproto_subject",
-		"_atproto_repost_subject",
+		"_atproto_quote_subject",
 		"_atproto_contact",
+		"_atproto_about_did",
 	}
 
 	unresolved := make([]string, 0, len(keys))
@@ -224,4 +358,57 @@ func UnresolvedATProtoRefs(msg map[string]interface{}) []string {
 		}
 	}
 	return unresolved
+}
+
+func appendUniqueMention(mentions []map[string]interface{}, seen map[string]struct{}, mention map[string]interface{}) []map[string]interface{} {
+	link := strings.TrimSpace(asString(mention["link"]))
+	if link == "" {
+		return mentions
+	}
+	key := link + "|" + strings.TrimSpace(asString(mention["name"]))
+	if _, ok := seen[key]; ok {
+		return mentions
+	}
+	seen[key] = struct{}{}
+	mentions = append(mentions, mention)
+	return mentions
+}
+
+func normalizedMentions(raw interface{}) []map[string]interface{} {
+	switch typed := raw.(type) {
+	case nil:
+		return nil
+	case []map[string]interface{}:
+		return typed
+	case []interface{}:
+		out := make([]map[string]interface{}, 0, len(typed))
+		for _, item := range typed {
+			m, ok := item.(map[string]interface{})
+			if ok {
+				out = append(out, m)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func appendMarkdownBlock(text, block string) string {
+	text = strings.TrimRight(text, "\n")
+	block = strings.TrimSpace(block)
+	if block == "" {
+		return text
+	}
+	if text == "" {
+		return block
+	}
+	return text + "\n\n" + block
+}
+
+func asString(raw interface{}) string {
+	if raw == nil {
+		return ""
+	}
+	return fmt.Sprint(raw)
 }

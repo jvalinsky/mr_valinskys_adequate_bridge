@@ -11,10 +11,12 @@ import (
 	"strings"
 
 	"github.com/bluesky-social/indigo/api/atproto"
+	appbsky "github.com/bluesky-social/indigo/api/bsky"
 	lexutil "github.com/bluesky-social/indigo/lex/util"
 	"go.cryptoscope.co/ssb"
 
 	"github.com/mr_valinskys_adequate_bridge/internal/db"
+	"github.com/mr_valinskys_adequate_bridge/internal/mapper"
 )
 
 // Bridge fetches ATProto blobs, stores them in SSB, and persists CID mappings.
@@ -38,115 +40,226 @@ func New(database *db.DB, blobStore ssb.BlobStore, xrpcClient lexutil.LexClient,
 	}
 }
 
-// BridgeRecordBlobs resolves blobs referenced by a mapped record into SSB blob refs.
-func (b *Bridge) BridgeRecordBlobs(ctx context.Context, atDID string, mapped map[string]interface{}, rawRecordJSON []byte) error {
-	candidates, err := collectBlobCandidates(mapped, rawRecordJSON)
-	if err != nil {
-		return fmt.Errorf("collect blob candidates: %w", err)
-	}
-	if len(candidates) == 0 {
-		delete(mapped, "_atproto_avatar_cid")
+// BridgeRecordBlobs resolves blobs referenced by a mapped record into SSB-native fields.
+func (b *Bridge) BridgeRecordBlobs(ctx context.Context, atDID, collection string, mapped map[string]interface{}, rawRecordJSON []byte) error {
+	switch collection {
+	case mapper.RecordTypePost:
+		return b.bridgePostBlobs(ctx, atDID, mapped, rawRecordJSON)
+	case mapper.RecordTypeProfile:
+		return b.bridgeProfileBlobs(ctx, atDID, mapped, rawRecordJSON)
+	default:
 		return nil
 	}
-
-	var refs []string
-	for _, cand := range candidates {
-		blobRef, err := b.ensureBlob(ctx, atDID, cand)
-		if err != nil {
-			return err
-		}
-		refs = append(refs, blobRef)
-
-		if avatarCID, ok := mapped["_atproto_avatar_cid"].(string); ok && avatarCID == cand.CID {
-			mapped["image"] = blobRef
-		}
-	}
-
-	delete(mapped, "_atproto_avatar_cid")
-	if len(refs) > 0 {
-		mapped["blob_refs"] = refs
-	}
-	return nil
 }
 
 type blobCandidate struct {
 	CID      string
 	MimeType string
+	Size     int64
+	Width    int
+	Height   int
+	Label    string
 }
 
-func collectBlobCandidates(mapped map[string]interface{}, rawRecordJSON []byte) ([]blobCandidate, error) {
-	candidates := make([]blobCandidate, 0, 4)
-	seen := make(map[string]struct{})
-
-	add := func(cid, mimeType string) {
-		if cid == "" {
-			return
-		}
-		if _, ok := seen[cid]; ok {
-			return
-		}
-		seen[cid] = struct{}{}
-		candidates = append(candidates, blobCandidate{CID: cid, MimeType: mimeType})
+func (b *Bridge) bridgePostBlobs(ctx context.Context, atDID string, mapped map[string]interface{}, rawRecordJSON []byte) error {
+	var post appbsky.FeedPost
+	if err := json.Unmarshal(rawRecordJSON, &post); err != nil {
+		return fmt.Errorf("decode post blobs: %w", err)
 	}
 
-	if avatarCID, ok := mapped["_atproto_avatar_cid"].(string); ok {
-		add(avatarCID, "")
-	}
-
-	var raw any
-	if len(rawRecordJSON) > 0 {
-		if err := json.Unmarshal(rawRecordJSON, &raw); err != nil {
-			return nil, err
+	candidates := postBlobCandidates(&post)
+	for i, candidate := range candidates {
+		blobRef, err := b.ensureBlob(ctx, atDID, candidate)
+		if err != nil {
+			return err
 		}
-		walkAny(raw, func(v map[string]any) {
-			typ, _ := v["$type"].(string)
-			if typ != "blob" {
-				return
-			}
-			add(extractBlobCID(v), extractBlobMIME(v))
+
+		appendMention(mapped, map[string]interface{}{
+			"link":   blobRef,
+			"name":   candidate.Label,
+			"size":   candidate.Size,
+			"width":  candidate.Width,
+			"height": candidate.Height,
+			"type":   candidate.MimeType,
 		})
+		mapped["text"] = appendMarkdownBlock(asString(mapped["text"]), fmt.Sprintf("![%s](%s)", escapeMarkdownLabel(candidate.Label), blobRef))
+
+		_ = i
 	}
 
-	return candidates, nil
+	return nil
 }
 
-func extractBlobCID(v map[string]any) string {
-	if ref, ok := v["ref"]; ok {
-		switch t := ref.(type) {
-		case map[string]any:
-			if link, ok := t["$link"].(string); ok {
-				return link
+func (b *Bridge) bridgeProfileBlobs(ctx context.Context, atDID string, mapped map[string]interface{}, rawRecordJSON []byte) error {
+	var profile appbsky.ActorProfile
+	if err := json.Unmarshal(rawRecordJSON, &profile); err != nil {
+		return fmt.Errorf("decode profile blobs: %w", err)
+	}
+	if profile.Avatar == nil {
+		return nil
+	}
+
+	candidate := blobCandidate{
+		CID:      profile.Avatar.Ref.String(),
+		MimeType: profile.Avatar.MimeType,
+		Size:     profile.Avatar.Size,
+	}
+	blobRef, err := b.ensureBlob(ctx, atDID, candidate)
+	if err != nil {
+		return err
+	}
+
+	image := map[string]interface{}{
+		"link": blobRef,
+	}
+	if candidate.MimeType != "" {
+		image["type"] = candidate.MimeType
+	}
+	if candidate.Size > 0 {
+		image["size"] = candidate.Size
+	}
+	mapped["image"] = image
+	return nil
+}
+
+func postBlobCandidates(post *appbsky.FeedPost) []blobCandidate {
+	if post == nil || post.Embed == nil {
+		return nil
+	}
+	if post.Embed.EmbedImages != nil {
+		return imageCandidates(post.Embed.EmbedImages.Images)
+	}
+	if post.Embed.EmbedVideo != nil {
+		return []blobCandidate{videoCandidate(post.Embed.EmbedVideo, 0)}
+	}
+	if post.Embed.EmbedRecordWithMedia != nil && post.Embed.EmbedRecordWithMedia.Media != nil {
+		media := post.Embed.EmbedRecordWithMedia.Media
+		if media.EmbedImages != nil {
+			return imageCandidates(media.EmbedImages.Images)
+		}
+		if media.EmbedVideo != nil {
+			return []blobCandidate{videoCandidate(media.EmbedVideo, 0)}
+		}
+	}
+	return nil
+}
+
+func imageCandidates(images []*appbsky.EmbedImages_Image) []blobCandidate {
+	candidates := make([]blobCandidate, 0, len(images))
+	for i, image := range images {
+		if image == nil || image.Image == nil {
+			continue
+		}
+		candidate := blobCandidate{
+			CID:      image.Image.Ref.String(),
+			MimeType: image.Image.MimeType,
+			Size:     image.Image.Size,
+			Label:    labelOrFallback(image.Alt, i+1),
+		}
+		if image.AspectRatio != nil {
+			candidate.Width = int(image.AspectRatio.Width)
+			candidate.Height = int(image.AspectRatio.Height)
+		}
+		candidates = append(candidates, candidate)
+	}
+	return candidates
+}
+
+func videoCandidate(video *appbsky.EmbedVideo, index int) blobCandidate {
+	label := ""
+	if video != nil && video.Alt != nil {
+		label = *video.Alt
+	}
+	candidate := blobCandidate{
+		Label: labelOrFallback(label, index+1),
+	}
+	if video == nil || video.Video == nil {
+		return candidate
+	}
+	candidate.CID = video.Video.Ref.String()
+	candidate.MimeType = video.Video.MimeType
+	candidate.Size = video.Video.Size
+	if video.AspectRatio != nil {
+		candidate.Width = int(video.AspectRatio.Width)
+		candidate.Height = int(video.AspectRatio.Height)
+	}
+	return candidate
+}
+
+func labelOrFallback(label string, index int) string {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return fmt.Sprintf("bridged attachment %d", index)
+	}
+	return label
+}
+
+func appendMention(mapped map[string]interface{}, mention map[string]interface{}) {
+	raw := mapped["mentions"]
+	mentions := make([]map[string]interface{}, 0, 1)
+	switch typed := raw.(type) {
+	case []map[string]interface{}:
+		mentions = append(mentions, typed...)
+	case []interface{}:
+		for _, item := range typed {
+			if m, ok := item.(map[string]interface{}); ok {
+				mentions = append(mentions, m)
 			}
-		case string:
-			return t
 		}
 	}
 
-	if cid, ok := v["cid"].(string); ok {
-		return cid
+	link := asString(mention["link"])
+	for _, existing := range mentions {
+		if asString(existing["link"]) == link {
+			return
+		}
 	}
-	return ""
+
+	normalized := map[string]interface{}{
+		"link": link,
+	}
+	if name := strings.TrimSpace(asString(mention["name"])); name != "" {
+		normalized["name"] = name
+	}
+	if size, ok := mention["size"].(int64); ok && size > 0 {
+		normalized["size"] = size
+	}
+	if width, ok := mention["width"].(int); ok && width > 0 {
+		normalized["width"] = width
+	}
+	if height, ok := mention["height"].(int); ok && height > 0 {
+		normalized["height"] = height
+	}
+	if mime := strings.TrimSpace(asString(mention["type"])); mime != "" {
+		normalized["type"] = mime
+	}
+
+	mentions = append(mentions, normalized)
+	mapped["mentions"] = mentions
 }
 
-func extractBlobMIME(v map[string]any) string {
-	if mime, ok := v["mimeType"].(string); ok {
-		return mime
+func appendMarkdownBlock(text, block string) string {
+	text = strings.TrimRight(text, "\n")
+	block = strings.TrimSpace(block)
+	if block == "" {
+		return text
 	}
-	return ""
+	if text == "" {
+		return block
+	}
+	return text + "\n\n" + block
 }
 
-func walkAny(v any, fn func(map[string]any)) {
-	switch t := v.(type) {
-	case map[string]any:
-		fn(t)
-		for _, next := range t {
-			walkAny(next, fn)
-		}
-	case []any:
-		for _, next := range t {
-			walkAny(next, fn)
-		}
+func escapeMarkdownLabel(label string) string {
+	label = strings.ReplaceAll(label, "]", "\\]")
+	return label
+}
+
+func asString(raw interface{}) string {
+	if raw == nil {
+		return ""
 	}
+	return fmt.Sprint(raw)
 }
 
 func (b *Bridge) ensureBlob(ctx context.Context, atDID string, cand blobCandidate) (string, error) {

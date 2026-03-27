@@ -32,7 +32,7 @@ type mockBlobBridge struct {
 	err error
 }
 
-func (m *mockBlobBridge) BridgeRecordBlobs(context.Context, string, map[string]interface{}, []byte) error {
+func (m *mockBlobBridge) BridgeRecordBlobs(context.Context, string, string, map[string]interface{}, []byte) error {
 	return m.err
 }
 
@@ -173,6 +173,23 @@ func deepCopyMap(in map[string]interface{}) map[string]interface{} {
 		panic(err)
 	}
 	return out
+}
+
+func mentionMaps(raw interface{}) []map[string]interface{} {
+	switch typed := raw.(type) {
+	case []map[string]interface{}:
+		return typed
+	case []interface{}:
+		out := make([]map[string]interface{}, 0, len(typed))
+		for _, item := range typed {
+			if m, ok := item.(map[string]interface{}); ok {
+				out = append(out, m)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
 }
 
 func TestProcessRecordStoresMappedMessage(t *testing.T) {
@@ -477,7 +494,7 @@ func TestProcessRecordAutoFetchesLikeSubjectDependency(t *testing.T) {
 	}
 }
 
-func TestProcessRecordAutoFetchesRepostSubjectDependency(t *testing.T) {
+func TestProcessRecordAutoFetchesQuoteSubjectDependency(t *testing.T) {
 	database, err := db.Open(":memory:")
 	if err != nil {
 		t.Fatalf("open memory db: %v", err)
@@ -485,53 +502,61 @@ func TestProcessRecordAutoFetchesRepostSubjectDependency(t *testing.T) {
 	defer database.Close()
 
 	ctx := context.Background()
-	subjectURI := "at://did:plc:bob/app.bsky.feed.post/repost-root"
+	subjectURI := "at://did:plc:bob/app.bsky.feed.post/quoted"
 	publisher := &recordingPublisher{}
 	fetcher := &stubRecordFetcher{
 		records: map[string]FetchedRecord{
 			subjectURI: {
 				ATDID:      "did:plc:bob",
 				ATURI:      subjectURI,
-				ATCID:      "bafy-repost-root",
+				ATCID:      "bafy-quoted",
 				Collection: mapper.RecordTypePost,
-				RecordJSON: []byte(`{"text":"repost root","createdAt":"2026-01-01T00:00:00Z"}`),
+				RecordJSON: []byte(`{"text":"quoted","createdAt":"2026-01-01T00:00:00Z"}`),
 			},
 		},
 	}
 	processor := newProcessorWithDependencies(database, publisher, nil, fetcher)
 
-	repostRecord := []byte(`{
-		"subject": {
-			"uri": "at://did:plc:bob/app.bsky.feed.post/repost-root",
-			"cid": "bafy-repost-root"
+	postRecord := []byte(`{
+		"text":"quoting",
+		"embed": {
+			"$type":"app.bsky.embed.record",
+			"record": {
+				"uri":"at://did:plc:bob/app.bsky.feed.post/quoted",
+				"cid":"bafy-quoted"
+			}
 		},
 		"createdAt": "2026-01-01T00:00:00Z"
 	}`)
 	if err := processor.ProcessRecord(
 		ctx,
 		"did:plc:alice",
-		"at://did:plc:alice/app.bsky.feed.repost/auto-1",
-		"bafy-repost-auto-1",
-		mapper.RecordTypeRepost,
-		repostRecord,
+		"at://did:plc:alice/app.bsky.feed.post/auto-quote-1",
+		"bafy-quote-auto-1",
+		mapper.RecordTypePost,
+		postRecord,
 	); err != nil {
-		t.Fatalf("process repost record: %v", err)
+		t.Fatalf("process quote post record: %v", err)
 	}
 
-	repost, err := database.GetMessage(ctx, "at://did:plc:alice/app.bsky.feed.repost/auto-1")
+	repost, err := database.GetMessage(ctx, "at://did:plc:alice/app.bsky.feed.post/auto-quote-1")
 	if err != nil {
-		t.Fatalf("get repost message: %v", err)
+		t.Fatalf("get quote post message: %v", err)
 	}
 	if repost == nil || repost.MessageState != db.MessageStatePublished {
-		t.Fatalf("expected repost to publish after dependency resolution, got %+v", repost)
+		t.Fatalf("expected quote post to publish after dependency resolution, got %+v", repost)
 	}
 
 	published := publisher.snapshot()
 	if len(published) != 2 {
 		t.Fatalf("expected 2 publish calls, got %d", len(published))
 	}
-	if published[1]["text"] != "[%pub-1.sha256]" {
-		t.Fatalf("expected repost to reference dependency ref in text, got %+v", published[1])
+	if got := published[1]["text"]; got != "quoting\n\n[quoted post](%pub-1.sha256)" {
+		t.Fatalf("expected quote markdown in text, got %+v", published[1])
+	}
+	mentions := mentionMaps(published[1]["mentions"])
+	if len(mentions) != 1 || mentions[0]["link"] != "%pub-1.sha256" {
+		t.Fatalf("expected quote mention to resolve to dependency ref, got %+v", published[1]["mentions"])
 	}
 }
 
@@ -678,9 +703,9 @@ func TestProcessRecordStaysDeferredWhenDependencyUnsupported(t *testing.T) {
 			subjectURI: {
 				ATDID:      "did:plc:bob",
 				ATURI:      subjectURI,
-				ATCID:      "bafy-profile",
-				Collection: mapper.RecordTypeProfile,
-				RecordJSON: []byte(`{"displayName":"unsupported profile"}`),
+				ATCID:      "bafy-repost",
+				Collection: mapper.RecordTypeRepost,
+				RecordJSON: []byte(`{"subject":{"uri":"at://did:plc:bob/app.bsky.feed.post/1","cid":"bafy1"}}`),
 			},
 		},
 	}
@@ -689,7 +714,7 @@ func TestProcessRecordStaysDeferredWhenDependencyUnsupported(t *testing.T) {
 	likeRecord := []byte(`{
 		"subject": {
 			"uri": "at://did:plc:bob/app.bsky.feed.post/missing",
-			"cid": "bafy-profile"
+			"cid": "bafy-repost"
 		},
 		"createdAt": "2026-01-01T00:00:00Z"
 	}`)
@@ -1146,7 +1171,7 @@ func TestLookupFeedDeduplicatesInFlightResolution(t *testing.T) {
 	}
 }
 
-func TestProcessDeleteOpMarksDeletedAndPublishesTombstone(t *testing.T) {
+func TestProcessDeleteOpPublishesUnlike(t *testing.T) {
 	database, err := db.Open(":memory:")
 	if err != nil {
 		t.Fatalf("open memory db: %v", err)
@@ -1157,32 +1182,62 @@ func TestProcessDeleteOpMarksDeletedAndPublishesTombstone(t *testing.T) {
 	processor := NewProcessor(
 		database,
 		log.New(io.Discard, "", 0),
-		WithPublisher(&mockPublisher{ref: "%tombstone.sha256"}),
+		WithPublisher(&mockPublisher{ref: "%unlike.sha256"}),
 	)
 
-	if err := processor.processDeleteOp(ctx, "did:plc:alice", "app.bsky.feed.post/123", 42); err != nil {
-		t.Fatalf("process delete op: %v", err)
+	if err := database.AddMessage(ctx, db.Message{
+		ATURI:        "at://did:plc:alice/app.bsky.feed.like/123",
+		ATCID:        "bafy-like",
+		ATDID:        "did:plc:alice",
+		Type:         mapper.RecordTypeLike,
+		MessageState: db.MessageStatePublished,
+		RawATJson: `{
+			"subject":{"uri":"at://did:plc:alice/app.bsky.feed.post/1","cid":"bafy-post"},
+			"createdAt":"2026-01-01T00:00:00Z"
+		}`,
+		RawSSBJson: `{"type":"vote","vote":{"link":"%post.sha256","value":1,"expression":"Like"}}`,
+	}); err != nil {
+		t.Fatalf("seed like: %v", err)
+	}
+	if err := database.AddMessage(ctx, db.Message{
+		ATURI:        "at://did:plc:alice/app.bsky.feed.post/1",
+		ATCID:        "bafy-post",
+		ATDID:        "did:plc:alice",
+		Type:         mapper.RecordTypePost,
+		MessageState: db.MessageStatePublished,
+		SSBMsgRef:    "%post.sha256",
+		RawATJson:    `{"text":"post"}`,
+		RawSSBJson:   `{"type":"post","text":"post"}`,
+	}); err != nil {
+		t.Fatalf("seed post: %v", err)
 	}
 
-	stored, err := database.GetMessage(ctx, "at://did:plc:alice/app.bsky.feed.post/123")
+	if err := processor.processDeleteOp(ctx, "did:plc:alice", "app.bsky.feed.like/123", 42); err != nil {
+		t.Fatalf("process like delete op: %v", err)
+	}
+
+	stored, err := database.GetMessage(ctx, "at://did:plc:alice/app.bsky.feed.like/123")
 	if err != nil {
-		t.Fatalf("get deleted message: %v", err)
+		t.Fatalf("get deleted like message: %v", err)
 	}
 	if stored == nil {
-		t.Fatalf("expected deleted message row")
+		t.Fatalf("expected deleted like message row")
 	}
-	if stored.MessageState != db.MessageStateDeleted {
-		t.Fatalf("expected deleted state, got %q", stored.MessageState)
+	if stored.MessageState != db.MessageStatePublished {
+		t.Fatalf("expected published unlike state, got %q", stored.MessageState)
 	}
-	if stored.SSBMsgRef != "%tombstone.sha256" {
-		t.Fatalf("expected tombstone publish ref, got %q", stored.SSBMsgRef)
+	if stored.SSBMsgRef != "%unlike.sha256" {
+		t.Fatalf("expected unlike publish ref, got %q", stored.SSBMsgRef)
 	}
 	if stored.DeletedSeq == nil || *stored.DeletedSeq != 42 {
 		t.Fatalf("expected deleted seq 42, got %+v", stored.DeletedSeq)
 	}
+	if !strings.Contains(stored.RawSSBJson, `"value":0`) || !strings.Contains(stored.RawSSBJson, `%post.sha256`) {
+		t.Fatalf("expected unlike payload in stored ssb json, got %s", stored.RawSSBJson)
+	}
 }
 
-func TestProcessDeleteOpMarksFollowDeletedAndPublishesTombstone(t *testing.T) {
+func TestProcessDeleteOpPublishesUnfollowAndUnblock(t *testing.T) {
 	database, err := db.Open(":memory:")
 	if err != nil {
 		t.Fatalf("open memory db: %v", err)
@@ -1193,25 +1248,221 @@ func TestProcessDeleteOpMarksFollowDeletedAndPublishesTombstone(t *testing.T) {
 	processor := NewProcessor(
 		database,
 		log.New(io.Discard, "", 0),
-		WithPublisher(&mockPublisher{ref: "%follow-tombstone.sha256"}),
+		WithPublisher(&mockPublisher{ref: "%contact-reset.sha256"}),
 	)
+
+	for _, seeded := range []db.Message{
+		{
+			ATURI:        "at://did:plc:alice/app.bsky.graph.follow/123",
+			ATCID:        "bafy-follow",
+			ATDID:        "did:plc:alice",
+			Type:         mapper.RecordTypeFollow,
+			MessageState: db.MessageStatePublished,
+			RawATJson:    `{"subject":"did:plc:bob","createdAt":"2026-01-01T00:00:00Z"}`,
+			RawSSBJson:   `{"type":"contact","contact":"@bob.ed25519","following":true,"blocking":false}`,
+		},
+		{
+			ATURI:        "at://did:plc:alice/app.bsky.graph.block/456",
+			ATCID:        "bafy-block",
+			ATDID:        "did:plc:alice",
+			Type:         mapper.RecordTypeBlock,
+			MessageState: db.MessageStatePublished,
+			RawATJson:    `{"subject":"did:plc:bob","createdAt":"2026-01-01T00:00:00Z"}`,
+			RawSSBJson:   `{"type":"contact","contact":"@bob.ed25519","following":false,"blocking":true}`,
+		},
+	} {
+		if err := database.AddMessage(ctx, seeded); err != nil {
+			t.Fatalf("seed contact message: %v", err)
+		}
+	}
+	if err := database.AddBridgedAccount(ctx, db.BridgedAccount{
+		ATDID:     "did:plc:bob",
+		SSBFeedID: "@bob.ed25519",
+		Active:    true,
+	}); err != nil {
+		t.Fatalf("seed bridged account: %v", err)
+	}
 
 	if err := processor.processDeleteOp(ctx, "did:plc:alice", "app.bsky.graph.follow/123", 77); err != nil {
 		t.Fatalf("process follow delete op: %v", err)
 	}
+	if err := processor.processDeleteOp(ctx, "did:plc:alice", "app.bsky.graph.block/456", 78); err != nil {
+		t.Fatalf("process block delete op: %v", err)
+	}
 
-	stored, err := database.GetMessage(ctx, "at://did:plc:alice/app.bsky.graph.follow/123")
+	for _, atURI := range []string{
+		"at://did:plc:alice/app.bsky.graph.follow/123",
+		"at://did:plc:alice/app.bsky.graph.block/456",
+	} {
+		stored, err := database.GetMessage(ctx, atURI)
+		if err != nil {
+			t.Fatalf("get deleted contact message: %v", err)
+		}
+		if stored == nil {
+			t.Fatalf("expected deleted contact message row for %s", atURI)
+		}
+		if stored.MessageState != db.MessageStatePublished {
+			t.Fatalf("expected contact reset state published, got %q", stored.MessageState)
+		}
+		if !strings.Contains(stored.RawSSBJson, `"following":false`) || !strings.Contains(stored.RawSSBJson, `"blocking":false`) {
+			t.Fatalf("expected reset contact payload, got %s", stored.RawSSBJson)
+		}
+	}
+}
+
+func TestProcessDeleteOpMarksProfileDeletedWithoutPublishing(t *testing.T) {
+	database, err := db.Open(":memory:")
 	if err != nil {
-		t.Fatalf("get deleted follow message: %v", err)
+		t.Fatalf("open memory db: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	processor := NewProcessor(
+		database,
+		log.New(io.Discard, "", 0),
+		WithPublisher(&mockPublisher{ref: "%should-not-publish.sha256"}),
+	)
+
+	if err := database.AddMessage(ctx, db.Message{
+		ATURI:        "at://did:plc:alice/app.bsky.actor.profile/self",
+		ATCID:        "bafy-profile",
+		ATDID:        "did:plc:alice",
+		Type:         mapper.RecordTypeProfile,
+		MessageState: db.MessageStatePublished,
+		RawATJson:    `{"displayName":"Alice"}`,
+		RawSSBJson:   `{"type":"about","about":"@alice.ed25519","name":"Alice"}`,
+	}); err != nil {
+		t.Fatalf("seed profile: %v", err)
+	}
+
+	if err := processor.processDeleteOp(ctx, "did:plc:alice", "app.bsky.actor.profile/self", 88); err != nil {
+		t.Fatalf("process profile delete op: %v", err)
+	}
+
+	stored, err := database.GetMessage(ctx, "at://did:plc:alice/app.bsky.actor.profile/self")
+	if err != nil {
+		t.Fatalf("get deleted profile message: %v", err)
 	}
 	if stored == nil {
-		t.Fatalf("expected deleted follow message row")
+		t.Fatalf("expected deleted profile row")
 	}
 	if stored.MessageState != db.MessageStateDeleted {
-		t.Fatalf("expected follow deleted state, got %q", stored.MessageState)
+		t.Fatalf("expected deleted profile state, got %q", stored.MessageState)
 	}
-	if stored.SSBMsgRef != "%follow-tombstone.sha256" {
-		t.Fatalf("expected follow tombstone publish ref, got %q", stored.SSBMsgRef)
+	if stored.SSBMsgRef != "" {
+		t.Fatalf("expected no publish ref for profile delete, got %q", stored.SSBMsgRef)
+	}
+}
+
+func TestSupportedCollectionsIncludeBlockAndProfileButNotRepost(t *testing.T) {
+	if !isSupportedCollection(mapper.RecordTypeBlock) {
+		t.Fatalf("expected block to be supported")
+	}
+	if !isSupportedCollection(mapper.RecordTypeProfile) {
+		t.Fatalf("expected profile to be supported")
+	}
+	if isSupportedCollection(mapper.RecordTypeRepost) {
+		t.Fatalf("expected standalone repost to be unsupported")
+	}
+}
+
+func TestProcessRecordPublishesReferenceCompatibleShapes(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open memory db: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	for _, acc := range []db.BridgedAccount{
+		{ATDID: "did:plc:alice", SSBFeedID: "@alice.ed25519", Active: true},
+		{ATDID: "did:plc:bob", SSBFeedID: "@bob.ed25519", Active: true},
+	} {
+		if err := database.AddBridgedAccount(ctx, acc); err != nil {
+			t.Fatalf("seed account: %v", err)
+		}
+	}
+
+	publisher := &recordingPublisher{}
+	processor := NewProcessor(database, log.New(io.Discard, "", 0), WithPublisher(publisher))
+
+	if err := processor.ProcessRecord(ctx, "did:plc:alice", "at://did:plc:alice/app.bsky.feed.post/1", "bafy-post", mapper.RecordTypePost, []byte(`{
+		"text":"Hello @bob #bridge",
+		"facets":[
+			{"index":{"byteStart":6,"byteEnd":10},"features":[{"$type":"app.bsky.richtext.facet#mention","did":"did:plc:bob"}]},
+			{"index":{"byteStart":11,"byteEnd":18},"features":[{"$type":"app.bsky.richtext.facet#tag","tag":"bridge"}]}
+		],
+		"createdAt":"2026-01-01T00:00:00Z"
+	}`)); err != nil {
+		t.Fatalf("process post: %v", err)
+	}
+
+	if err := processor.ProcessRecord(ctx, "did:plc:alice", "at://did:plc:alice/app.bsky.feed.like/1", "bafy-like", mapper.RecordTypeLike, []byte(`{
+		"subject":{"uri":"at://did:plc:alice/app.bsky.feed.post/1","cid":"bafy-post"},
+		"createdAt":"2026-01-01T00:00:01Z"
+	}`)); err != nil {
+		t.Fatalf("process like: %v", err)
+	}
+
+	if err := processor.ProcessRecord(ctx, "did:plc:alice", "at://did:plc:alice/app.bsky.graph.follow/1", "bafy-follow", mapper.RecordTypeFollow, []byte(`{
+		"subject":"did:plc:bob",
+		"createdAt":"2026-01-01T00:00:02Z"
+	}`)); err != nil {
+		t.Fatalf("process follow: %v", err)
+	}
+
+	if err := processor.ProcessRecord(ctx, "did:plc:alice", "at://did:plc:alice/app.bsky.graph.block/1", "bafy-block", mapper.RecordTypeBlock, []byte(`{
+		"subject":"did:plc:bob",
+		"createdAt":"2026-01-01T00:00:03Z"
+	}`)); err != nil {
+		t.Fatalf("process block: %v", err)
+	}
+
+	if err := processor.ProcessRecord(ctx, "did:plc:alice", "at://did:plc:alice/app.bsky.actor.profile/self", "bafy-profile", mapper.RecordTypeProfile, []byte(`{
+		"displayName":"Alice",
+		"description":"Bridge bio",
+		"createdAt":"2026-01-01T00:00:04Z"
+	}`)); err != nil {
+		t.Fatalf("process profile: %v", err)
+	}
+
+	published := publisher.snapshot()
+	if len(published) != 5 {
+		t.Fatalf("expected 5 published payloads, got %d", len(published))
+	}
+
+	postMentions := mentionMaps(published[0]["mentions"])
+	if published[0]["type"] != "post" || len(postMentions) != 2 {
+		t.Fatalf("unexpected post payload: %+v", published[0])
+	}
+	if postMentions[0]["link"] != "@bob.ed25519" || postMentions[1]["link"] != "#bridge" {
+		t.Fatalf("unexpected post mentions: %+v", postMentions)
+	}
+
+	vote, ok := published[1]["vote"].(map[string]interface{})
+	if !ok || published[1]["type"] != "vote" || vote["link"] != "%pub-1.sha256" || vote["value"] != float64(1) {
+		t.Fatalf("unexpected vote payload: %+v", published[1])
+	}
+
+	if published[2]["type"] != "contact" || published[2]["contact"] != "@bob.ed25519" || published[2]["following"] != true || published[2]["blocking"] != false {
+		t.Fatalf("unexpected follow payload: %+v", published[2])
+	}
+	if published[3]["type"] != "contact" || published[3]["contact"] != "@bob.ed25519" || published[3]["following"] != false || published[3]["blocking"] != true {
+		t.Fatalf("unexpected block payload: %+v", published[3])
+	}
+	if published[4]["type"] != "about" || published[4]["about"] != "@alice.ed25519" || published[4]["name"] != "Alice" {
+		t.Fatalf("unexpected about payload: %+v", published[4])
+	}
+
+	for _, item := range published {
+		raw, err := json.Marshal(item)
+		if err != nil {
+			t.Fatalf("marshal published payload: %v", err)
+		}
+		if strings.Contains(string(raw), "_atproto_") || strings.Contains(string(raw), "blob_refs") {
+			t.Fatalf("expected native-only payload, got %s", raw)
+		}
 	}
 }
 

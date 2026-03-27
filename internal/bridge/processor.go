@@ -20,10 +20,11 @@ import (
 )
 
 var supportedCollections = map[string]struct{}{
-	mapper.RecordTypePost:   {},
-	mapper.RecordTypeLike:   {},
-	mapper.RecordTypeRepost: {},
-	mapper.RecordTypeFollow: {},
+	mapper.RecordTypePost:    {},
+	mapper.RecordTypeLike:    {},
+	mapper.RecordTypeFollow:  {},
+	mapper.RecordTypeBlock:   {},
+	mapper.RecordTypeProfile: {},
 }
 
 // Processor processes ATProto commits into persisted and optionally published SSB messages.
@@ -72,7 +73,7 @@ type Publisher interface {
 
 // BlobBridge maps ATProto blobs onto SSB blob refs for one record payload.
 type BlobBridge interface {
-	BridgeRecordBlobs(ctx context.Context, atDID string, mapped map[string]interface{}, rawRecordJSON []byte) error
+	BridgeRecordBlobs(ctx context.Context, atDID, collection string, mapped map[string]interface{}, rawRecordJSON []byte) error
 }
 
 type feedResolutionCall struct {
@@ -231,16 +232,13 @@ func (p *Processor) processDeleteOp(ctx context.Context, atDID, path string, seq
 		atCID = existing.ATCID
 	}
 
-	tombstone := map[string]interface{}{
-		"type":        "bridge/tombstone",
-		"bridge_op":   "delete",
-		"at_uri":      atURI,
-		"record_type": collection,
-		"deleted_seq": seq,
-	}
-	rawSSBJSON, err := json.Marshal(tombstone)
-	if err != nil {
-		return fmt.Errorf("marshal tombstone payload: %w", err)
+	rawATJSON := fmt.Sprintf(`{"op":"delete","at_uri":%q,"seq":%d}`, atURI, seq)
+	rawSSBJSON := ""
+	if existing != nil {
+		if strings.TrimSpace(existing.RawATJson) != "" {
+			rawATJSON = existing.RawATJson
+		}
+		rawSSBJSON = existing.RawSSBJson
 	}
 
 	msg := db.Message{
@@ -250,22 +248,51 @@ func (p *Processor) processDeleteOp(ctx context.Context, atDID, path string, seq
 		ATDID:         atDID,
 		Type:          collection,
 		MessageState:  db.MessageStateDeleted,
-		RawATJson:     fmt.Sprintf(`{"op":"delete","at_uri":%q,"seq":%d}`, atURI, seq),
-		RawSSBJson:    string(rawSSBJSON),
+		RawATJson:     rawATJSON,
+		RawSSBJson:    rawSSBJSON,
 		DeletedAt:     &now,
 		DeletedSeq:    &seq,
 		DeletedReason: fmt.Sprintf("atproto_delete seq=%d", seq),
 	}
 
-	if p.publisher != nil {
+	if collection == mapper.RecordTypeProfile || collection == mapper.RecordTypePost || strings.TrimSpace(rawATJSON) == "" || strings.Contains(rawATJSON, `"op":"delete"`) {
+		if err := p.db.AddMessage(ctx, msg); err != nil {
+			return fmt.Errorf("persist deleted record: %w", err)
+		}
+		return nil
+	}
+
+	mapped, err := p.mapMappedRecord(ctx, atDID, collection, []byte(rawATJSON), true)
+	if err != nil {
+		return fmt.Errorf("map delete reversal: %w", err)
+	}
+
+	rawDeleteJSON, err := json.Marshal(mapped)
+	if err != nil {
+		return fmt.Errorf("marshal delete reversal: %w", err)
+	}
+	msg.RawSSBJson = string(rawDeleteJSON)
+
+	unresolved := mapper.UnresolvedATProtoRefs(mapped)
+	if len(unresolved) > 0 {
+		msg.MessageState = db.MessageStateDeferred
+		msg.DeferReason = strings.Join(unresolved, ";")
+		msg.DeferAttempts = 1
+		msg.LastDeferAttemptAt = &now
+	} else {
+		msg.MessageState = db.MessageStatePending
+	}
+	if len(unresolved) == 0 && p.publisher != nil {
 		msg.PublishAttempts = 1
 		msg.LastPublishAttemptAt = &now
-		ssbMsgRef, publishErr := p.publisher.Publish(ctx, atDID, tombstone)
+		ssbMsgRef, publishErr := p.publisher.Publish(ctx, atDID, mapped)
 		if publishErr != nil {
-			msg.PublishError = fmt.Sprintf("delete_tombstone_publish_failed: %v", publishErr)
-			p.logger.Printf("event=delete_tombstone_publish_failed did=%s at_uri=%s seq=%d err=%v", atDID, atURI, seq, publishErr)
+			msg.MessageState = db.MessageStateFailed
+			msg.PublishError = publishErr.Error()
+			p.logger.Printf("event=delete_publish_failed did=%s at_uri=%s seq=%d err=%v", atDID, atURI, seq, publishErr)
 		} else {
 			publishedAt := time.Now().UTC()
+			msg.MessageState = db.MessageStatePublished
 			msg.SSBMsgRef = ssbMsgRef
 			msg.PublishedAt = &publishedAt
 			p.logger.Printf("event=deleted did=%s at_uri=%s seq=%d ssb_msg_ref=%s", atDID, atURI, seq, ssbMsgRef)
@@ -273,7 +300,7 @@ func (p *Processor) processDeleteOp(ctx context.Context, atDID, path string, seq
 	}
 
 	if err := p.db.AddMessage(ctx, msg); err != nil {
-		return fmt.Errorf("persist delete tombstone: %w", err)
+		return fmt.Errorf("persist deleted record: %w", err)
 	}
 
 	return nil
@@ -283,18 +310,14 @@ func (p *Processor) processDeleteOp(ctx context.Context, atDID, path string, seq
 func (p *Processor) ProcessRecord(ctx context.Context, atDID, atURI, atCID, collection string, recordJSON []byte) error {
 	ctx = ensureDependencyContext(ctx, atDID, atURI)
 
-	mapped, err := mapper.MapRecord(collection, recordJSON)
+	mapped, err := p.mapMappedRecord(ctx, atDID, collection, recordJSON, false)
 	if err != nil {
 		return fmt.Errorf("map record: %w", err)
 	}
 
-	p.resolveMappedRefs(ctx, mapped)
-	p.hydrateRecordDependencies(ctx, mapped)
-	p.resolveMappedRefs(ctx, mapped)
-
 	var blobErr error
 	if p.blobBridge != nil {
-		if err := p.blobBridge.BridgeRecordBlobs(ctx, atDID, mapped, recordJSON); err != nil {
+		if err := p.blobBridge.BridgeRecordBlobs(ctx, atDID, collection, mapped, recordJSON); err != nil {
 			blobErr = err
 			p.logger.Printf("event=blob_bridge_error did=%s at_uri=%s record_type=%s err=%v", atDID, atURI, collection, err)
 		}
@@ -360,6 +383,50 @@ func (p *Processor) ProcessRecord(ctx context.Context, atDID, atURI, atCID, coll
 	return nil
 }
 
+func (p *Processor) mapMappedRecord(ctx context.Context, atDID, collection string, recordJSON []byte, deleted bool) (map[string]interface{}, error) {
+	var (
+		mapped map[string]interface{}
+		err    error
+	)
+	if deleted {
+		mapped, err = mapDeleteRecord(atDID, collection, recordJSON)
+	} else {
+		mapped, err = mapper.MapRecord(collection, atDID, recordJSON)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	p.resolveMappedRefs(ctx, mapped)
+	p.hydrateRecordDependencies(ctx, mapped)
+	p.resolveMappedRefs(ctx, mapped)
+	return mapped, nil
+}
+
+func mapDeleteRecord(atDID, collection string, recordJSON []byte) (map[string]interface{}, error) {
+	mapped, err := mapper.MapRecord(collection, atDID, recordJSON)
+	if err != nil {
+		return nil, err
+	}
+
+	switch collection {
+	case mapper.RecordTypeLike:
+		vote, ok := mapped["vote"].(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("mapped like delete missing vote payload")
+		}
+		vote["value"] = 0
+		vote["expression"] = "Like"
+	case mapper.RecordTypeFollow, mapper.RecordTypeBlock:
+		mapped["following"] = false
+		mapped["blocking"] = false
+	default:
+		return nil, fmt.Errorf("record type does not support delete translation: %s", collection)
+	}
+
+	return mapped, nil
+}
+
 func (p *Processor) resolveMappedRefs(ctx context.Context, mapped map[string]interface{}) {
 	mapper.ReplaceATProtoRefs(mapped,
 		func(uri string) string {
@@ -409,18 +476,15 @@ func (p *Processor) ResolveDeferredMessages(ctx context.Context, limit int) (Def
 func (p *Processor) resolveDeferredMessage(ctx context.Context, msg db.Message) (string, error) {
 	ctx = ensureDependencyContext(ctx, msg.ATDID, msg.ATURI)
 
-	mapped, err := mapper.MapRecord(msg.Type, []byte(msg.RawATJson))
+	mapped, err := p.mapMappedRecord(ctx, msg.ATDID, msg.Type, []byte(msg.RawATJson), msg.DeletedAt != nil)
 	if err != nil {
 		return db.MessageStateFailed, fmt.Errorf("map deferred record: %w", err)
 	}
-	p.resolveMappedRefs(ctx, mapped)
-	p.hydrateRecordDependencies(ctx, mapped)
-	p.resolveMappedRefs(ctx, mapped)
 	unresolved := mapper.UnresolvedATProtoRefs(mapped)
 
 	var blobErr error
-	if p.blobBridge != nil {
-		if err := p.blobBridge.BridgeRecordBlobs(ctx, msg.ATDID, mapped, []byte(msg.RawATJson)); err != nil {
+	if p.blobBridge != nil && msg.DeletedAt == nil {
+		if err := p.blobBridge.BridgeRecordBlobs(ctx, msg.ATDID, msg.Type, mapped, []byte(msg.RawATJson)); err != nil {
 			blobErr = err
 		}
 	}
@@ -444,6 +508,9 @@ func (p *Processor) resolveDeferredMessage(ctx context.Context, msg db.Message) 
 		DeferReason:        "",
 		DeferAttempts:      1,
 		LastDeferAttemptAt: &now,
+		DeletedAt:          msg.DeletedAt,
+		DeletedSeq:         msg.DeletedSeq,
+		DeletedReason:      msg.DeletedReason,
 	}
 
 	if len(unresolved) > 0 {
@@ -655,7 +722,7 @@ func (p *Processor) hydrateRecordDependencies(ctx context.Context, mapped map[st
 
 	for _, dep := range unresolvedDependencies(mapped) {
 		switch dep.Key {
-		case "_atproto_subject", "_atproto_repost_subject", "_atproto_reply_root", "_atproto_reply_parent":
+		case "_atproto_subject", "_atproto_quote_subject", "_atproto_reply_root", "_atproto_reply_parent":
 			_ = p.dependencyResolver.EnsureRecord(withDependencyReason(ctx, dep.Key), dep.Value)
 		}
 	}
@@ -680,17 +747,17 @@ func (p *Processor) resolveFeedReference(ctx context.Context, did string) string
 		return ""
 	}
 	if acc != nil && acc.Active && strings.TrimSpace(acc.SSBFeedID) != "" {
-		logDependencyEvent(p.logger, withDependencyReason(ctx, "_atproto_contact"), "dependency_fetch_skip", "", did, "local_account", nil)
+		logDependencyEvent(p.logger, ctx, "dependency_fetch_skip", "", did, "local_account", nil)
 		return acc.SSBFeedID
 	}
 	if p.feedResolver == nil {
-		logDependencyEvent(p.logger, withDependencyReason(ctx, "_atproto_contact"), "dependency_fetch_skip", "", did, "no_feed_resolver", nil)
+		logDependencyEvent(p.logger, ctx, "dependency_fetch_skip", "", did, "no_feed_resolver", nil)
 		return ""
 	}
 
 	ref, err := p.lookupFeed(ctx, did)
 	if err != nil {
-		logDependencyEvent(p.logger, withDependencyReason(ctx, "_atproto_contact"), "dependency_fetch_error", "", did, "resolve_feed", err)
+		logDependencyEvent(p.logger, ctx, "dependency_fetch_error", "", did, "resolve_feed", err)
 		return ""
 	}
 	return ref
@@ -704,20 +771,20 @@ func (p *Processor) lookupFeed(ctx context.Context, did string) (string, error) 
 
 	call, wait := p.acquireFeedLookup(did)
 	if wait {
-		logDependencyEvent(p.logger, withDependencyReason(ctx, "_atproto_contact"), "dependency_fetch_skip", "", did, "inflight_wait", nil)
+		logDependencyEvent(p.logger, ctx, "dependency_fetch_skip", "", did, "inflight_wait", nil)
 		<-call.done
 		return call.ref, call.err
 	}
 	defer p.finishFeedLookup(did, call)
 
-	logDependencyEvent(p.logger, withDependencyReason(ctx, "_atproto_contact"), "dependency_fetch_start", "", did, "resolve_feed_start", nil)
+	logDependencyEvent(p.logger, ctx, "dependency_fetch_start", "", did, "resolve_feed_start", nil)
 	ref, err := p.feedResolver.ResolveFeed(ctx, did)
 	call.ref = ref
 	call.err = err
 	if err != nil {
 		return "", err
 	}
-	logDependencyEvent(p.logger, withDependencyReason(ctx, "_atproto_contact"), "dependency_fetch_success", "", did, "resolve_feed_success", nil)
+	logDependencyEvent(p.logger, ctx, "dependency_fetch_success", "", did, "resolve_feed_success", nil)
 	return ref, nil
 }
 
@@ -751,7 +818,7 @@ func unresolvedDependencies(mapped map[string]interface{}) []unresolvedDependenc
 		"_atproto_reply_root",
 		"_atproto_reply_parent",
 		"_atproto_subject",
-		"_atproto_repost_subject",
+		"_atproto_quote_subject",
 		"_atproto_contact",
 	}
 
