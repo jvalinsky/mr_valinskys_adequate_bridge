@@ -1,6 +1,36 @@
 # Bridge Operator Runbook
 
+## Prerequisites
+- Go 1.25+ (CGO_ENABLED=1 for SQLite)
+- Network access to `bsky.network` (firehose), `public.api.bsky.app` (AppView), `plc.directory` (DID resolution)
+
+## Initial Setup
+
+Use `scripts/setup_live_bridge.sh` for the full lifecycle, or run CLI commands directly.
+
+### 1. Prepare a DID list
+
+Create a text file with one `did:plc:` per line (blank lines and `#` comments are ignored).
+
+### 2. Add accounts and backfill
+
+```bash
+export BRIDGE_BOT_SEED="<stable-secret-seed>"
+
+# Register bridged accounts
+scripts/setup_live_bridge.sh setup --dids dids.txt --bot-seed "$BRIDGE_BOT_SEED"
+
+# Backfill existing records from each DID's PDS
+scripts/setup_live_bridge.sh backfill --bot-seed "$BRIDGE_BOT_SEED"
+
+# Check status
+scripts/setup_live_bridge.sh status
+```
+
+The bot seed must be kept stable across restarts — it deterministically derives SSB feed identities from AT DIDs.
+
 ## Startup
+
 1. Export required secrets.
 
 ```bash
@@ -8,13 +38,14 @@ export BRIDGE_BOT_SEED="<seed>"
 export BRIDGE_UI_PASSWORD="<strong-password>"
 ```
 
-2. Start the bridge runtime (firehose + Room2).
+2. Start the bridge runtime (firehose + Room2 + embedded sbot).
 
 ```bash
 bridge-cli start \
   --db bridge.sqlite \
   --relay-url wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos \
   --repo-path .ssb-bridge \
+  --ssb-listen-addr :8008 \
   --room-enable \
   --room-listen-addr 0.0.0.0:8989 \
   --room-http-listen-addr 0.0.0.0:8976 \
@@ -23,7 +54,22 @@ bridge-cli start \
   --publish-workers 4
 ```
 
-3. Start the admin UI with auth.
+Or use the wrapper:
+
+```bash
+scripts/setup_live_bridge.sh start \
+  --bot-seed "$BRIDGE_BOT_SEED" \
+  --room-https-domain room.example.com \
+  --room-listen-addr 0.0.0.0:8989 \
+  --room-http-addr 0.0.0.0:8976
+```
+
+Key runtime flags:
+- `--firehose-enable` (default: true) — set `=false` to run room-only without firehose ingestion
+- `--ssb-listen-addr` (default: `:8008`) — the embedded sbot MUXRPC listener for peer EBT replication
+- `--xrpc-host` — override the ATProto read host for dependency/blob fetches (defaults to AppView)
+
+3. Start the admin UI with auth (separate process or alongside).
 
 ```bash
 bridge-cli serve-ui \
@@ -32,6 +78,19 @@ bridge-cli serve-ui \
   --ui-auth-user admin \
   --ui-auth-pass-env BRIDGE_UI_PASSWORD
 ```
+
+## Health Monitoring
+
+### Endpoints
+- **Room `/healthz`** (port 8976) — HTTP liveness check. Returns `200 ok` if the room HTTP server is accepting connections. Used by Docker health checks.
+- **Admin `/healthz`** (port 8080) — Bridge runtime health. Returns `200 ok` when `bridge_runtime_status=live` and last heartbeat is within 60 seconds. Returns `503` otherwise. Use for reverse proxy or uptime monitoring.
+
+### Log events to watch
+- `event=firehose_enabled` / `event=firehose_disabled` — firehose mode
+- `event=room_tunnel_announce_success` — room tunnel active (re-announces every 30s)
+- `event=room_dial_success` — bridge sbot connected to room
+- `event=publish_failed` / `event=retry_failed` — message publish issues
+- `event=cursor_resume seq=N` — firehose cursor resumed on restart
 
 ## Restart and Resume
 - `start` resumes firehose consumption from `bridge_state.firehose_seq`.
