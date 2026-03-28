@@ -388,6 +388,66 @@ func TestBridgeRoomHandlerDelegatesStockRoutes(t *testing.T) {
 	}
 }
 
+func TestBridgeRoomHandlerBotDetailWithURLEncodedDID(t *testing.T) {
+	database, err := db.Open(filepath.Join(t.TempDir(), "bridge.sqlite"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer database.Close()
+
+	activeFeed := mustTestFeedRef(t, 0x20)
+	if err := database.AddBridgedAccount(t.Context(), db.BridgedAccount{
+		ATDID:     "did:plc:encoded-test",
+		SSBFeedID: activeFeed.String(),
+		Active:    true,
+	}); err != nil {
+		t.Fatalf("add bridged account: %v", err)
+	}
+
+	roomConfig := newTestRoomConfig(roomdb.ModeOpen)
+	handler := newBridgeRoomHandler(http.NotFoundHandler(), roomConfig, database)
+
+	// URL-encode the colon in did:plc:encoded-test
+	req := httptest.NewRequest(http.MethodGet, "http://room.test/bots/did%3Aplc%3Aencoded-test", nil)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected 200 for URL-encoded DID, got %d: %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "did:plc:encoded-test") {
+		t.Fatalf("detail page missing DID in body")
+	}
+}
+
+func TestBridgeRoomHandlerCacheHeaders(t *testing.T) {
+	roomConfig := newTestRoomConfig(roomdb.ModeOpen)
+	handler := newBridgeRoomHandler(http.NotFoundHandler(), roomConfig, nil)
+
+	tests := []struct {
+		path      string
+		wantCache bool
+	}{
+		{"/", true},
+		{"/bots", true},
+		{"/healthz", false},
+	}
+
+	for _, tt := range tests {
+		req := httptest.NewRequest(http.MethodGet, "http://room.test"+tt.path, nil)
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, req)
+
+		cc := recorder.Header().Get("Cache-Control")
+		if tt.wantCache && cc == "" {
+			t.Errorf("%s: expected Cache-Control header, got none", tt.path)
+		}
+		if !tt.wantCache && cc != "" {
+			t.Errorf("%s: expected no Cache-Control, got %q", tt.path, cc)
+		}
+	}
+}
+
 func newTestRoomConfig(mode roomdb.PrivacyMode) *roommockdb.FakeRoomConfig {
 	cfg := &roommockdb.FakeRoomConfig{}
 	cfg.GetPrivacyModeReturns(mode, nil)

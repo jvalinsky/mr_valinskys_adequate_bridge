@@ -178,6 +178,10 @@ func (h bridgeRoomHandler) handleInviteCreationUnavailable(w http.ResponseWriter
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
+func setPublicCacheHeaders(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "public, max-age=30")
+}
+
 func (h bridgeRoomHandler) handleLanding(w http.ResponseWriter, r *http.Request) {
 	bots, err := h.listActiveBotsWithStats(r.Context(), r.UserAgent())
 	if err != nil {
@@ -193,6 +197,7 @@ func (h bridgeRoomHandler) handleLanding(w http.ResponseWriter, r *http.Request)
 		BotCount:  len(bots),
 	}
 
+	setPublicCacheHeaders(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := landingTemplate.Execute(w, data); err != nil {
 		http.Error(w, "Template error", http.StatusInternalServerError)
@@ -221,6 +226,7 @@ func (h bridgeRoomHandler) handleBots(w http.ResponseWriter, r *http.Request) {
 		SortOptions: buildBotSortOptions(sortMode),
 	}
 
+	setPublicCacheHeaders(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := botsTemplate.Execute(w, data); err != nil {
 		http.Error(w, "Template error", http.StatusInternalServerError)
@@ -228,7 +234,8 @@ func (h bridgeRoomHandler) handleBots(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h bridgeRoomHandler) handleBotDetail(w http.ResponseWriter, r *http.Request) {
-	did := strings.TrimPrefix(r.URL.Path, "/bots/")
+	rawDID := strings.TrimPrefix(r.URL.Path, "/bots/")
+	did, _ := url.PathUnescape(rawDID)
 	did = strings.TrimSpace(did)
 	if did == "" {
 		http.Redirect(w, r, "/bots", http.StatusSeeOther)
@@ -272,6 +279,7 @@ func (h bridgeRoomHandler) handleBotDetail(w http.ResponseWriter, r *http.Reques
 		PublishedMessages: publishedCards,
 	}
 
+	setPublicCacheHeaders(w)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := botDetailTemplate.Execute(w, data); err != nil {
 		http.Error(w, "Template error", http.StatusInternalServerError)
