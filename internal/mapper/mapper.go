@@ -340,6 +340,39 @@ func ReplaceATProtoRefs(msg map[string]interface{}, lookupURI func(string) strin
 	}
 }
 
+// SanitizeForPublish removes internal _atproto_* bookkeeping fields from a mapped
+// message before it is published to the SSB log. These fields are bridge-internal
+// and must never appear in published messages — Planetary's strict Codable decoders
+// can crash when encountering unexpected fields during batch FFI processing.
+func SanitizeForPublish(msg map[string]interface{}) {
+	for key := range msg {
+		if strings.HasPrefix(key, "_atproto_") {
+			delete(msg, key)
+		}
+	}
+}
+
+// ReadyForPublish returns true if the mapped message has all required fields for
+// its SSB content type. Contact messages need a non-empty "contact" field; vote
+// messages need a "link" inside the "vote" object.
+func ReadyForPublish(msg map[string]interface{}) bool {
+	msgType, _ := msg["type"].(string)
+	switch msgType {
+	case "contact":
+		contact, _ := msg["contact"].(string)
+		return strings.TrimSpace(contact) != ""
+	case "vote":
+		vote, ok := msg["vote"].(map[string]interface{})
+		if !ok {
+			return false
+		}
+		link, _ := vote["link"].(string)
+		return strings.TrimSpace(link) != ""
+	default:
+		return true
+	}
+}
+
 // UnresolvedATProtoRefs reports unresolved reference placeholders after replacement.
 func UnresolvedATProtoRefs(msg map[string]interface{}) []string {
 	keys := []string{

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sync"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil"
 	"go.cryptoscope.co/margaret"
@@ -28,6 +29,7 @@ type Runtime struct {
 	userFeedIndex librarian.SinkIndex
 	blobStore     ssb.BlobStore
 	manager       *bots.Manager
+	followedFeeds sync.Map // tracks feeds we've already published contact follow messages for
 }
 
 // Config configures the embedded sbot.
@@ -120,15 +122,19 @@ func (r *Runtime) Publish(ctx context.Context, atDID string, content map[string]
 
 	feedRef, err := r.manager.GetFeedID(atDID)
 	if err == nil {
-		// Ensure our sbot is following this bot identity so it advertises it via EBT
-		r.logger.Printf("unit=ssbruntime event=publishing_as_managed_bot feed=%s", feedRef)
+		feedKey := feedRef.Ref()
 		r.sbotNode.Replicate(feedRef)
-		// Explicitly follow so it appears in our EBT offer
-		r.sbotNode.PublishLog.Publish(map[string]interface{}{
-			"type":      "contact",
-			"contact":   feedRef.Ref(),
-			"following": true,
-		})
+		// Publish a contact+follow only once per feed per runtime session to avoid
+		// flooding the log with duplicate contact messages that crash Planetary's
+		// GoBot-utility queue during batch decode.
+		if _, alreadyFollowed := r.followedFeeds.LoadOrStore(feedKey, true); !alreadyFollowed {
+			r.logger.Printf("unit=ssbruntime event=publishing_ebt_follow feed=%s", feedRef)
+			r.sbotNode.PublishLog.Publish(map[string]interface{}{
+				"type":      "contact",
+				"contact":   feedKey,
+				"following": true,
+			})
+		}
 	}
 
 	msgRef, err := pub.Publish(content)
