@@ -8,6 +8,10 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/ipfs/go-cid v0.4.1
 	github.com/mattn/go-sqlite3 v1.14.37
+	github.com/ssbc/go-muxrpc/v2 v2.0.14-0.20221111190521-10382533750c
+	github.com/ssbc/go-netwrap v0.1.5-0.20221019160355-cd323bb2e29d
+	github.com/ssbc/go-secretstream v1.2.11-0.20221111164233-4b41f899f844
+	github.com/ssbc/go-ssb-refs v0.5.2
 	github.com/urfave/cli/v2 v2.25.7
 	go.cryptoscope.co/luigi v0.3.6
 	go.cryptoscope.co/margaret v0.4.3
@@ -17,29 +21,38 @@ require (
 
 require (
 	github.com/BurntSushi/toml v1.3.2 // indirect
+	github.com/RoaringBitmap/roaring v0.6.1 // indirect
 	github.com/friendsofgo/errors v0.9.2 // indirect
 	github.com/go-gorp/gorp/v3 v3.1.0 // indirect
+	github.com/gorilla/csrf v1.7.1 // indirect
 	github.com/gorilla/mux v1.8.0 // indirect
 	github.com/gorilla/securecookie v1.1.1 // indirect
 	github.com/gorilla/sessions v1.2.1 // indirect
 	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51 // indirect
+	github.com/libp2p/go-reuseport v0.0.1 // indirect
+	github.com/machinebox/progress v0.2.0 // indirect
+	github.com/mattevans/pwned-passwords v0.6.0 // indirect
 	github.com/mileusna/useragent v1.3.3 // indirect
+	github.com/mschoch/smat v0.0.0-20160514031455-90eadee771ae // indirect
 	github.com/nicksnyder/go-i18n/v2 v2.2.1 // indirect
 	github.com/oxtoacart/bpool v0.0.0-20190530202638-03653db5a59c // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
+	github.com/rs/cors v1.7.0 // indirect
 	github.com/rubenv/sql-migrate v1.4.0 // indirect
 	github.com/shurcooL/httpfs v0.0.0-20190707220628-8d4bc4ba7749 // indirect
+	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e // indirect
 	github.com/spf13/cast v1.5.1 // indirect
 	github.com/ssbc/go-luigi v0.3.7-0.20221019204020-324065b9a7c6 // indirect
-	github.com/ssbc/go-muxrpc/v2 v2.0.14-0.20221111190521-10382533750c // indirect
-	github.com/ssbc/go-netwrap v0.1.5-0.20221019160355-cd323bb2e29d // indirect
-	github.com/ssbc/go-secretstream v1.2.11-0.20221111164233-4b41f899f844 // indirect
-	github.com/ssbc/go-ssb-refs v0.5.2 // indirect
+	github.com/vcraescu/go-paginator/v2 v2.0.0 // indirect
 	github.com/volatiletech/inflect v0.0.1 // indirect
 	github.com/volatiletech/sqlboiler/v4 v4.14.2 // indirect
 	github.com/volatiletech/strmangle v0.0.4 // indirect
+	github.com/willf/bitset v1.1.10 // indirect
+	go.mindeco.de/ssb-multiserver v0.1.3 // indirect
+	golang.org/x/exp v0.0.0-20231110203233-9a3e6036ecaa // indirect
 	golang.org/x/mod v0.26.0 // indirect
 	golang.org/x/sync v0.16.0 // indirect
+	gonum.org/v1/gonum v0.0.0-20190904110519-2065cbd6b42a // indirect
 	lukechampine.com/uint128 v1.2.0 // indirect
 	modernc.org/cc/v3 v3.40.0 // indirect
 	modernc.org/ccgo/v3 v3.16.13 // indirect
@@ -130,15 +143,15 @@ require (
 	github.com/ssb-ngi-pointer/go-metafeed v0.0.0-20210727102809-98707678965d // indirect
 	github.com/ssbc/go-ssb-room/v2 v2.0.0
 	github.com/ugorji/go/codec v1.2.6 // indirect
-	github.com/whyrusleeping/cbor-gen v0.2.1-0.20241030202151-b7a6831be65e // indirect
+	github.com/whyrusleeping/cbor-gen v0.2.1-0.20241030202151-b7a6831be65e
 	github.com/xrash/smetrics v0.0.0-20201216005158-039620a65673 // indirect
 	github.com/zeebo/bencode v1.0.0 // indirect
 	gitlab.com/yawning/secp256k1-voi v0.0.0-20230925100816-f2616030848b // indirect
 	gitlab.com/yawning/tuplehash v0.0.0-20230713102510-df83abbf9a02 // indirect
-	go.cryptoscope.co/muxrpc/v2 v2.0.10 // indirect
-	go.cryptoscope.co/netwrap v0.1.1 // indirect
+	go.cryptoscope.co/muxrpc/v2 v2.0.10
+	go.cryptoscope.co/netwrap v0.1.1
 	go.cryptoscope.co/nocomment v0.0.0-20210520094614-fb744e81f810 // indirect
-	go.cryptoscope.co/secretstream v1.2.9 // indirect
+	go.cryptoscope.co/secretstream v1.2.9
 	go.mindeco.de v1.12.0
 	go.mindeco.de/ssb-gabbygrove v0.2.0 // indirect
 	go.opencensus.io v0.23.0 // indirect

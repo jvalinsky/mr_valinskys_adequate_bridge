@@ -10,10 +10,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -32,7 +33,13 @@ import (
 	"github.com/mr_valinskys_adequate_bridge/internal/ssbruntime"
 	"github.com/mr_valinskys_adequate_bridge/internal/web/handlers"
 	websecurity "github.com/mr_valinskys_adequate_bridge/internal/web/security"
+	roomrefs "github.com/ssbc/go-ssb-refs"
+	roomdb "github.com/ssbc/go-ssb-room/v2/roomdb"
 	"github.com/urfave/cli/v2"
+	oldmuxrpc "go.cryptoscope.co/muxrpc/v2"
+	"go.cryptoscope.co/netwrap"
+	"go.cryptoscope.co/secretstream"
+	oldrefs "go.mindeco.de/ssb-refs"
 )
 
 var (
@@ -42,6 +49,8 @@ var (
 )
 
 const (
+	defaultRelayURL               = "wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos"
+	defaultLiveReadXRPCHost       = "https://public.api.bsky.app"
 	bridgeRuntimeStatusKey        = "bridge_runtime_status"
 	bridgeRuntimeStartedAtKey     = "bridge_runtime_started_at"
 	bridgeRuntimeLastHeartbeatKey = "bridge_runtime_last_heartbeat_at"
@@ -63,8 +72,8 @@ func main() {
 			},
 			&cli.StringFlag{
 				Name:        "relay-url",
-				Value:       "wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos",
-				Usage:       "ATProto subscribeRepos endpoint",
+				Value:       defaultRelayURL,
+				Usage:       "ATProto subscribeRepos endpoint (firehose only)",
 				Destination: &relayURL,
 			},
 			&cli.StringFlag{
@@ -265,6 +274,11 @@ func main() {
 						Value: 1,
 						Usage: "publish worker count (default 1 keeps deterministic ordering)",
 					},
+					&cli.StringFlag{
+						Name:  "ssb-listen-addr",
+						Value: ":8008",
+						Usage: "SSB MUXRPC listen address for the bridge's internal sbot daemon",
+					},
 					&cli.BoolFlag{
 						Name:  "room-enable",
 						Value: true,
@@ -295,7 +309,12 @@ func main() {
 					},
 					&cli.StringFlag{
 						Name:  "xrpc-host",
-						Usage: "optional ATProto XRPC host for blob fetches (derived from relay-url when omitted)",
+						Usage: "optional ATProto read host for dependency record and blob fetches (defaults to AppView)",
+					},
+					&cli.BoolFlag{
+						Name:  "firehose-enable",
+						Value: true,
+						Usage: "enable ATProto firehose subscribeRepos ingestion loop",
 					},
 				},
 				Action: func(c *cli.Context) error {
@@ -319,12 +338,17 @@ func main() {
 						return err
 					}
 
-					ssbRuntime, err := ssbruntime.Open(repoPath, []byte(botSeed), hmacKey, bridgeLogger)
+					ssbRuntime, err := ssbruntime.Open(c.Context, ssbruntime.Config{
+						RepoPath:   repoPath,
+						ListenAddr: c.String("ssb-listen-addr"),
+						MasterSeed: []byte(botSeed),
+						HMACKey:    hmacKey,
+					}, bridgeLogger)
 					if err != nil {
 						return fmt.Errorf("init ssb runtime: %w", err)
 					}
 
-					xrpcHost, err := resolveXRPCHost(c.String("xrpc-host"), relayURL)
+					xrpcHost, err := resolveLiveXRPCHost(c.String("xrpc-host"))
 					if err != nil {
 						_ = ssbRuntime.Close()
 						return err
@@ -334,7 +358,13 @@ func main() {
 					workerPublisher := publishqueue.New(ssbRuntime, c.Int("publish-workers"), bridgeLogger)
 					defer workerPublisher.Close()
 
-					blobBridge := blobbridge.New(database, ssbRuntime.BlobStore(), xrpcClient, bridgeLogger)
+					blobHostResolver, err := resolveLiveBlobHostResolver(c.String("xrpc-host"), c.IsSet("xrpc-host"))
+					if err != nil {
+						_ = ssbRuntime.Close()
+						return err
+					}
+
+					blobBridge := blobbridge.NewWithResolver(database, ssbRuntime.BlobStore(), blobHostResolver, nil, bridgeLogger)
 					recordFetcher := bridge.NewXRPCRecordFetcher(xrpcClient)
 					var processor *bridge.Processor
 					dependencyResolver := bridge.NewATProtoDependencyResolver(
@@ -354,13 +384,16 @@ func main() {
 						bridge.WithFeedResolver(ssbRuntime),
 					)
 
+					firehoseEnabled := c.Bool("firehose-enable")
 					firehoseOpts := []firehose.ClientOption{}
-					if cursor, ok, err := readFirehoseCursor(c.Context, database); err != nil {
-						_ = ssbRuntime.Close()
-						return err
-					} else if ok {
-						firehoseOpts = append(firehoseOpts, firehose.WithCursor(cursor))
-						bridgeLogger.Printf("event=cursor_resume seq=%d", cursor)
+					if firehoseEnabled {
+						if cursor, ok, err := readFirehoseCursor(c.Context, database); err != nil {
+							_ = ssbRuntime.Close()
+							return err
+						} else if ok {
+							firehoseOpts = append(firehoseOpts, firehose.WithCursor(cursor))
+							bridgeLogger.Printf("event=cursor_resume seq=%d", cursor)
+						}
 					}
 
 					ctx, stop := signal.NotifyContext(c.Context, os.Interrupt, syscall.SIGTERM)
@@ -378,9 +411,10 @@ func main() {
 						roomRuntime, err = room.Start(runCtx, room.Config{
 							ListenAddr:     c.String("room-listen-addr"),
 							HTTPListenAddr: c.String("room-http-listen-addr"),
-							RepoPath:       repoPath,
+							RepoPath:       filepath.Join(repoPath, "room"),
 							Mode:           c.String("room-mode"),
 							HTTPSDomain:    c.String("room-https-domain"),
+							BridgeAccounts: database,
 						}, roomLogger)
 						if err != nil {
 							_ = ssbRuntime.Close()
@@ -392,17 +426,91 @@ func main() {
 							roomRuntime.HTTPAddr(),
 							strings.ToLower(c.String("room-mode")),
 						)
+
+						go func() {
+							// Wait briefly to ensure the room is fully listening
+							time.Sleep(1 * time.Second)
+
+							// Auto-add bridge sbot as a room admin so it can announce itself
+							bridgeFeed, err := roomrefs.ParseFeedRef(ssbRuntime.Node().KeyPair.ID().Ref())
+							if err != nil {
+								bridgeLogger.Printf("event=room_bridge_feed_parse_failed err=%v", err)
+								return
+							}
+							if err := roomRuntime.AddMember(runCtx, bridgeFeed, roomdb.RoleAdmin); err != nil {
+								// Ignore "already a member" errors
+								if !strings.Contains(err.Error(), "already exists") {
+									bridgeLogger.Printf("event=room_add_member_failed err=%v", err)
+								}
+							}
+
+							oldRoomFeed, err := oldrefs.ParseFeedRef(roomRuntime.RoomFeed().String())
+							if err != nil {
+								bridgeLogger.Printf("event=room_old_feed_parse_failed err=%v", err)
+								return
+							}
+
+							// Authorize the room in our bridge sbot so we can talk to it
+							ssbRuntime.Node().Replicate(oldRoomFeed)
+
+							// Wait briefly to ensure the room is fully listening and manifest is exchanged
+							time.Sleep(2 * time.Second)
+
+							roomTCPAddr, err := net.ResolveTCPAddr("tcp", roomRuntime.Addr())
+							if err != nil {
+								bridgeLogger.Printf("event=room_dial_resolve_failed err=%v", err)
+								return
+							}
+
+							roomAddr := netwrap.WrapAddr(roomTCPAddr, secretstream.Addr{PubKey: roomRuntime.RoomFeed().PubKey()})
+							if err := ssbRuntime.Node().Network.Connect(runCtx, roomAddr); err != nil {
+								bridgeLogger.Printf("event=room_dial_failed err=%v", err)
+								return
+							}
+							bridgeLogger.Printf("event=room_dial_success")
+
+							// Give MUXRPC a moment to exchange manifests
+							time.Sleep(1 * time.Second)
+
+							ep, ok := ssbRuntime.Node().Network.GetEndpointFor(oldRoomFeed)
+							if ok {
+								// Log room manifest for debugging
+								var manifest interface{}
+								if err := ep.Async(runCtx, &manifest, oldmuxrpc.TypeJSON, oldmuxrpc.Method{"manifest"}); err == nil {
+									bridgeLogger.Printf("event=room_manifest_received manifest=%+v", manifest)
+								} else {
+									bridgeLogger.Printf("event=room_manifest_failed err=%v", err)
+								}
+
+								var announced bool
+								err := ep.Async(runCtx, &announced, oldmuxrpc.TypeJSON, oldmuxrpc.Method{"tunnel", "announce"})
+								if err == nil && announced {
+									bridgeLogger.Printf("event=room_tunnel_announce_success")
+								} else {
+									bridgeLogger.Printf("event=room_tunnel_announce_failed err=%v", err)
+								}
+							} else {
+								bridgeLogger.Printf("event=room_tunnel_announce_failed err=endpoint_not_found")
+							}
+						}()
 					}
 
-					client := firehose.NewClient(relayURL, processor, firehoseLogger, firehoseOpts...)
-					errCh := make(chan error, 1)
-					go func() {
-						errCh <- client.RunWithReconnect(runCtx, firehose.ReconnectConfig{
-							InitialBackoff: 2 * time.Second,
-							MaxBackoff:     60 * time.Second,
-							Jitter:         750 * time.Millisecond,
-						})
-					}()
+					var errCh <-chan error
+					if firehoseEnabled {
+						firehoseLogger.Printf("event=firehose_enabled relay_url=%s", relayURL)
+						firehoseErrCh := make(chan error, 1)
+						client := firehose.NewClient(relayURL, processor, firehoseLogger, firehoseOpts...)
+						go func() {
+							firehoseErrCh <- client.RunWithReconnect(runCtx, firehose.ReconnectConfig{
+								InitialBackoff: 2 * time.Second,
+								MaxBackoff:     60 * time.Second,
+								Jitter:         750 * time.Millisecond,
+							})
+						}()
+						errCh = firehoseErrCh
+					} else {
+						bridgeLogger.Printf("event=firehose_disabled")
+					}
 
 					go runRetryScheduler(runCtx, processor, bridgeLogger)
 					go runDeferredResolverScheduler(runCtx, processor, bridgeLogger)
@@ -412,23 +520,30 @@ func main() {
 
 					fmt.Println("Starting bridge engine...")
 					var runErr error
-					firehoseDone := false
-					select {
-					case <-ctx.Done():
-						setBridgeStateBestEffort(context.Background(), database, bridgeRuntimeStatusKey, "stopping", bridgeLogger)
-						setBridgeStateBestEffort(context.Background(), database, bridgeRuntimeStoppingAtKey, time.Now().UTC().Format(time.RFC3339), bridgeLogger)
-						cancelRun()
-					case err := <-errCh:
-						firehoseDone = true
-						if err != nil && !errors.Is(err, context.Canceled) {
-							runErr = err
+					firehoseDone := !firehoseEnabled
+					if firehoseEnabled {
+						select {
+						case <-ctx.Done():
+							setBridgeStateBestEffort(context.Background(), database, bridgeRuntimeStatusKey, "stopping", bridgeLogger)
+							setBridgeStateBestEffort(context.Background(), database, bridgeRuntimeStoppingAtKey, time.Now().UTC().Format(time.RFC3339), bridgeLogger)
+							cancelRun()
+						case err := <-errCh:
+							firehoseDone = true
+							if err != nil && !errors.Is(err, context.Canceled) {
+								runErr = err
+							}
+							setBridgeStateBestEffort(context.Background(), database, bridgeRuntimeStatusKey, "stopping", bridgeLogger)
+							setBridgeStateBestEffort(context.Background(), database, bridgeRuntimeStoppingAtKey, time.Now().UTC().Format(time.RFC3339), bridgeLogger)
+							cancelRun()
 						}
+					} else {
+						<-ctx.Done()
 						setBridgeStateBestEffort(context.Background(), database, bridgeRuntimeStatusKey, "stopping", bridgeLogger)
 						setBridgeStateBestEffort(context.Background(), database, bridgeRuntimeStoppingAtKey, time.Now().UTC().Format(time.RFC3339), bridgeLogger)
 						cancelRun()
 					}
 
-					if !firehoseDone {
+					if firehoseEnabled && !firehoseDone {
 						select {
 						case err := <-errCh:
 							if err != nil && !errors.Is(err, context.Canceled) && runErr == nil {
@@ -479,7 +594,7 @@ func main() {
 					},
 					&cli.StringFlag{
 						Name:  "xrpc-host",
-						Usage: "optional ATProto XRPC host (derived from relay-url when omitted)",
+						Usage: "optional fixed PDS host override for sync.getRepo (mainly for local/test stacks)",
 					},
 					&cli.StringFlag{
 						Name:  "ssb-repo-path",
@@ -531,23 +646,32 @@ func main() {
 						return err
 					}
 
-					ssbRuntime, err := ssbruntime.Open(repoPath, []byte(botSeed), hmacKey, bridgeLogger)
+					ssbRuntime, err := ssbruntime.Open(c.Context, ssbruntime.Config{
+						RepoPath:   repoPath,
+						MasterSeed: []byte(botSeed),
+						HMACKey:    hmacKey,
+					}, bridgeLogger)
 					if err != nil {
 						return fmt.Errorf("init ssb runtime: %w", err)
 					}
 					defer ssbRuntime.Close()
 
-					xrpcHost, err := resolveXRPCHost(c.String("xrpc-host"), relayURL)
-					if err != nil {
-						return err
-					}
-					xrpcClient := &xrpc.Client{Host: xrpcHost}
-
 					workerPublisher := publishqueue.New(ssbRuntime, c.Int("publish-workers"), bridgeLogger)
 					defer workerPublisher.Close()
 
-					blobBridge := blobbridge.New(database, ssbRuntime.BlobStore(), xrpcClient, bridgeLogger)
-					recordFetcher := bridge.NewXRPCRecordFetcher(xrpcClient)
+					liveReadHost, err := resolveLiveXRPCHost(c.String("xrpc-host"))
+					if err != nil {
+						return err
+					}
+					liveReadClient := &xrpc.Client{Host: liveReadHost}
+
+					blobHostResolver, err := resolveLiveBlobHostResolver(c.String("xrpc-host"), c.IsSet("xrpc-host"))
+					if err != nil {
+						return err
+					}
+
+					blobBridge := blobbridge.NewWithResolver(database, ssbRuntime.BlobStore(), blobHostResolver, nil, bridgeLogger)
+					recordFetcher := bridge.NewXRPCRecordFetcher(liveReadClient)
 					var processor *bridge.Processor
 					dependencyResolver := bridge.NewATProtoDependencyResolver(
 						database,
@@ -571,18 +695,63 @@ func main() {
 						return err
 					}
 
+					hostResolver, err := resolveBackfillHostResolver(c.String("xrpc-host"))
+					if err != nil {
+						return err
+					}
+					repoFetcher := backfill.XRPCRepoFetcher{}
+
 					total := backfill.Stats{}
+					statusCounts := map[backfill.DIDStatus]int{}
 					for _, did := range dids {
-						stats, err := backfill.RunForDID(c.Context, xrpcClient, did, sinceFilter, processor, bridgeLogger)
-						if err != nil {
-							return err
+						result := backfill.RunForDID(c.Context, did, sinceFilter, processor, bridgeLogger, hostResolver, repoFetcher)
+						statusCounts[result.Status]++
+						total.Processed += result.Stats.Processed
+						total.Skipped += result.Stats.Skipped
+						total.Errors += result.Stats.Errors
+
+						if result.Err != nil {
+							fmt.Printf(
+								"Backfill did=%s pds=%s status=%s processed=%d skipped=%d record_errors=%d err=%v\n",
+								result.DID,
+								fallbackValue(result.PDSHost, "-"),
+								result.Status,
+								result.Stats.Processed,
+								result.Stats.Skipped,
+								result.Stats.Errors,
+								result.Err,
+							)
+							continue
 						}
-						total.Processed += stats.Processed
-						total.Skipped += stats.Skipped
-						total.Errors += stats.Errors
+
+						fmt.Printf(
+							"Backfill did=%s pds=%s status=%s processed=%d skipped=%d record_errors=%d\n",
+							result.DID,
+							fallbackValue(result.PDSHost, "-"),
+							result.Status,
+							result.Stats.Processed,
+							result.Stats.Skipped,
+							result.Stats.Errors,
+						)
 					}
 
-					fmt.Printf("Backfill complete: dids=%d processed=%d skipped=%d errors=%d\n", len(dids), total.Processed, total.Skipped, total.Errors)
+					failedCount := len(dids) - statusCounts[backfill.StatusSuccess]
+					fmt.Printf(
+						"Backfill summary: dids=%d processed=%d skipped=%d record_errors=%d auth_required=%d not_found=%d malformed_did_doc=%d unsupported_did=%d transport_error=%d failed=%d\n",
+						len(dids),
+						total.Processed,
+						total.Skipped,
+						total.Errors,
+						statusCounts[backfill.StatusAuthRequired],
+						statusCounts[backfill.StatusNotFound],
+						statusCounts[backfill.StatusMalformedDIDDoc],
+						statusCounts[backfill.StatusUnsupportedDID],
+						statusCounts[backfill.StatusTransportError],
+						failedCount,
+					)
+					if failedCount > 0 {
+						return fmt.Errorf("backfill failed for %d did(s)", failedCount)
+					}
 					return nil
 				},
 			},
@@ -646,7 +815,11 @@ func main() {
 						return err
 					}
 
-					ssbRuntime, err := ssbruntime.Open(repoPath, []byte(botSeed), hmacKey, bridgeLogger)
+					ssbRuntime, err := ssbruntime.Open(c.Context, ssbruntime.Config{
+						RepoPath:   repoPath,
+						MasterSeed: []byte(botSeed),
+						HMACKey:    hmacKey,
+					}, bridgeLogger)
 					if err != nil {
 						return fmt.Errorf("init ssb runtime: %w", err)
 					}
@@ -808,33 +981,40 @@ func parseHMACKey(raw string) (*[32]byte, error) {
 	return nil, fmt.Errorf("hmac key must decode to 32 bytes")
 }
 
-// resolveXRPCHost resolves the XRPC host from an explicit value or relay URL.
-func resolveXRPCHost(explicitHost, relay string) (string, error) {
-	if explicitHost != "" {
-		return strings.TrimRight(explicitHost, "/"), nil
+func resolveLiveXRPCHost(explicitHost string) (string, error) {
+	if strings.TrimSpace(explicitHost) == "" {
+		explicitHost = defaultLiveReadXRPCHost
 	}
+	return backfill.NormalizeServiceEndpoint(explicitHost)
+}
 
-	if relay == "" {
-		relay = "wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos"
+func resolveLiveBlobHostResolver(explicitHost string, explicitlySet bool) (blobbridge.HostResolver, error) {
+	if explicitlySet && strings.TrimSpace(explicitHost) != "" {
+		host, err := backfill.NormalizeServiceEndpoint(explicitHost)
+		if err != nil {
+			return nil, err
+		}
+		return backfill.FixedHostResolver{Host: host}, nil
 	}
-	u, err := url.Parse(relay)
-	if err != nil {
-		return "", fmt.Errorf("parse relay URL %q: %w", relay, err)
-	}
+	return backfill.DIDPDSResolver{}, nil
+}
 
-	scheme := "https"
-	switch u.Scheme {
-	case "ws":
-		scheme = "http"
-	case "wss":
-		scheme = "https"
-	case "http", "https":
-		scheme = u.Scheme
+func resolveBackfillHostResolver(fixedHost string) (backfill.HostResolver, error) {
+	if strings.TrimSpace(fixedHost) != "" {
+		host, err := backfill.NormalizeServiceEndpoint(fixedHost)
+		if err != nil {
+			return nil, err
+		}
+		return backfill.FixedHostResolver{Host: host}, nil
 	}
-	if u.Host == "" {
-		return "", fmt.Errorf("relay URL missing host: %q", relay)
+	return backfill.DIDPDSResolver{}, nil
+}
+
+func fallbackValue(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
 	}
-	return fmt.Sprintf("%s://%s", scheme, u.Host), nil
+	return value
 }
 
 // readFirehoseCursor reads and parses the persisted firehose cursor sequence.

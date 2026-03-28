@@ -13,6 +13,28 @@ import (
 	"github.com/urfave/cli/v2"
 )
 
+func TestResolveLiveXRPCHost(t *testing.T) {
+	t.Run("defaults to appview", func(t *testing.T) {
+		got, err := resolveLiveXRPCHost("")
+		if err != nil {
+			t.Fatalf("resolveLiveXRPCHost: %v", err)
+		}
+		if got != defaultLiveReadXRPCHost {
+			t.Fatalf("expected default live read host %q, got %q", defaultLiveReadXRPCHost, got)
+		}
+	})
+
+	t.Run("normalizes explicit override", func(t *testing.T) {
+		got, err := resolveLiveXRPCHost(" https://example.com/path/ ")
+		if err != nil {
+			t.Fatalf("resolveLiveXRPCHost explicit: %v", err)
+		}
+		if got != "https://example.com/path" {
+			t.Fatalf("expected normalized explicit host, got %q", got)
+		}
+	})
+}
+
 func TestResolveSharedRepoPath(t *testing.T) {
 	t.Run("default when unset", func(t *testing.T) {
 		ctx := testCLIContext(t)
