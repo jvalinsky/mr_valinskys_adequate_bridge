@@ -28,6 +28,7 @@ import (
 	"github.com/mr_valinskys_adequate_bridge/internal/bridge"
 	"github.com/mr_valinskys_adequate_bridge/internal/db"
 	"github.com/mr_valinskys_adequate_bridge/internal/firehose"
+	"github.com/mr_valinskys_adequate_bridge/internal/logutil"
 	"github.com/mr_valinskys_adequate_bridge/internal/publishqueue"
 	"github.com/mr_valinskys_adequate_bridge/internal/room"
 	"github.com/mr_valinskys_adequate_bridge/internal/ssbruntime"
@@ -43,9 +44,14 @@ import (
 )
 
 var (
-	dbPath   string
-	relayURL string
-	botSeed  string
+	dbPath         string
+	relayURL       string
+	botSeed        string
+	otelEndpoint   string
+	otelProtocol   string
+	otelInsecure   bool
+	otelService    string
+	localLogOutput string
 )
 
 const (
@@ -82,6 +88,33 @@ func main() {
 				EnvVars:     []string{"BRIDGE_BOT_SEED"},
 				Usage:       "seed used for deterministic AT DID -> SSB feed derivation",
 				Destination: &botSeed,
+			},
+			&cli.StringFlag{
+				Name:        "otel-logs-endpoint",
+				Usage:       "OTLP logs endpoint; empty disables OTLP log export",
+				Destination: &otelEndpoint,
+			},
+			&cli.StringFlag{
+				Name:        "otel-logs-protocol",
+				Value:       "grpc",
+				Usage:       "OTLP logs protocol: grpc|http",
+				Destination: &otelProtocol,
+			},
+			&cli.BoolFlag{
+				Name:        "otel-logs-insecure",
+				Usage:       "disable OTLP transport security for log export",
+				Destination: &otelInsecure,
+			},
+			&cli.StringFlag{
+				Name:        "otel-service-name",
+				Usage:       "override OTel service.name resource attribute",
+				Destination: &otelService,
+			},
+			&cli.StringFlag{
+				Name:        "local-log-output",
+				Value:       "text",
+				Usage:       "local log output mode: text|none",
+				Destination: &localLogOutput,
 			},
 		},
 		Commands: []*cli.Command{
@@ -318,15 +351,21 @@ func main() {
 					},
 				},
 				Action: func(c *cli.Context) error {
+					logRuntime, err := newBridgeLogRuntime(c, "bridge-cli")
+					if err != nil {
+						return err
+					}
+					defer shutdownLogRuntime(logRuntime)
+
 					database, err := db.Open(dbPath)
 					if err != nil {
 						return err
 					}
 					defer database.Close()
 
-					bridgeLogger := log.New(os.Stdout, "bridge: ", log.LstdFlags)
-					firehoseLogger := log.New(os.Stdout, "firehose: ", log.LstdFlags)
-					roomLogger := log.New(os.Stdout, "room: ", log.LstdFlags)
+					bridgeLogger := logRuntime.Logger("bridge")
+					firehoseLogger := logRuntime.Logger("firehose")
+					roomLogger := logRuntime.Logger("room")
 
 					hmacKey, err := parseHMACKey(c.String("hmac-key"))
 					if err != nil {
@@ -548,13 +587,19 @@ func main() {
 					},
 				},
 				Action: func(c *cli.Context) error {
+					logRuntime, err := newBridgeLogRuntime(c, "bridge-cli")
+					if err != nil {
+						return err
+					}
+					defer shutdownLogRuntime(logRuntime)
+
 					database, err := db.Open(dbPath)
 					if err != nil {
 						return err
 					}
 					defer database.Close()
 
-					bridgeLogger := log.New(os.Stdout, "bridge: ", log.LstdFlags)
+					bridgeLogger := logRuntime.Logger("bridge")
 
 					dids := append([]string{}, c.StringSlice("did")...)
 					if c.Bool("active-accounts") {
@@ -735,13 +780,19 @@ func main() {
 					},
 				},
 				Action: func(c *cli.Context) error {
+					logRuntime, err := newBridgeLogRuntime(c, "bridge-cli")
+					if err != nil {
+						return err
+					}
+					defer shutdownLogRuntime(logRuntime)
+
 					database, err := db.Open(dbPath)
 					if err != nil {
 						return err
 					}
 					defer database.Close()
 
-					bridgeLogger := log.New(os.Stdout, "bridge: ", log.LstdFlags)
+					bridgeLogger := logRuntime.Logger("bridge")
 
 					hmacKey, err := parseHMACKey(c.String("hmac-key"))
 					if err != nil {
@@ -812,6 +863,12 @@ func main() {
 					},
 				},
 				Action: func(c *cli.Context) error {
+					logRuntime, err := newBridgeLogRuntime(c, "bridge-ui")
+					if err != nil {
+						return err
+					}
+					defer shutdownLogRuntime(logRuntime)
+
 					database, err := db.Open(dbPath)
 					if err != nil {
 						return err
@@ -841,7 +898,7 @@ func main() {
 						return fmt.Errorf("refusing to serve UI on non-loopback address %q without auth; configure --ui-auth-user and --ui-auth-pass-env", listenAddr)
 					}
 
-					uiLogger := log.New(os.Stdout, "ui: ", log.LstdFlags)
+					uiLogger := logRuntime.Logger("ui")
 					r := chi.NewRouter()
 					r.Use(websecurity.RequestLogMiddleware(uiLogger))
 					r.Use(websecurity.SecurityHeadersMiddleware(true))
@@ -885,6 +942,30 @@ func main() {
 	if err := app.RunContext(context.Background(), os.Args); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func newBridgeLogRuntime(c *cli.Context, defaultService string) (*logutil.Runtime, error) {
+	serviceName := strings.TrimSpace(c.String("otel-service-name"))
+	if serviceName == "" {
+		serviceName = defaultService
+	}
+	return logutil.NewRuntime(logutil.Config{
+		Endpoint:    c.String("otel-logs-endpoint"),
+		Protocol:    c.String("otel-logs-protocol"),
+		Insecure:    c.Bool("otel-logs-insecure"),
+		ServiceName: serviceName,
+		CommandName: c.Command.Name,
+		LocalOutput: c.String("local-log-output"),
+	})
+}
+
+func shutdownLogRuntime(rt *logutil.Runtime) {
+	if rt == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_ = rt.Shutdown(ctx)
 }
 
 // parseHMACKey parses a 32-byte key from base64, hex, or raw input.
@@ -1142,7 +1223,7 @@ func runRuntimeHeartbeatScheduler(ctx context.Context, database *db.DB, logger *
 		return
 	}
 	if logger == nil {
-		logger = log.New(os.Stdout, "bridge: ", log.LstdFlags)
+		logger = logutil.NewTextLogger("bridge")
 	}
 	if interval <= 0 {
 		interval = 10 * time.Second
@@ -1168,7 +1249,7 @@ func setBridgeStateBestEffort(ctx context.Context, database *db.DB, key, value s
 		return
 	}
 	if logger == nil {
-		logger = log.New(os.Stdout, "bridge: ", log.LstdFlags)
+		logger = logutil.NewTextLogger("bridge")
 	}
 	if err := database.SetBridgeState(ctx, key, value); err != nil {
 		logger.Printf("event=bridge_state_persist_error key=%s err=%v", key, err)
@@ -1181,7 +1262,7 @@ func runRetryScheduler(ctx context.Context, processor *bridge.Processor, logger 
 		return
 	}
 	if logger == nil {
-		logger = log.New(os.Stdout, "bridge: ", log.LstdFlags)
+		logger = logutil.NewTextLogger("bridge")
 	}
 
 	ticker := time.NewTicker(15 * time.Second)
@@ -1220,7 +1301,7 @@ func runDeferredResolverScheduler(ctx context.Context, processor *bridge.Process
 		return
 	}
 	if logger == nil {
-		logger = log.New(os.Stdout, "bridge: ", log.LstdFlags)
+		logger = logutil.NewTextLogger("bridge")
 	}
 
 	ticker := time.NewTicker(20 * time.Second)

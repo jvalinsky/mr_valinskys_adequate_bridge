@@ -77,7 +77,7 @@ func Open(ctx context.Context, cfg Config, logger *log.Logger) (*Runtime, error)
 	go func() {
 		err := node.Network.Serve(ctx)
 		if err != nil && err != context.Canceled && err != ssb.ErrShuttingDown {
-			fmt.Fprintf(os.Stderr, "unit=ssbruntime event=network_serve_failed err=%v\n", err)
+			logger.Printf("unit=ssbruntime event=network_serve_failed err=%v", err)
 		}
 	}()
 
@@ -99,10 +99,10 @@ func Open(ctx context.Context, cfg Config, logger *log.Logger) (*Runtime, error)
 				node.Replicate(feedRef)
 			}
 		}
-		fmt.Fprintf(os.Stderr, "unit=ssbruntime event=replication_started count=%d\n", len(existingFeeds))
+		logger.Printf("unit=ssbruntime event=replication_started count=%d", len(existingFeeds))
 	}
 
-	fmt.Fprintf(os.Stderr, "unit=ssbruntime event=runtime_started repo_path=%s listen_addr=%s\n", cfg.RepoPath, cfg.ListenAddr)
+	logger.Printf("unit=ssbruntime event=runtime_started repo_path=%s listen_addr=%s", cfg.RepoPath, cfg.ListenAddr)
 	return rt, nil
 }
 
@@ -121,7 +121,7 @@ func (r *Runtime) Publish(ctx context.Context, atDID string, content map[string]
 	feedRef, err := r.manager.GetFeedID(atDID)
 	if err == nil {
 		// Ensure our sbot is following this bot identity so it advertises it via EBT
-		fmt.Fprintf(os.Stderr, "unit=ssbruntime event=publishing_as_managed_bot feed=%s\n", feedRef)
+		r.logger.Printf("unit=ssbruntime event=publishing_as_managed_bot feed=%s", feedRef)
 		r.sbotNode.Replicate(feedRef)
 	}
 

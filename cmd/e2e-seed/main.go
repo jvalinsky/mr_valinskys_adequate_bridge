@@ -15,6 +15,7 @@ import (
 
 	"github.com/mr_valinskys_adequate_bridge/internal/bots"
 	"github.com/mr_valinskys_adequate_bridge/internal/db"
+	"github.com/mr_valinskys_adequate_bridge/internal/logutil"
 	"github.com/mr_valinskys_adequate_bridge/internal/ssbruntime"
 	"github.com/urfave/cli/v2"
 )
@@ -44,6 +45,29 @@ func main() {
 				Name:  "did",
 				Usage: "AT DID to publish messages for",
 			},
+			&cli.StringFlag{
+				Name:  "otel-logs-endpoint",
+				Usage: "OTLP logs endpoint; empty disables OTLP log export",
+			},
+			&cli.StringFlag{
+				Name:  "otel-logs-protocol",
+				Value: "grpc",
+				Usage: "OTLP logs protocol: grpc|http",
+			},
+			&cli.BoolFlag{
+				Name:  "otel-logs-insecure",
+				Usage: "disable OTLP transport security for log export",
+			},
+			&cli.StringFlag{
+				Name:  "otel-service-name",
+				Value: "e2e-seed",
+				Usage: "override OTel service.name resource attribute",
+			},
+			&cli.StringFlag{
+				Name:  "local-log-output",
+				Value: "text",
+				Usage: "local log output mode: text|none",
+			},
 		},
 		Action: func(c *cli.Context) error {
 			dbPath := c.String("db")
@@ -55,7 +79,23 @@ func main() {
 				return fmt.Errorf("--did is required")
 			}
 
-			logger := log.New(os.Stdout, "e2e-seed: ", log.LstdFlags)
+			logRuntime, err := logutil.NewRuntime(logutil.Config{
+				Endpoint:    c.String("otel-logs-endpoint"),
+				Protocol:    c.String("otel-logs-protocol"),
+				Insecure:    c.Bool("otel-logs-insecure"),
+				ServiceName: c.String("otel-service-name"),
+				CommandName: c.Command.Name,
+				LocalOutput: c.String("local-log-output"),
+			})
+			if err != nil {
+				return err
+			}
+			defer func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer cancel()
+				_ = logRuntime.Shutdown(ctx)
+			}()
+			logger := logRuntime.Logger("e2e-seed")
 
 			database, err := db.Open(dbPath)
 			if err != nil {
@@ -105,9 +145,9 @@ func main() {
 					"createdAt": time.Now().UTC().Format(time.RFC3339),
 				},
 				{
-					"type":  "about",
-					"about": feedRef.Ref(),
-					"name":  "E2E Test Bot",
+					"type":        "about",
+					"about":       feedRef.Ref(),
+					"name":        "E2E Test Bot",
 					"description": "A bot created for e2e Docker testing",
 				},
 			}
