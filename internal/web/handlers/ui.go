@@ -28,6 +28,7 @@ func NewUIHandler(database *db.DB) *UIHandler {
 
 // Mount registers admin UI routes on r.
 func (h *UIHandler) Mount(r chi.Router) {
+	r.Get("/healthz", h.handleHealthz)
 	r.Get("/", h.handleDashboard)
 	r.Get("/accounts", h.handleAccounts)
 	r.Get("/messages", h.handleMessages)
@@ -35,6 +36,21 @@ func (h *UIHandler) Mount(r chi.Router) {
 	r.Get("/failures", h.handleFailures)
 	r.Get("/blobs", h.handleBlobs)
 	r.Get("/state", h.handleState)
+}
+
+func (h *UIHandler) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	health, err := h.db.CheckBridgeHealth(r.Context(), 60*time.Second)
+	if err != nil {
+		http.Error(w, "unhealthy", http.StatusServiceUnavailable)
+		return
+	}
+	if !health.Healthy {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		fmt.Fprintf(w, "unhealthy status=%s heartbeat=%s", health.Status, health.LastHeartbeat)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("ok"))
 }
 
 func (h *UIHandler) handleDashboard(w http.ResponseWriter, r *http.Request) {

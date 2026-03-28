@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/mr_valinskys_adequate_bridge/internal/db"
@@ -266,6 +267,72 @@ func TestMessageDetailRendersStructuredAndRawPayloads(t *testing.T) {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("message detail missing %q: %s", expected, body)
 		}
+	}
+}
+
+func TestHealthzReturns200WhenLive(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	ctx := context.Background()
+	if err := database.SetBridgeState(ctx, "bridge_runtime_status", "live"); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetBridgeState(ctx, "bridge_runtime_last_heartbeat_at", time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+
+	router := chi.NewRouter()
+	NewUIHandler(database).Mount(router)
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if body := rr.Body.String(); body != "ok" {
+		t.Fatalf("expected body 'ok', got %q", body)
+	}
+}
+
+func TestHealthzReturns503WhenNotLive(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	// No bridge state set — status is empty.
+	router := chi.NewRouter()
+	NewUIHandler(database).Mount(router)
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestHealthzReturns503WhenHeartbeatStale(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	ctx := context.Background()
+	if err := database.SetBridgeState(ctx, "bridge_runtime_status", "live"); err != nil {
+		t.Fatal(err)
+	}
+	staleTime := time.Now().Add(-5 * time.Minute).UTC().Format(time.RFC3339)
+	if err := database.SetBridgeState(ctx, "bridge_runtime_last_heartbeat_at", staleTime); err != nil {
+		t.Fatal(err)
+	}
+
+	router := chi.NewRouter()
+	NewUIHandler(database).Mount(router)
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 for stale heartbeat, got %d: %s", rr.Code, rr.Body.String())
 	}
 }
 

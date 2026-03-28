@@ -1394,6 +1394,47 @@ func (db *DB) GetBridgeState(ctx context.Context, key string) (string, bool, err
 	return value, true, nil
 }
 
+// BridgeHealthStatus holds the result of a health check query.
+type BridgeHealthStatus struct {
+	Status      string // e.g. "live", "starting", "stopping", ""
+	LastHeartbeat string // RFC3339 timestamp or ""
+	Healthy     bool
+}
+
+// CheckBridgeHealth returns the bridge runtime health based on stored state.
+// The bridge is healthy if its status is "live" and the last heartbeat is
+// within the given staleness threshold.
+func (db *DB) CheckBridgeHealth(ctx context.Context, maxStale time.Duration) (*BridgeHealthStatus, error) {
+	result := &BridgeHealthStatus{}
+
+	status, ok, err := db.GetBridgeState(ctx, "bridge_runtime_status")
+	if err != nil {
+		return nil, err
+	}
+	if ok {
+		result.Status = status
+	}
+
+	heartbeat, ok, err := db.GetBridgeState(ctx, "bridge_runtime_last_heartbeat_at")
+	if err != nil {
+		return nil, err
+	}
+	if ok {
+		result.LastHeartbeat = heartbeat
+	}
+
+	result.Healthy = result.Status == "live"
+	if result.Healthy && result.LastHeartbeat != "" && maxStale > 0 {
+		if t, err := time.Parse(time.RFC3339, result.LastHeartbeat); err == nil {
+			if time.Since(t) > maxStale {
+				result.Healthy = false
+			}
+		}
+	}
+
+	return result, nil
+}
+
 // GetAllBridgeState returns all runtime state entries sorted by key.
 func (db *DB) GetAllBridgeState(ctx context.Context) ([]BridgeState, error) {
 	rows, err := db.conn.QueryContext(
