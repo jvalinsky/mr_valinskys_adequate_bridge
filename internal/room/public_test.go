@@ -41,6 +41,9 @@ func TestBridgeRoomHandlerLandingPageOpenMode(t *testing.T) {
 			t.Fatalf("landing page missing %q\nbody:\n%s", want, body)
 		}
 	}
+	if strings.Contains(body, `style="`) {
+		t.Fatalf("landing page should not use inline styles\nbody:\n%s", body)
+	}
 }
 
 func TestBridgeRoomHandlerLandingPageNonOpenDisablesInvite(t *testing.T) {
@@ -123,10 +126,16 @@ func TestBridgeRoomHandlerBotsPageListsActiveAccountsOnly(t *testing.T) {
 		"View details",         // card CTA
 		"1 msgs",               // stats pill
 		"1 published",          // published stat
+		"page-header-main",
+		"page-header-actions",
+		"action-row-compact directory-actions",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("bots page missing %q\nbody:\n%s", want, body)
 		}
+	}
+	if strings.Contains(body, `style="`) {
+		t.Fatalf("bots page should not use inline styles\nbody:\n%s", body)
 	}
 
 	for _, unwanted := range []string{
@@ -276,6 +285,9 @@ func TestBridgeRoomHandlerBotDetailPage(t *testing.T) {
 		"hello from ssb bridge",   // rendered bridged text
 		"%detail-test-message.sha256",
 		"Show stored payloads",
+		"page-title-wide",
+		"page-header-actions",
+		"action-row-compact",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("detail page missing %q\nbody:\n%s", want, body)
@@ -283,6 +295,9 @@ func TestBridgeRoomHandlerBotDetailPage(t *testing.T) {
 	}
 	if strings.Contains(body, "this should stay hidden") {
 		t.Fatalf("detail page should only render published messages\nbody:\n%s", body)
+	}
+	if strings.Contains(body, `style="`) {
+		t.Fatalf("detail page should not use inline styles\nbody:\n%s", body)
 	}
 }
 
