@@ -427,72 +427,7 @@ func main() {
 							strings.ToLower(c.String("room-mode")),
 						)
 
-						go func() {
-							// Wait briefly to ensure the room is fully listening
-							time.Sleep(1 * time.Second)
-
-							// Auto-add bridge sbot as a room admin so it can announce itself
-							bridgeFeed, err := roomrefs.ParseFeedRef(ssbRuntime.Node().KeyPair.ID().Ref())
-							if err != nil {
-								bridgeLogger.Printf("event=room_bridge_feed_parse_failed err=%v", err)
-								return
-							}
-							if err := roomRuntime.AddMember(runCtx, bridgeFeed, roomdb.RoleAdmin); err != nil {
-								// Ignore "already a member" errors
-								if !strings.Contains(err.Error(), "already exists") {
-									bridgeLogger.Printf("event=room_add_member_failed err=%v", err)
-								}
-							}
-
-							oldRoomFeed, err := oldrefs.ParseFeedRef(roomRuntime.RoomFeed().String())
-							if err != nil {
-								bridgeLogger.Printf("event=room_old_feed_parse_failed err=%v", err)
-								return
-							}
-
-							// Authorize the room in our bridge sbot so we can talk to it
-							ssbRuntime.Node().Replicate(oldRoomFeed)
-
-							// Wait briefly to ensure the room is fully listening and manifest is exchanged
-							time.Sleep(2 * time.Second)
-
-							roomTCPAddr, err := net.ResolveTCPAddr("tcp", roomRuntime.Addr())
-							if err != nil {
-								bridgeLogger.Printf("event=room_dial_resolve_failed err=%v", err)
-								return
-							}
-
-							roomAddr := netwrap.WrapAddr(roomTCPAddr, secretstream.Addr{PubKey: roomRuntime.RoomFeed().PubKey()})
-							if err := ssbRuntime.Node().Network.Connect(runCtx, roomAddr); err != nil {
-								bridgeLogger.Printf("event=room_dial_failed err=%v", err)
-								return
-							}
-							bridgeLogger.Printf("event=room_dial_success")
-
-							// Give MUXRPC a moment to exchange manifests
-							time.Sleep(1 * time.Second)
-
-							ep, ok := ssbRuntime.Node().Network.GetEndpointFor(oldRoomFeed)
-							if ok {
-								// Log room manifest for debugging
-								var manifest interface{}
-								if err := ep.Async(runCtx, &manifest, oldmuxrpc.TypeJSON, oldmuxrpc.Method{"manifest"}); err == nil {
-									bridgeLogger.Printf("event=room_manifest_received manifest=%+v", manifest)
-								} else {
-									bridgeLogger.Printf("event=room_manifest_failed err=%v", err)
-								}
-
-								var announced bool
-								err := ep.Async(runCtx, &announced, oldmuxrpc.TypeJSON, oldmuxrpc.Method{"tunnel", "announce"})
-								if err == nil && announced {
-									bridgeLogger.Printf("event=room_tunnel_announce_success")
-								} else {
-									bridgeLogger.Printf("event=room_tunnel_announce_failed err=%v", err)
-								}
-							} else {
-								bridgeLogger.Printf("event=room_tunnel_announce_failed err=endpoint_not_found")
-							}
-						}()
+						go runRoomTunnelBootstrap(runCtx, ssbRuntime, roomRuntime, bridgeLogger)
 					}
 
 					var errCh <-chan error
@@ -1083,6 +1018,119 @@ func resolveSharedRepoPath(c *cli.Context) (string, error) {
 		return "", fmt.Errorf("repo path must not be empty")
 	}
 	return repoPath, nil
+}
+
+// runRoomTunnelBootstrap connects the bridge sbot to the embedded room server
+// and periodically re-announces on the room tunnel. It polls for readiness
+// instead of using fixed sleeps, and retries the full sequence on failure.
+func runRoomTunnelBootstrap(ctx context.Context, ssbRT *ssbruntime.Runtime, roomRT *room.Runtime, logger *log.Logger) {
+	const (
+		pollInterval    = 500 * time.Millisecond
+		readyTimeout    = 30 * time.Second
+		reannounceEvery = 30 * time.Second
+	)
+
+	// Parse feed refs once (these don't change).
+	bridgeFeed, err := roomrefs.ParseFeedRef(ssbRT.Node().KeyPair.ID().Ref())
+	if err != nil {
+		logger.Printf("event=room_bridge_feed_parse_failed err=%v", err)
+		return
+	}
+	oldRoomFeed, err := oldrefs.ParseFeedRef(roomRT.RoomFeed().String())
+	if err != nil {
+		logger.Printf("event=room_old_feed_parse_failed err=%v", err)
+		return
+	}
+
+	// Ensure bridge is a room admin so it can announce.
+	if err := roomRT.AddMember(ctx, bridgeFeed, roomdb.RoleAdmin); err != nil {
+		if !strings.Contains(err.Error(), "already exists") {
+			logger.Printf("event=room_add_member_failed err=%v", err)
+		}
+	}
+
+	// Authorize the room feed in the bridge sbot for replication.
+	ssbRT.Node().Replicate(oldRoomFeed)
+
+	// Poll until the room MUXRPC port is accepting TCP connections.
+	roomAddr := roomRT.Addr()
+	deadline := time.Now().Add(readyTimeout)
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		conn, err := net.DialTimeout("tcp", roomAddr, 2*time.Second)
+		if err == nil {
+			conn.Close()
+			logger.Printf("event=room_tcp_ready addr=%s", roomAddr)
+			break
+		}
+		if time.Now().After(deadline) {
+			logger.Printf("event=room_tcp_ready_timeout addr=%s timeout=%s", roomAddr, readyTimeout)
+			return
+		}
+		time.Sleep(pollInterval)
+	}
+
+	// Connect the bridge sbot to the room via secret-handshake.
+	roomTCPAddr, err := net.ResolveTCPAddr("tcp", roomAddr)
+	if err != nil {
+		logger.Printf("event=room_dial_resolve_failed err=%v", err)
+		return
+	}
+	shsAddr := netwrap.WrapAddr(roomTCPAddr, secretstream.Addr{PubKey: roomRT.RoomFeed().PubKey()})
+	if err := ssbRT.Node().Network.Connect(ctx, shsAddr); err != nil {
+		logger.Printf("event=room_dial_failed err=%v", err)
+		return
+	}
+	logger.Printf("event=room_dial_success")
+
+	// Poll until the MUXRPC endpoint is available.
+	deadline = time.Now().Add(readyTimeout)
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		if _, ok := ssbRT.Node().Network.GetEndpointFor(oldRoomFeed); ok {
+			logger.Printf("event=room_endpoint_ready")
+			break
+		}
+		if time.Now().After(deadline) {
+			logger.Printf("event=room_endpoint_timeout timeout=%s", readyTimeout)
+			return
+		}
+		time.Sleep(pollInterval)
+	}
+
+	// Announce on the tunnel, then re-announce periodically to stay visible.
+	announceTunnel := func() bool {
+		ep, ok := ssbRT.Node().Network.GetEndpointFor(oldRoomFeed)
+		if !ok {
+			logger.Printf("event=room_tunnel_announce_failed err=endpoint_not_found")
+			return false
+		}
+		var announced bool
+		err := ep.Async(ctx, &announced, oldmuxrpc.TypeJSON, oldmuxrpc.Method{"tunnel", "announce"})
+		if err == nil && announced {
+			logger.Printf("event=room_tunnel_announce_success")
+			return true
+		}
+		logger.Printf("event=room_tunnel_announce_failed err=%v", err)
+		return false
+	}
+
+	announceTunnel()
+
+	ticker := time.NewTicker(reannounceEvery)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			announceTunnel()
+		}
+	}
 }
 
 func runRuntimeHeartbeatScheduler(ctx context.Context, database *db.DB, logger *log.Logger, interval time.Duration) {
