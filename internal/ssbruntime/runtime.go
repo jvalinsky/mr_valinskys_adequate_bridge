@@ -92,16 +92,29 @@ func Open(ctx context.Context, cfg Config, logger *log.Logger) (*Runtime, error)
 		manager:    bots.NewManager(cfg.MasterSeed, rxLog, userFeeds, cfg.HMACKey),
 	}
 
-	// Register existing feeds for replication so they are advertised to peers via EBT/gossip
+	// Register existing feeds for replication so they are advertised to peers via EBT/gossip.
+	// Only register feeds that have published messages — empty feeds (created by
+	// GetPublisher but never published to) must not be advertised, otherwise peers
+	// like Planetary try to replicate hundreds of empty feeds and crash.
 	existingFeeds, err := userFeeds.List()
 	if err == nil {
+		registered := 0
 		for _, f := range existingFeeds {
 			feedRef, err := refs.ParseFeedRef(string(f))
-			if err == nil {
-				node.Replicate(feedRef)
+			if err != nil {
+				continue
 			}
+			sublog, err := userFeeds.Get(f)
+			if err != nil {
+				continue
+			}
+			if sublog.Seq() == margaret.SeqEmpty {
+				continue
+			}
+			node.Replicate(feedRef)
+			registered++
 		}
-		logger.Printf("unit=ssbruntime event=replication_started count=%d", len(existingFeeds))
+		logger.Printf("unit=ssbruntime event=replication_started total=%d registered=%d", len(existingFeeds), registered)
 	}
 
 	logger.Printf("unit=ssbruntime event=runtime_started repo_path=%s listen_addr=%s", cfg.RepoPath, cfg.ListenAddr)

@@ -183,6 +183,65 @@ bridge-cli retry-failures --db bridge.sqlite --did did:plc:example --limit 200
    - capture failing `at_uri` rows from UI.
    - preserve DB and logs for postmortem.
 
+## SSB Data Reset (Wipe and Re-backfill)
+
+When the SSB log contains stale or malformed messages from a previous bridge version, or when empty feed entries are polluting the EBT state matrix, wipe the SSB data directory and re-backfill from ATProto.
+
+1. Stop the bridge service.
+
+```bash
+sudo systemctl stop mr-valinskys-adequate-bridge
+```
+
+2. Remove the SSB data directory (preserves the SQLite bridge DB and cursor).
+
+```bash
+sudo rm -rf /var/lib/mr-valinskys-adequate-bridge/.ssb-bridge
+```
+
+3. Restart the service. The runtime will recreate `.ssb-bridge` with a fresh keypair and empty log.
+
+```bash
+sudo systemctl start mr-valinskys-adequate-bridge
+```
+
+4. Re-backfill all active accounts to republish records cleanly.
+
+```bash
+bridge-cli backfill --db bridge.sqlite --repo-path .ssb-bridge --active-accounts
+```
+
+**When to wipe:**
+- Planetary or other SSB peers crash when replicating from the bridge (e.g., EBT overload from hundreds of empty feeds).
+- Pre-fix messages with `_atproto_*` fields are still in the log and causing decoder issues on peers.
+- The `replication_started total=N registered=M` log line shows a large gap between total and registered (many empty feeds).
+
+**Caution:** Wiping regenerates the sbot keypair, so the room identity changes. Peers that followed the old identity will need to re-discover the bridge. The bridge SQLite DB (accounts, cursor, records) is preserved and does not need to be recreated.
+
+## Known Issues
+
+### Planetary GoBot crash from EBT feed overload (fixed in 1d176e1+)
+
+**Symptom:** Planetary iOS/macOS crashes ~10 minutes after connecting to the bridge room. Crash report shows `exit()` → `__cxa_finalize_ranges` → `_objc_msgSend_uncached` on the GoBot-utility thread. The Go runtime inside Planetary calls `exit()` during EBT negotiation.
+
+**Root cause:** The bridge's `GetPublisher(atDID)` creates a feed sublog entry in `userFeeds` even for deferred records that are never published to SSB. At startup, `runtime.go` registered ALL feeds from `userFeeds.List()` for EBT replication — including empty ones. With hundreds of bridged DIDs, the EBT state matrix advertised hundreds of empty feeds. When Planetary connected and tried to negotiate replication for all of them, its GoBot hit a fatal condition.
+
+**Fix:** `runtime.go` now checks `sublog.Seq() != margaret.SeqEmpty` before registering a feed for replication. Only feeds with actual published messages are advertised via EBT.
+
+**Diagnosis log line:**
+```
+unit=ssbruntime event=replication_started total=401 registered=4
+```
+A large gap between `total` and `registered` indicates many empty feeds were correctly filtered out.
+
+### Planetary crash from malformed SSB messages (fixed in 1d176e1)
+
+**Symptom:** Planetary crashes with SIGABRT in `swift_arrayDestroy` ~2 seconds after launch.
+
+**Root cause:** Three issues: (1) duplicate EBT contact message floods from `Publish()` publishing a follow for every record, (2) `_atproto_*` internal fields leaking into published SSB messages that Planetary's strict Codable decoders didn't expect, (3) `room.members` muxrpc response wrapping each member in an array.
+
+**Fix:** Dedup contact messages via `sync.Map`, strip `_atproto_*` fields via `SanitizeForPublish()` before publishing, validate required fields via `ReadyForPublish()`, fix `room.members` encoding.
+
 ## Pre-release Live Interop Gate
 Run this gate before release/staging promotion to validate live firehose ingest plus room peer interoperability.
 
