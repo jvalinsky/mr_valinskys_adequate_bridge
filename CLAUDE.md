@@ -18,6 +18,7 @@
 | `/sync-graph` | Export decision graph to GitHub Pages |
 | `/decision-graph` | Build a decision graph from commit history |
 | `/sync` | Multi-user sync - pull events, rebuild, push |
+| `/update-docs` | Audit and update project docs against codebase state |
 
 ### Available Skills
 
