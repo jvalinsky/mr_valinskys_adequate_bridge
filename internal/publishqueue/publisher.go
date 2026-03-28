@@ -7,7 +7,7 @@ import (
 	"hash/fnv"
 	"log"
 
-	"github.com/mr_valinskys_adequate_bridge/internal/logutil"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil"
 	"sync"
 )
 

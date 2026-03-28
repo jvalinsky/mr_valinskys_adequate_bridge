@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/mr_valinskys_adequate_bridge/internal/db"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
 )
 
 // DetailField is one labeled summary value rendered in UI detail views.

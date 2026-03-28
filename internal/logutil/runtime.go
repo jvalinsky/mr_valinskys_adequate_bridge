@@ -126,7 +126,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 		sdklog.WithProcessor(sdklog.NewBatchProcessor(exporter)),
 	)
 	rt.provider = provider
-	rt.emitter = provider.Logger("github.com/mr_valinskys_adequate_bridge/internal/logutil")
+	rt.emitter = provider.Logger("github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil")
 
 	return rt, nil
 }

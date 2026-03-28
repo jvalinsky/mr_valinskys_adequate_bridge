@@ -12,8 +12,8 @@ import (
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	lexutil "github.com/bluesky-social/indigo/lex/util"
 	"github.com/bluesky-social/indigo/xrpc"
-	"github.com/mr_valinskys_adequate_bridge/internal/db"
-	"github.com/mr_valinskys_adequate_bridge/internal/logutil"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil"
 )
 
 const (

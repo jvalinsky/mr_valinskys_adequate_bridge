@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mr_valinskys_adequate_bridge/internal/logutil"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil"
 	refs "github.com/ssbc/go-ssb-refs"
 	roomadapter "github.com/ssbc/go-ssb-room/v2/bridgeadapter"
 	"github.com/ssbc/go-ssb-room/v2/roomdb"

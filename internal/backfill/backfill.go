@@ -14,8 +14,8 @@ import (
 	lexutil "github.com/bluesky-social/indigo/lex/util"
 	indigorepo "github.com/bluesky-social/indigo/repo"
 	"github.com/ipfs/go-cid"
-	"github.com/mr_valinskys_adequate_bridge/internal/logutil"
-	"github.com/mr_valinskys_adequate_bridge/internal/mapper"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/mapper"
 )
 
 // RecordProcessor handles a decoded record during backfill traversal.

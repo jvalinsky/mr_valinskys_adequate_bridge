@@ -1,4 +1,4 @@
-module github.com/mr_valinskys_adequate_bridge
+module github.com/jvalinsky/mr_valinskys_adequate_bridge
 
 go 1.25.5
 

@@ -5,7 +5,7 @@ import (
 	"crypto/subtle"
 	"log"
 
-	"github.com/mr_valinskys_adequate_bridge/internal/logutil"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil"
 	"net"
 	"net/http"
 	"net/url"

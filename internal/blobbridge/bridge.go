@@ -17,9 +17,9 @@ import (
 	"github.com/bluesky-social/indigo/xrpc"
 	"go.cryptoscope.co/ssb"
 
-	"github.com/mr_valinskys_adequate_bridge/internal/db"
-	"github.com/mr_valinskys_adequate_bridge/internal/logutil"
-	"github.com/mr_valinskys_adequate_bridge/internal/mapper"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/mapper"
 )
 
 // Bridge fetches ATProto blobs, stores them in SSB, and persists CID mappings.

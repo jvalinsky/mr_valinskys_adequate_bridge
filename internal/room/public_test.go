@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mr_valinskys_adequate_bridge/internal/db"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
 	refs "github.com/ssbc/go-ssb-refs"
 	"github.com/ssbc/go-ssb-room/v2/roomdb"
 	roommockdb "github.com/ssbc/go-ssb-room/v2/roomdb/mockdb"

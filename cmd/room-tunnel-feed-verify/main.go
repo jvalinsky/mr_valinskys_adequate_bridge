@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mr_valinskys_adequate_bridge/internal/db"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
 	"github.com/ssbc/go-muxrpc/v2"
 	"github.com/ssbc/go-muxrpc/v2/typemux"
 	"github.com/ssbc/go-netwrap"

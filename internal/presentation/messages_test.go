@@ -3,7 +3,7 @@ package presentation
 import (
 	"testing"
 
-	"github.com/mr_valinskys_adequate_bridge/internal/db"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
 )
 
 func TestPrettyJSON(t *testing.T) {

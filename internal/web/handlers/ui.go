@@ -12,10 +12,10 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/mr_valinskys_adequate_bridge/internal/db"
-	"github.com/mr_valinskys_adequate_bridge/internal/logutil"
-	"github.com/mr_valinskys_adequate_bridge/internal/presentation"
-	"github.com/mr_valinskys_adequate_bridge/internal/web/templates"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/presentation"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/web/templates"
 )
 
 // UIHandler serves admin pages backed by bridge database state.

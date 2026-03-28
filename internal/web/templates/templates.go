@@ -6,7 +6,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/mr_valinskys_adequate_bridge/internal/presentation"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/presentation"
 )
 
 const pageLayout = `

@@ -13,10 +13,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mr_valinskys_adequate_bridge/internal/bots"
-	"github.com/mr_valinskys_adequate_bridge/internal/db"
-	"github.com/mr_valinskys_adequate_bridge/internal/logutil"
-	"github.com/mr_valinskys_adequate_bridge/internal/ssbruntime"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/bots"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssbruntime"
 	"github.com/urfave/cli/v2"
 )
 

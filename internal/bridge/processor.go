@@ -13,10 +13,10 @@ import (
 	"github.com/bluesky-social/indigo/api/atproto"
 	lexutil "github.com/bluesky-social/indigo/lex/util"
 	indigorepo "github.com/bluesky-social/indigo/repo"
-	"github.com/mr_valinskys_adequate_bridge/internal/db"
-	"github.com/mr_valinskys_adequate_bridge/internal/firehose"
-	"github.com/mr_valinskys_adequate_bridge/internal/logutil"
-	"github.com/mr_valinskys_adequate_bridge/internal/mapper"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/firehose"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/mapper"
 )
 
 var supportedCollections = map[string]struct{}{

@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/bluesky-social/indigo/atproto/syntax"
-	"github.com/mr_valinskys_adequate_bridge/internal/db"
-	"github.com/mr_valinskys_adequate_bridge/internal/presentation"
-	websecurity "github.com/mr_valinskys_adequate_bridge/internal/web/security"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/presentation"
+	websecurity "github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/web/security"
 	ssbrefs "github.com/ssbc/go-ssb-refs"
 	"github.com/ssbc/go-ssb-room/v2/roomdb"
 	roomweb "github.com/ssbc/go-ssb-room/v2/web"

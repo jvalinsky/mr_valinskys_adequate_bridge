@@ -1,6 +1,6 @@
 # Project Initialization
 
-- Initialized Go module `github.com/mr_valinskys_adequate_bridge`
+- Initialized Go module `github.com/jvalinsky/mr_valinskys_adequate_bridge`
 - Created standard Go project layout:
   - `cmd/bridge-cli` for the main application entry point
   - `internal/*` for private application code (firehose, bridge, mapper, bots, blobs, db, web)

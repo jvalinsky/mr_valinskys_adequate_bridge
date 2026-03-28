@@ -7,7 +7,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/mr_valinskys_adequate_bridge/internal/logutil"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil"
 	"go.cryptoscope.co/margaret"
 	librarian "go.cryptoscope.co/margaret/indexes"
 	"go.cryptoscope.co/margaret/multilog"
@@ -15,7 +15,7 @@ import (
 	"go.cryptoscope.co/ssb/sbot"
 	refs "go.mindeco.de/ssb-refs"
 
-	"github.com/mr_valinskys_adequate_bridge/internal/bots"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/bots"
 )
 
 // Runtime owns local SSB dependencies needed for deterministic per-DID publishing.

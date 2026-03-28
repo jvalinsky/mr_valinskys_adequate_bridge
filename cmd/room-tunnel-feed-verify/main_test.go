@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mr_valinskys_adequate_bridge/internal/db"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
 )
 
 func TestSplitCSV(t *testing.T) {

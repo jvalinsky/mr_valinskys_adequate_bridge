@@ -20,7 +20,7 @@ import (
 	"github.com/bluesky-social/indigo/events/schedulers/sequential"
 	"github.com/bluesky-social/indigo/repo"
 	"github.com/gorilla/websocket"
-	"github.com/mr_valinskys_adequate_bridge/internal/logutil"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil"
 )
 
 // EventHandler handles repository commit events emitted by the firehose stream.

@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mr_valinskys_adequate_bridge/internal/logutil"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil"
 	collogsv1 "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	commonv1 "go.opentelemetry.io/proto/otlp/common/v1"
 	logsv1 "go.opentelemetry.io/proto/otlp/logs/v1"
