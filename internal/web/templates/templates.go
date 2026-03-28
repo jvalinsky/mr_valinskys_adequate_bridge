@@ -21,14 +21,14 @@ const pageLayout = `
             color-scheme: light;
             --bg: #f4f1ea;
             --panel: #fffdf9;
-            --ink: #1f2a26;
-            --muted: #5b6763;
+            --ink: #1a2622;
+            --muted: #4a5753;
             --line: #d7d2c6;
-            --brand: #1f6f5f;
-            --brand-strong: #145246;
-            --warn: #9a6a18;
-            --danger: #9f2f2f;
-            --ok: #1f6f38;
+            --brand: #1a6b5a;
+            --brand-strong: #124a3e;
+            --warn: #8a5d12;
+            --danger: #b33030;
+            --ok: #1a6b35;
             --shadow: 0 10px 24px rgba(28, 41, 36, 0.08);
             --radius: 14px;
         }
@@ -104,12 +104,12 @@ const pageLayout = `
             padding: 8px 12px;
             border-radius: 999px;
             border: 1px solid transparent;
-            color: rgba(248, 255, 253, 0.94);
+            color: #f0f8f5;
         }
 
         .nav-link:hover,
         .nav-link:focus-visible {
-            border-color: rgba(248, 255, 253, 0.35);
+            border-color: rgba(240, 248, 245, 0.35);
             outline: none;
             background: rgba(255, 255, 255, 0.10);
         }
@@ -256,9 +256,9 @@ const pageLayout = `
             white-space: nowrap;
         }
 
-        .pill.state-published { background: #e6f6eb; color: #1f6f38; }
-        .pill.state-failed { background: #fde9e9; color: #9f2f2f; }
-        .pill.state-deferred { background: #fff2dd; color: #9a6a18; }
+        .pill.state-published { background: #e6f6eb; color: #1a6b35; }
+        .pill.state-failed { background: #fde9e9; color: #b33030; }
+        .pill.state-deferred { background: #fff2dd; color: #7a5f00; }
         .pill.state-deleted { background: #eef0f2; color: #3f4b57; }
         .pill.state-pending { background: #eceff2; color: #47505b; }
 
@@ -289,6 +289,14 @@ const pageLayout = `
             color: var(--muted);
             font-weight: 700;
             background: #f8f6f1;
+        }
+
+        tbody tr:nth-child(even) {
+            background: #f9f7f2;
+        }
+
+        tbody tr:hover {
+            background: rgba(26, 107, 90, 0.04);
         }
 
         .mono {
@@ -382,7 +390,7 @@ const pageLayout = `
 
         .field input:focus-visible,
         .field select:focus-visible {
-            outline: 2px solid rgba(31, 111, 95, 0.22);
+            outline: 2px solid rgba(26, 107, 90, 0.22);
             border-color: var(--brand);
         }
 
@@ -532,6 +540,9 @@ const pageLayout = `
     </main>
 
     <script>
+      document.querySelectorAll(".filter-panel select").forEach(function (sel) {
+        sel.addEventListener("change", function () { sel.closest("form").submit(); });
+      });
       document.addEventListener("click", function (event) {
         var button = event.target.closest("[data-copy]");
         if (!button) return;
