@@ -5,6 +5,8 @@ import (
 	"html/template"
 	"io"
 	"time"
+
+	"github.com/mr_valinskys_adequate_bridge/internal/presentation"
 )
 
 const pageLayout = `
@@ -1128,16 +1130,16 @@ type DashboardData struct {
 
 // AccountRow is one bridged account row in the accounts table.
 type AccountRow struct {
-	ATDID            string
-	SSBFeedID        string
-	Active           bool
-	TotalMessages    int
+	ATDID             string
+	SSBFeedID         string
+	Active            bool
+	TotalMessages     int
 	PublishedMessages int
-	FailedMessages   int
-	DeferredMessages int
-	LastPublishedAt  string
-	CreatedAt        time.Time
-	MessagesURL      string
+	FailedMessages    int
+	DeferredMessages  int
+	LastPublishedAt   string
+	CreatedAt         time.Time
+	MessagesURL       string
 }
 
 // AccountsData is the template model for the accounts page.
@@ -1210,24 +1212,21 @@ type MessagePagination struct {
 
 // MessagesData is the template model for the messages page.
 type MessagesData struct {
-	Chrome               PageChrome
-	Messages             []MessageRow
-	Filters              MessagesFilterState
-	TypeOptions          []FilterOption
-	StateOptions         []FilterOption
-	SortOptions          []FilterOption
-	LimitOptions         []IntFilterOption
-	ActiveFilters        []ActiveFilter
-	ResultCount          int
-	Pagination           MessagePagination
+	Chrome                PageChrome
+	Messages              []MessageRow
+	Filters               MessagesFilterState
+	TypeOptions           []FilterOption
+	StateOptions          []FilterOption
+	SortOptions           []FilterOption
+	LimitOptions          []IntFilterOption
+	ActiveFilters         []ActiveFilter
+	ResultCount           int
+	Pagination            MessagePagination
 	UnsupportedKeysetSort bool
 }
 
 // DetailField is one labeled value rendered in message detail sections.
-type DetailField struct {
-	Label string
-	Value string
-}
+type DetailField = presentation.DetailField
 
 // MessageDetailData is the template model for a per-message detail page.
 type MessageDetailData struct {
@@ -1278,11 +1277,11 @@ type FailureReasonGroup struct {
 
 // FailuresData is the template model for the failures page.
 type FailuresData struct {
-	Chrome       PageChrome
-	FailedRows   []FailureRow
-	DeferredRows []FailureRow
-	ReasonGroups []FailureReasonGroup
-	FailedCount  int
+	Chrome        PageChrome
+	FailedRows    []FailureRow
+	DeferredRows  []FailureRow
+	ReasonGroups  []FailureReasonGroup
+	FailedCount   int
 	DeferredCount int
 }
 
@@ -1310,15 +1309,15 @@ type StateRow struct {
 
 // StateData is the template model for the state page.
 type StateData struct {
-	Chrome           PageChrome
-	RuntimeState     []StateRow
-	FirehoseState    []StateRow
-	OtherState       []StateRow
-	DeferredCount    int
-	DeletedCount     int
+	Chrome            PageChrome
+	RuntimeState      []StateRow
+	FirehoseState     []StateRow
+	OtherState        []StateRow
+	DeferredCount     int
+	DeletedCount      int
 	LatestDeferReason string
-	HeartbeatStale   bool
-	HeartbeatAge     string
+	HeartbeatStale    bool
+	HeartbeatAge      string
 }
 
 // RenderDashboard renders the dashboard page.

@@ -118,6 +118,25 @@ func TestDB(t *testing.T) {
 		t.Fatalf("expected 1 active account, got %d", activeAccounts)
 	}
 
+	if err := db.AddBridgedAccount(ctx, BridgedAccount{
+		ATDID:     "did:plc:inactive",
+		SSBFeedID: "@inactive.ed25519",
+		Active:    false,
+	}); err != nil {
+		t.Fatalf("failed to add inactive account: %v", err)
+	}
+
+	activeList, err := db.ListActiveBridgedAccounts(ctx)
+	if err != nil {
+		t.Fatalf("failed to list active accounts: %v", err)
+	}
+	if len(activeList) != 1 {
+		t.Fatalf("expected 1 active account row, got %d", len(activeList))
+	}
+	if activeList[0].ATDID != acc.ATDID {
+		t.Fatalf("expected active account DID %q, got %q", acc.ATDID, activeList[0].ATDID)
+	}
+
 	totalMessages, err := db.CountMessages(ctx)
 	if err != nil {
 		t.Fatalf("failed to count messages: %v", err)

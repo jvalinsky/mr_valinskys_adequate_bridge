@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/mr_valinskys_adequate_bridge/internal/db"
+	"github.com/mr_valinskys_adequate_bridge/internal/presentation"
 	ssbrefs "github.com/ssbc/go-ssb-refs"
 	"github.com/ssbc/go-ssb-room/v2/roomdb"
 	roomweb "github.com/ssbc/go-ssb-room/v2/web"
@@ -21,6 +22,7 @@ type ActiveBridgeAccountLister interface {
 	ListActiveBridgedAccounts(ctx context.Context) ([]db.BridgedAccount, error)
 	ListActiveBridgedAccountsWithStats(ctx context.Context) ([]db.BridgedAccountStats, error)
 	GetActiveBridgedAccountWithStats(ctx context.Context, atDID string) (*db.BridgedAccountStats, error)
+	ListRecentPublishedMessagesByDID(ctx context.Context, atDID string, limit int) ([]db.Message, error)
 }
 
 type bridgeRoomHandler struct {
@@ -76,12 +78,26 @@ type botCardData struct {
 }
 
 type botDetailPageData struct {
-	Mode      roomModeStatus
-	InviteURL string
-	HomeURL   string
-	BotsURL   string
-	SignInURL string
-	Bot       botCardData
+	Mode              roomModeStatus
+	InviteURL         string
+	HomeURL           string
+	BotsURL           string
+	SignInURL         string
+	Bot               botCardData
+	PublishedMessages []publishedMessageData
+}
+
+type publishedMessageData struct {
+	ATURI          string
+	SSBMsgRef      string
+	Type           string
+	PublishedAt    string
+	OriginalFields []presentation.DetailField
+	BridgedFields  []presentation.DetailField
+	RawATProtoJSON string
+	RawSSBJSON     string
+	HasRawATProto  bool
+	HasRawSSB      bool
 }
 
 var templateFuncs = template.FuncMap{
@@ -235,13 +251,25 @@ func (h bridgeRoomHandler) handleBotDetail(w http.ResponseWriter, r *http.Reques
 	}
 
 	bot := toBotCardData(*acc, r.UserAgent())
+	published, err := h.bridgeBots.ListRecentPublishedMessagesByDID(r.Context(), did, 12)
+	if err != nil {
+		http.Error(w, "Failed to load bot messages", http.StatusInternalServerError)
+		return
+	}
+
+	publishedCards := make([]publishedMessageData, 0, len(published))
+	for _, message := range published {
+		publishedCards = append(publishedCards, toPublishedMessageData(message))
+	}
+
 	data := botDetailPageData{
-		Mode:      h.modeStatus(r.Context()),
-		InviteURL: "/create-invite",
-		HomeURL:   "/",
-		BotsURL:   "/bots",
-		SignInURL: "/login",
-		Bot:       bot,
+		Mode:              h.modeStatus(r.Context()),
+		InviteURL:         "/create-invite",
+		HomeURL:           "/",
+		BotsURL:           "/bots",
+		SignInURL:         "/login",
+		Bot:               bot,
+		PublishedMessages: publishedCards,
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -407,6 +435,28 @@ func feedLinks(feedID, userAgent string) (string, string) {
 	}
 
 	return feedURI, roomweb.StringifySSBURI(uri, userAgent)
+}
+
+func toPublishedMessageData(message db.Message) publishedMessageData {
+	return publishedMessageData{
+		ATURI:          strings.TrimSpace(message.ATURI),
+		SSBMsgRef:      strings.TrimSpace(message.SSBMsgRef),
+		Type:           strings.TrimSpace(message.Type),
+		PublishedAt:    formatHumanTime(derefTime(message.PublishedAt, message.CreatedAt)),
+		OriginalFields: presentation.SummarizeATProtoMessage(message),
+		BridgedFields:  presentation.SummarizeSSBMessage(message),
+		RawATProtoJSON: presentation.PrettyJSON(message.RawATJson),
+		RawSSBJSON:     presentation.PrettyJSON(message.RawSSBJson),
+		HasRawATProto:  strings.TrimSpace(message.RawATJson) != "",
+		HasRawSSB:      strings.TrimSpace(message.RawSSBJson) != "",
+	}
+}
+
+func derefTime(value *time.Time, fallback time.Time) time.Time {
+	if value == nil || value.IsZero() {
+		return fallback
+	}
+	return *value
 }
 
 func formatHumanTime(t time.Time) string {
@@ -957,6 +1007,106 @@ const publicLayoutTemplate = `
       text-align: center;
     }
 
+    .message-stream {
+      display: grid;
+      gap: 16px;
+    }
+
+    .message-card {
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.78);
+      padding: 18px;
+      display: grid;
+      gap: 14px;
+    }
+
+    .message-card-header {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: start;
+    }
+
+    .message-type-pill {
+      display: inline-flex;
+      align-items: center;
+      padding: 5px 10px;
+      border-radius: 999px;
+      background: rgba(15, 139, 109, 0.12);
+      color: var(--accent-strong);
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.03em;
+    }
+
+    .message-meta {
+      display: grid;
+      gap: 10px;
+    }
+
+    .message-field-grid {
+      display: grid;
+      gap: 12px;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    }
+
+    .message-field-card {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: rgba(19, 49, 40, 0.04);
+      padding: 12px 14px;
+    }
+
+    .message-field-card strong {
+      display: block;
+      font-size: 0.74rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+
+    .message-field-card span {
+      display: block;
+      font-size: 0.92rem;
+      line-height: 1.5;
+      word-break: break-word;
+    }
+
+    .payload-toggle {
+      border-top: 1px solid var(--line);
+      padding-top: 12px;
+    }
+
+    .payload-toggle summary {
+      cursor: pointer;
+      font-weight: 700;
+      color: var(--accent-strong);
+    }
+
+    .payload-grid {
+      margin-top: 12px;
+      display: grid;
+      gap: 12px;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    }
+
+    .payload-block pre {
+      margin: 8px 0 0;
+      padding: 12px 14px;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background: rgba(19, 49, 40, 0.05);
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      font-size: 0.82rem;
+      line-height: 1.5;
+    }
+
     .footer-note {
       margin-top: 22px;
       color: var(--muted);
@@ -1214,6 +1364,101 @@ const botDetailContentTemplate = `
         <button class="button button-secondary button-small" type="button" data-copy="{{.Bot.FeedURI}}">Copy feed URI</button>
       {{end}}
     </div>
+  </section>
+
+  <section class="panel">
+    <div class="page-header">
+      <div>
+        <p class="eyebrow">Recent bridged output</p>
+        <h2>Published messages</h2>
+        <p class="lead">Recent records this bot has already bridged into SSB, rendered from the stored ATProto and bridged SSB payloads.</p>
+      </div>
+    </div>
+
+    {{if .PublishedMessages}}
+      <div class="message-stream">
+        {{range .PublishedMessages}}
+          <article class="message-card">
+            <div class="message-card-header">
+              <div class="stats-bar">
+                <span class="message-type-pill">{{.Type}}</span>
+                {{if .PublishedAt}}<span class="stat-pill stat-published">Published {{.PublishedAt}}</span>{{end}}
+              </div>
+              <div class="bot-actions" style="margin-top:0">
+                <button class="button button-secondary button-small" type="button" data-copy="{{.ATURI}}">Copy AT URI</button>
+                {{if .SSBMsgRef}}<button class="button button-secondary button-small" type="button" data-copy="{{.SSBMsgRef}}">Copy SSB ref</button>{{end}}
+              </div>
+            </div>
+
+            <div class="message-meta">
+              <div>
+                <span class="field-label">AT URI</span>
+                <p class="mono">{{.ATURI}}</p>
+              </div>
+              {{if .SSBMsgRef}}
+                <div>
+                  <span class="field-label">SSB message ref</span>
+                  <p class="mono">{{.SSBMsgRef}}</p>
+                </div>
+              {{end}}
+            </div>
+
+            {{if .OriginalFields}}
+              <div>
+                <span class="field-label">Source record</span>
+                <div class="message-field-grid">
+                  {{range .OriginalFields}}
+                    <div class="message-field-card">
+                      <strong>{{.Label}}</strong>
+                      <span>{{.Value}}</span>
+                    </div>
+                  {{end}}
+                </div>
+              </div>
+            {{end}}
+
+            {{if .BridgedFields}}
+              <div>
+                <span class="field-label">Bridged SSB message</span>
+                <div class="message-field-grid">
+                  {{range .BridgedFields}}
+                    <div class="message-field-card">
+                      <strong>{{.Label}}</strong>
+                      <span>{{.Value}}</span>
+                    </div>
+                  {{end}}
+                </div>
+              </div>
+            {{end}}
+
+            {{if or .HasRawATProto .HasRawSSB}}
+              <details class="payload-toggle">
+                <summary>Show stored payloads</summary>
+                <div class="payload-grid">
+                  {{if .HasRawATProto}}
+                    <div class="payload-block">
+                      <span class="field-label">ATProto JSON</span>
+                      <pre>{{.RawATProtoJSON}}</pre>
+                    </div>
+                  {{end}}
+                  {{if .HasRawSSB}}
+                    <div class="payload-block">
+                      <span class="field-label">SSB JSON</span>
+                      <pre>{{.RawSSBJSON}}</pre>
+                    </div>
+                  {{end}}
+                </div>
+              </details>
+            {{end}}
+          </article>
+        {{end}}
+      </div>
+    {{else}}
+      <section class="empty-state">
+        <h2>No published messages yet</h2>
+        <p class="body-copy">This bridged account is registered, but the bridge has not published any SSB messages for it yet.</p>
+      </section>
+    {{end}}
   </section>
 {{end}}
 `

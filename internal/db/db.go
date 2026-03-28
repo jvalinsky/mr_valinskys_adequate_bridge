@@ -680,6 +680,38 @@ func (db *DB) GetRecentMessages(ctx context.Context, limit int) ([]Message, erro
 	return messages, nil
 }
 
+// ListRecentPublishedMessagesByDID returns the newest published messages for a
+// specific bridged DID.
+func (db *DB) ListRecentPublishedMessagesByDID(ctx context.Context, atDID string, limit int) ([]Message, error) {
+	atDID = strings.TrimSpace(atDID)
+	if atDID == "" {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+
+	rows, err := db.conn.QueryContext(
+		ctx,
+		messageSelectColumns+`
+		 FROM messages
+		 WHERE at_did = ?
+		   AND message_state = ?
+		   AND TRIM(COALESCE(ssb_msg_ref, '')) <> ''
+		 ORDER BY COALESCE(published_at, created_at) DESC, created_at DESC, at_uri DESC
+		 LIMIT ?`,
+		atDID,
+		MessageStatePublished,
+		limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return scanMessagesRows(rows)
+}
+
 const messageSelectColumns = `SELECT at_uri, at_cid, ssb_msg_ref, at_did, type, message_state, raw_at_json, raw_ssb_json, published_at, publish_error, publish_attempts, last_publish_attempt_at, defer_reason, defer_attempts, last_defer_attempt_at, deleted_at, deleted_seq, deleted_reason, created_at`
 
 // ListMessages returns messages filtered and sorted for interactive UI browsing.

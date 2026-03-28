@@ -233,9 +233,20 @@ func TestBridgeRoomHandlerBotDetailPage(t *testing.T) {
 		ATURI: "at://did:plc:detail-test-bot/app.bsky.feed.post/m1",
 		ATCID: "cid-m1", ATDID: "did:plc:detail-test-bot",
 		Type: "app.bsky.feed.post", MessageState: db.MessageStatePublished,
+		RawATJson:   `{"$type":"app.bsky.feed.post","text":"hello from atproto","createdAt":"2026-03-28T03:00:00Z"}`,
+		RawSSBJson:  `{"type":"post","text":"hello from ssb bridge"}`,
+		SSBMsgRef:   "%detail-test-message.sha256",
 		PublishedAt: &now,
 	}); err != nil {
 		t.Fatalf("add message: %v", err)
+	}
+	if err := database.AddMessage(t.Context(), db.Message{
+		ATURI: "at://did:plc:detail-test-bot/app.bsky.feed.post/m2",
+		ATCID: "cid-m2", ATDID: "did:plc:detail-test-bot",
+		Type: "app.bsky.feed.post", MessageState: db.MessageStateFailed,
+		RawSSBJson: `{"type":"post","text":"this should stay hidden"}`,
+	}); err != nil {
+		t.Fatalf("add failed message: %v", err)
 	}
 
 	roomConfig := newTestRoomConfig(roomdb.ModeOpen)
@@ -260,10 +271,18 @@ func TestBridgeRoomHandlerBotDetailPage(t *testing.T) {
 		"Open feed URI",           // action button
 		"← Back to directory",     // back nav
 		"Bot detail",              // eyebrow
+		"Published messages",      // published message section
+		"hello from atproto",      // rendered source text
+		"hello from ssb bridge",   // rendered bridged text
+		"%detail-test-message.sha256",
+		"Show stored payloads",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("detail page missing %q\nbody:\n%s", want, body)
 		}
+	}
+	if strings.Contains(body, "this should stay hidden") {
+		t.Fatalf("detail page should only render published messages\nbody:\n%s", body)
 	}
 }
 
