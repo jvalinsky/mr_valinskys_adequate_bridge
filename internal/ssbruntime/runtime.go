@@ -123,6 +123,12 @@ func (r *Runtime) Publish(ctx context.Context, atDID string, content map[string]
 		// Ensure our sbot is following this bot identity so it advertises it via EBT
 		r.logger.Printf("unit=ssbruntime event=publishing_as_managed_bot feed=%s", feedRef)
 		r.sbotNode.Replicate(feedRef)
+		// Explicitly follow so it appears in our EBT offer
+		r.sbotNode.PublishLog.Publish(map[string]interface{}{
+			"type":      "contact",
+			"contact":   feedRef.Ref(),
+			"following": true,
+		})
 	}
 
 	msgRef, err := pub.Publish(content)

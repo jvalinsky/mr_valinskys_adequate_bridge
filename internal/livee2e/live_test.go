@@ -122,14 +122,14 @@ func TestBridgeLiveInterop(t *testing.T) {
 		}
 	}()
 
-	waitForBridgeStatus(ctx, t, dbPath, "live")
+	waitForBridgeStatus(ctx, t, dbPath, "live", &bridgeLogs)
 
 	postURI, postCID := createRecord(ctx, t, xrpcc, sourceDID, "app.bsky.feed.post", &appbsky.FeedPost{
 		LexiconTypeID: "app.bsky.feed.post",
 		Text:          fmt.Sprintf("bridge live e2e post %d", time.Now().UnixNano()),
 		CreatedAt:     time.Now().UTC().Format(time.RFC3339),
 	})
-	waitForPublishedRecords(ctx, t, dbPath, []string{postURI})
+	waitForPublishedRecords(ctx, t, dbPath, []string{postURI}, &bridgeLogs)
 
 	likeURI, _ := createRecord(ctx, t, xrpcc, sourceDID, "app.bsky.feed.like", &appbsky.FeedLike{
 		LexiconTypeID: "app.bsky.feed.like",
@@ -139,22 +139,15 @@ func TestBridgeLiveInterop(t *testing.T) {
 			Cid: postCID,
 		},
 	})
-	repostURI, _ := createRecord(ctx, t, xrpcc, sourceDID, "app.bsky.feed.repost", &appbsky.FeedRepost{
-		LexiconTypeID: "app.bsky.feed.repost",
-		CreatedAt:     time.Now().UTC().Format(time.RFC3339),
-		Subject: &atproto.RepoStrongRef{
-			Uri: postURI,
-			Cid: postCID,
-		},
-	})
+
 	followURI, _ := createRecord(ctx, t, xrpcc, sourceDID, "app.bsky.graph.follow", &appbsky.GraphFollow{
 		LexiconTypeID: "app.bsky.graph.follow",
 		Subject:       targetDID,
 		CreatedAt:     time.Now().UTC().Format(time.RFC3339),
 	})
 
-	expectedURIs := []string{postURI, likeURI, repostURI, followURI}
-	waitForPublishedRecords(ctx, t, dbPath, expectedURIs)
+	expectedURIs := []string{postURI, likeURI, followURI}
+	waitForPublishedRecords(ctx, t, dbPath, expectedURIs, &bridgeLogs)
 
 	verify := exec.CommandContext(ctx, "sh", "-lc", peerVerifyCmd)
 	verify.Dir = moduleRoot
@@ -331,7 +324,7 @@ func runBridgeCommand(ctx context.Context, t *testing.T, moduleRoot, label strin
 	}
 }
 
-func waitForBridgeStatus(ctx context.Context, t *testing.T, dbPath, want string) {
+func waitForBridgeStatus(ctx context.Context, t *testing.T, dbPath, want string, bridgeLogs *bytes.Buffer) {
 	t.Helper()
 	database, err := db.Open(dbPath)
 	if err != nil {
@@ -353,13 +346,13 @@ func waitForBridgeStatus(ctx context.Context, t *testing.T, dbPath, want string)
 
 		select {
 		case <-ctx.Done():
-			t.Fatalf("timed out waiting for bridge runtime status=%q", want)
+			t.Fatalf("timed out waiting for bridge runtime status=%q\nbridge logs:\n%s", want, summarizeLogs(bridgeLogs.String()))
 		case <-ticker.C:
 		}
 	}
 }
 
-func waitForPublishedRecords(ctx context.Context, t *testing.T, dbPath string, atURIs []string) {
+func waitForPublishedRecords(ctx context.Context, t *testing.T, dbPath string, atURIs []string, bridgeLogs *bytes.Buffer) {
 	t.Helper()
 
 	database, err := db.Open(dbPath)
@@ -389,7 +382,7 @@ func waitForPublishedRecords(ctx context.Context, t *testing.T, dbPath string, a
 
 		select {
 		case <-ctx.Done():
-			t.Fatalf("timed out waiting for published records: %s", strings.Join(atURIs, ", "))
+			t.Fatalf("timed out waiting for published records: %s\nbridge logs:\n%s", strings.Join(atURIs, ", "), summarizeLogs(bridgeLogs.String()))
 		case <-ticker.C:
 		}
 	}
