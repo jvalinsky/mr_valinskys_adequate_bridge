@@ -12,6 +12,7 @@ import (
 	comatproto "github.com/bluesky-social/indigo/api/atproto"
 	"github.com/bluesky-social/indigo/atproto/syntax"
 	lexutil "github.com/bluesky-social/indigo/lex/util"
+	"github.com/bluesky-social/indigo/xrpc"
 	"github.com/mr_valinskys_adequate_bridge/internal/db"
 )
 
@@ -47,7 +48,8 @@ type FetchedRecord struct {
 	RecordJSON []byte
 }
 
-// XRPCRecordFetcher fetches individual records using com.atproto.repo.getRecord.
+// XRPCRecordFetcher fetches individual records using com.atproto.repo.getRecord
+// against a single fixed XRPC host (typically the AppView).
 type XRPCRecordFetcher struct {
 	client lexutil.LexClient
 }
@@ -55,6 +57,98 @@ type XRPCRecordFetcher struct {
 // NewXRPCRecordFetcher constructs a record fetcher backed by an ATProto XRPC client.
 func NewXRPCRecordFetcher(client lexutil.LexClient) RecordFetcher {
 	return &XRPCRecordFetcher{client: client}
+}
+
+// PDSAwareRecordFetcher resolves each DID's PDS endpoint before fetching,
+// so dependency records are read from the authoritative PDS rather than a
+// single fixed AppView host.
+type PDSAwareRecordFetcher struct {
+	resolver HostResolver
+	fallback lexutil.LexClient
+}
+
+// HostResolver resolves an ATProto DID to its PDS endpoint URL.
+// This is a local alias so callers in the bridge package do not need to
+// import the backfill package directly.
+type HostResolver interface {
+	ResolvePDSEndpoint(ctx context.Context, did string) (string, error)
+}
+
+// NewPDSAwareRecordFetcher constructs a fetcher that resolves each DID's PDS.
+// If PDS resolution fails, the fallback client (typically the public AppView)
+// is used instead.
+func NewPDSAwareRecordFetcher(resolver HostResolver, fallback lexutil.LexClient) RecordFetcher {
+	return &PDSAwareRecordFetcher{resolver: resolver, fallback: fallback}
+}
+
+// FetchRecord resolves the DID's PDS, then fetches via com.atproto.repo.getRecord.
+// Falls back to the AppView client when PDS resolution fails.
+func (f *PDSAwareRecordFetcher) FetchRecord(ctx context.Context, atURI string) (FetchedRecord, error) {
+	if f == nil {
+		return FetchedRecord{}, fmt.Errorf("pds-aware record fetcher is nil")
+	}
+
+	parsed, err := syntax.ParseATURI(strings.TrimSpace(atURI))
+	if err != nil {
+		return FetchedRecord{}, fmt.Errorf("parse dependency at-uri %q: %w", atURI, err)
+	}
+
+	collection := parsed.Collection().String()
+	rkey := parsed.RecordKey().String()
+	repo := parsed.Authority().String()
+	if collection == "" || rkey == "" || repo == "" {
+		return FetchedRecord{}, fmt.Errorf("dependency at-uri %q is missing repo/collection/rkey", atURI)
+	}
+
+	client := f.resolveClient(ctx, repo)
+
+	out, err := comatproto.RepoGetRecord(ctx, client, "", collection, repo, rkey)
+	if err != nil {
+		return FetchedRecord{}, fmt.Errorf("repo.getRecord %q: %w", atURI, err)
+	}
+	if out == nil || out.Value == nil || out.Value.Val == nil {
+		return FetchedRecord{}, fmt.Errorf("repo.getRecord %q returned no record payload", atURI)
+	}
+
+	recordJSON, err := json.Marshal(out.Value.Val)
+	if err != nil {
+		return FetchedRecord{}, fmt.Errorf("marshal repo.getRecord payload %q: %w", atURI, err)
+	}
+
+	fetchedURI := strings.TrimSpace(out.Uri)
+	if fetchedURI == "" {
+		fetchedURI = parsed.Normalize().String()
+	}
+	fetchedDID := repo
+	if normalized, parseErr := syntax.ParseATURI(fetchedURI); parseErr == nil {
+		fetchedDID = normalized.Authority().String()
+	}
+
+	atCID := ""
+	if out.Cid != nil {
+		atCID = strings.TrimSpace(*out.Cid)
+	}
+
+	return FetchedRecord{
+		ATDID:      fetchedDID,
+		ATURI:      fetchedURI,
+		ATCID:      atCID,
+		Collection: collection,
+		RecordJSON: recordJSON,
+	}, nil
+}
+
+// resolveClient returns a per-PDS XRPC client for the given DID, falling back
+// to the AppView client if resolution fails.
+func (f *PDSAwareRecordFetcher) resolveClient(ctx context.Context, did string) lexutil.LexClient {
+	if f.resolver == nil {
+		return f.fallback
+	}
+	pdsHost, err := f.resolver.ResolvePDSEndpoint(ctx, did)
+	if err != nil || strings.TrimSpace(pdsHost) == "" {
+		return f.fallback
+	}
+	return &xrpc.Client{Host: pdsHost}
 }
 
 // FetchRecord fetches and JSON-encodes one ATProto record.

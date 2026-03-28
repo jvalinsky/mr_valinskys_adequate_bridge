@@ -439,6 +439,9 @@ func (p *Processor) resolveMappedRefs(ctx context.Context, mapped map[string]int
 }
 
 // ResolveDeferredMessages retries unresolved-reference records once dependencies are available.
+// It uses cascading resolution: when a record is successfully published, any other
+// candidates in the batch that depend on it are immediately re-attempted. This collapses
+// chain resolution (e.g. reply threads A→B→C where all are deferred) into a single pass.
 func (p *Processor) ResolveDeferredMessages(ctx context.Context, limit int) (DeferredResolveResult, error) {
 	if limit <= 0 {
 		limit = 100
@@ -449,20 +452,40 @@ func (p *Processor) ResolveDeferredMessages(ctx context.Context, limit int) (Def
 		return DeferredResolveResult{}, fmt.Errorf("query deferred candidates: %w", err)
 	}
 
+	// Build reverse index: dependency URI → indices of candidates that need it.
+	depIndex := make(map[string][]int)
+	for i, c := range candidates {
+		for _, uri := range parseDeferReasonURIs(c.DeferReason) {
+			depIndex[uri] = append(depIndex[uri], i)
+		}
+	}
+
+	resolved := make(map[int]bool, len(candidates))
 	res := DeferredResolveResult{Selected: len(candidates)}
-	for _, candidate := range candidates {
+
+	// resolveAt attempts resolution of the candidate at index i, cascading on success.
+	var resolveAt func(i int)
+	resolveAt = func(i int) {
+		if resolved[i] {
+			return
+		}
+		resolved[i] = true
 		res.Attempted++
 
-		outcome, resolveErr := p.resolveDeferredMessage(ctx, candidate)
+		outcome, resolveErr := p.resolveDeferredMessage(ctx, candidates[i])
 		if resolveErr != nil {
 			res.Failed++
-			p.logger.Printf("event=deferred_resolve_failed did=%s at_uri=%s err=%v", candidate.ATDID, candidate.ATURI, resolveErr)
-			continue
+			p.logger.Printf("event=deferred_resolve_failed did=%s at_uri=%s err=%v", candidates[i].ATDID, candidates[i].ATURI, resolveErr)
+			return
 		}
 
 		switch outcome {
 		case db.MessageStatePublished:
 			res.Published++
+			// Cascade: re-attempt any batch candidates that depend on this record.
+			for _, depIdx := range depIndex[candidates[i].ATURI] {
+				resolveAt(depIdx)
+			}
 		case db.MessageStateDeferred:
 			res.Deferred++
 		default:
@@ -470,7 +493,27 @@ func (p *Processor) ResolveDeferredMessages(ctx context.Context, limit int) (Def
 		}
 	}
 
+	for i := range candidates {
+		resolveAt(i)
+	}
+
 	return res, nil
+}
+
+// parseDeferReasonURIs extracts AT URIs from a defer_reason string.
+// The format is "_atproto_key=at://...;_atproto_key2=at://..." with semicolons
+// separating multiple key=value pairs.
+func parseDeferReasonURIs(reason string) []string {
+	if reason == "" {
+		return nil
+	}
+	var uris []string
+	for _, part := range strings.Split(reason, ";") {
+		if idx := strings.Index(part, "at://"); idx >= 0 {
+			uris = append(uris, part[idx:])
+		}
+	}
+	return uris
 }
 
 func (p *Processor) resolveDeferredMessage(ctx context.Context, msg db.Message) (string, error) {

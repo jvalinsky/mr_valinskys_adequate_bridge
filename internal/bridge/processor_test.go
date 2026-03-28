@@ -1571,3 +1571,131 @@ func TestRetryFailedMessagesDefersUntilBackoff(t *testing.T) {
 		t.Fatalf("unexpected retry result: %+v", res)
 	}
 }
+
+func TestParseDeferReasonURIs(t *testing.T) {
+	tests := []struct {
+		name   string
+		reason string
+		want   []string
+	}{
+		{"empty", "", nil},
+		{"single subject", "_atproto_subject=at://did:plc:bob/app.bsky.feed.post/1", []string{"at://did:plc:bob/app.bsky.feed.post/1"}},
+		{"reply root and parent", "_atproto_reply_root=at://did:plc:a/app.bsky.feed.post/r;_atproto_reply_parent=at://did:plc:b/app.bsky.feed.post/p", []string{"at://did:plc:a/app.bsky.feed.post/r", "at://did:plc:b/app.bsky.feed.post/p"}},
+		{"quote subject", "_atproto_quote_subject=at://did:plc:c/app.bsky.feed.post/q", []string{"at://did:plc:c/app.bsky.feed.post/q"}},
+		{"no at uri", "_atproto_contact=did:plc:unknown", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseDeferReasonURIs(tt.reason)
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("uri[%d]: got %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestResolveDeferredMessagesCascadesReplyChain(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open memory db: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+
+	// Seed a bridged account.
+	if err := database.AddBridgedAccount(ctx, db.BridgedAccount{
+		ATDID:     "did:plc:chain",
+		SSBFeedID: "@chain.ed25519",
+		Active:    true,
+	}); err != nil {
+		t.Fatalf("seed account: %v", err)
+	}
+
+	// Seed a chain: post A (root) → reply B (parent=A) → reply C (parent=B).
+	// All three are deferred because backfill delivered them out of order.
+	// Post A has no dependencies (it's the root) — it was deferred only because
+	// the bridged account's feed wasn't resolved at the time. We simulate this
+	// by giving A an empty defer_reason so it resolves immediately.
+	now := time.Now().UTC()
+	pastA := now.Add(-3 * time.Minute)
+	pastB := now.Add(-2 * time.Minute)
+	pastC := now.Add(-1 * time.Minute)
+
+	postA := db.Message{
+		ATURI:              "at://did:plc:chain/app.bsky.feed.post/a",
+		ATCID:              "bafy-a",
+		ATDID:              "did:plc:chain",
+		Type:               "app.bsky.feed.post",
+		MessageState:       db.MessageStateDeferred,
+		RawATJson:          `{"text":"root post","createdAt":"2026-01-01T00:00:00Z"}`,
+		DeferReason:        "",
+		DeferAttempts:      100,
+		LastDeferAttemptAt: &pastA,
+	}
+	postB := db.Message{
+		ATURI:              "at://did:plc:chain/app.bsky.feed.post/b",
+		ATCID:              "bafy-b",
+		ATDID:              "did:plc:chain",
+		Type:               "app.bsky.feed.post",
+		MessageState:       db.MessageStateDeferred,
+		RawATJson:          `{"text":"reply to A","reply":{"root":{"uri":"at://did:plc:chain/app.bsky.feed.post/a","cid":"bafy-a"},"parent":{"uri":"at://did:plc:chain/app.bsky.feed.post/a","cid":"bafy-a"}},"createdAt":"2026-01-01T00:01:00Z"}`,
+		DeferReason:        "_atproto_reply_root=at://did:plc:chain/app.bsky.feed.post/a;_atproto_reply_parent=at://did:plc:chain/app.bsky.feed.post/a",
+		DeferAttempts:      100,
+		LastDeferAttemptAt: &pastB,
+	}
+	postC := db.Message{
+		ATURI:              "at://did:plc:chain/app.bsky.feed.post/c",
+		ATCID:              "bafy-c",
+		ATDID:              "did:plc:chain",
+		Type:               "app.bsky.feed.post",
+		MessageState:       db.MessageStateDeferred,
+		RawATJson:          `{"text":"reply to B","reply":{"root":{"uri":"at://did:plc:chain/app.bsky.feed.post/a","cid":"bafy-a"},"parent":{"uri":"at://did:plc:chain/app.bsky.feed.post/b","cid":"bafy-b"}},"createdAt":"2026-01-01T00:02:00Z"}`,
+		DeferReason:        "_atproto_reply_root=at://did:plc:chain/app.bsky.feed.post/a;_atproto_reply_parent=at://did:plc:chain/app.bsky.feed.post/b",
+		DeferAttempts:      100,
+		LastDeferAttemptAt: &pastC,
+	}
+
+	for _, msg := range []db.Message{postA, postB, postC} {
+		if err := database.AddMessage(ctx, msg); err != nil {
+			t.Fatalf("seed %s: %v", msg.ATURI, err)
+		}
+	}
+
+	publisher := &recordingPublisher{}
+	processor := NewProcessor(database, log.New(io.Discard, "", 0), WithPublisher(publisher))
+
+	result, err := processor.ResolveDeferredMessages(ctx, 10)
+	if err != nil {
+		t.Fatalf("resolve deferred: %v", err)
+	}
+
+	// With cascading, all 3 should resolve in a single pass:
+	// A resolves first (no deps), triggers B, B triggers C.
+	if result.Published < 1 {
+		t.Errorf("expected at least 1 published, got %+v", result)
+	}
+
+	// Verify post A is published.
+	storedA, _ := database.GetMessage(ctx, "at://did:plc:chain/app.bsky.feed.post/a")
+	if storedA == nil || storedA.MessageState != db.MessageStatePublished {
+		t.Errorf("post A: expected published, got %v", storedA)
+	}
+
+	// Post B should cascade to published since A is now available.
+	storedB, _ := database.GetMessage(ctx, "at://did:plc:chain/app.bsky.feed.post/b")
+	if storedB == nil || storedB.MessageState != db.MessageStatePublished {
+		t.Errorf("post B: expected published via cascade, got state=%v", storedB.MessageState)
+	}
+
+	// Post C should cascade to published since B is now available.
+	storedC, _ := database.GetMessage(ctx, "at://did:plc:chain/app.bsky.feed.post/c")
+	if storedC == nil || storedC.MessageState != db.MessageStatePublished {
+		t.Errorf("post C: expected published via cascade, got state=%v", storedC.MessageState)
+	}
+}

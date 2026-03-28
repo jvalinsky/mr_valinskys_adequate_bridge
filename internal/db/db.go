@@ -1187,13 +1187,23 @@ func (db *DB) GetDeferredCandidates(ctx context.Context, limit int) ([]Message, 
 		limit = 50
 	}
 
+	// Topological ordering: records whose dependencies are already resolved
+	// (published, failed, or absent) come before records whose dependencies
+	// are themselves still deferred. This prevents round-robin starvation
+	// in self-referencing reply chains where parent→child are both deferred.
+	//
+	// The subquery extracts the first at:// URI from defer_reason (which is
+	// formatted as "_atproto_key=at://..." possibly with ";"-separated pairs)
+	// and checks whether that URI belongs to a still-deferred record.
 	rows, err := db.conn.QueryContext(
 		ctx,
-		`SELECT at_uri, at_cid, ssb_msg_ref, at_did, type, message_state, raw_at_json, raw_ssb_json, published_at, publish_error, publish_attempts, last_publish_attempt_at, defer_reason, defer_attempts, last_defer_attempt_at, deleted_at, deleted_seq, deleted_reason, created_at
-		 FROM messages
-		 WHERE message_state = ?
-		 ORDER BY COALESCE(last_defer_attempt_at, created_at) ASC
+		`SELECT m.at_uri, m.at_cid, m.ssb_msg_ref, m.at_did, m.type, m.message_state, m.raw_at_json, m.raw_ssb_json, m.published_at, m.publish_error, m.publish_attempts, m.last_publish_attempt_at, m.defer_reason, m.defer_attempts, m.last_defer_attempt_at, m.deleted_at, m.deleted_seq, m.deleted_reason, m.created_at
+		 FROM messages m
+		 LEFT JOIN messages dep ON dep.at_uri = SUBSTR(m.defer_reason, INSTR(m.defer_reason, 'at://'), CASE WHEN INSTR(SUBSTR(m.defer_reason, INSTR(m.defer_reason, 'at://')), ';') > 0 THEN INSTR(SUBSTR(m.defer_reason, INSTR(m.defer_reason, 'at://')), ';') - 1 ELSE LENGTH(m.defer_reason) END) AND dep.message_state = ?
+		 WHERE m.message_state = ?
+		 ORDER BY CASE WHEN dep.at_uri IS NOT NULL THEN 1 ELSE 0 END ASC, COALESCE(m.last_defer_attempt_at, m.created_at) ASC
 		 LIMIT ?`,
+		MessageStateDeferred,
 		MessageStateDeferred,
 		limit,
 	)
