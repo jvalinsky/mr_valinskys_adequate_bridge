@@ -463,6 +463,40 @@ func TestBridgeRoomHandlerCacheHeaders(t *testing.T) {
 	}
 }
 
+func TestBridgeRoomHandlerSecurityHeaders(t *testing.T) {
+	roomConfig := newTestRoomConfig(roomdb.ModeOpen)
+	handler := newBridgeRoomHandler(http.NotFoundHandler(), roomConfig, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "http://room.test/", nil)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+
+	expected := map[string]string{
+		"X-Content-Type-Options":  "nosniff",
+		"X-Frame-Options":        "DENY",
+		"Referrer-Policy":        "strict-origin-when-cross-origin",
+		"Content-Security-Policy": "default-src 'self'; style-src 'unsafe-inline' 'self'; script-src 'unsafe-inline' 'self'",
+	}
+	for header, want := range expected {
+		if got := recorder.Header().Get(header); got != want {
+			t.Errorf("header %s: expected %q, got %q", header, want, got)
+		}
+	}
+}
+
+func TestBridgeRoomHandlerBotDetailRejectsInvalidDID(t *testing.T) {
+	roomConfig := newTestRoomConfig(roomdb.ModeOpen)
+	handler := newBridgeRoomHandler(http.NotFoundHandler(), roomConfig, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "http://room.test/bots/not-a-valid-did", nil)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for invalid DID, got %d", recorder.Code)
+	}
+}
+
 func newTestRoomConfig(mode roomdb.PrivacyMode) *roommockdb.FakeRoomConfig {
 	cfg := &roommockdb.FakeRoomConfig{}
 	cfg.GetPrivacyModeReturns(mode, nil)

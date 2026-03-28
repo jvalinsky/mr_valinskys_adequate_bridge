@@ -125,6 +125,24 @@ func secureCompare(a, b string) bool {
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
+// SecurityHeadersMiddleware sets common security response headers.
+// When noCache is true it also sets Cache-Control: no-store, which is
+// appropriate for authenticated admin pages but not public content.
+func SecurityHeadersMiddleware(noCache bool) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			w.Header().Set("X-Frame-Options", "DENY")
+			w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+			w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline' 'self'; script-src 'unsafe-inline' 'self'")
+			if noCache {
+				w.Header().Set("Cache-Control", "no-store")
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 type statusRecorder struct {
 	http.ResponseWriter
 	status int

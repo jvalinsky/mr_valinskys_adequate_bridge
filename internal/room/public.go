@@ -115,11 +115,12 @@ func newBridgeRoomHandler(stock http.Handler, roomConfig roomdb.RoomConfig, brid
 	if stock == nil {
 		stock = http.NotFoundHandler()
 	}
-	return bridgeRoomHandler{
+	inner := bridgeRoomHandler{
 		stock:      stock,
 		roomConfig: roomConfig,
 		bridgeBots: bridgeBots,
 	}
+	return websecurity.SecurityHeadersMiddleware(false)(inner)
 }
 
 func (h bridgeRoomHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -241,6 +242,10 @@ func (h bridgeRoomHandler) handleBotDetail(w http.ResponseWriter, r *http.Reques
 	did = strings.TrimSpace(did)
 	if did == "" {
 		http.Redirect(w, r, "/bots", http.StatusSeeOther)
+		return
+	}
+	if _, err := syntax.ParseDID(did); err != nil {
+		http.NotFound(w, r)
 		return
 	}
 

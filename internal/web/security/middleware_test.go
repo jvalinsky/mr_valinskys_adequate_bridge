@@ -87,6 +87,48 @@ func TestRequestLogMiddlewareRedactsSensitiveQueryFields(t *testing.T) {
 	}
 }
 
+func TestSecurityHeadersMiddleware(t *testing.T) {
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	t.Run("sets base security headers", func(t *testing.T) {
+		handler := SecurityHeadersMiddleware(false)(inner)
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+
+		expected := map[string]string{
+			"X-Content-Type-Options": "nosniff",
+			"X-Frame-Options":       "DENY",
+			"Referrer-Policy":       "strict-origin-when-cross-origin",
+			"Content-Security-Policy": "default-src 'self'; style-src 'unsafe-inline' 'self'; script-src 'unsafe-inline' 'self'",
+		}
+		for header, want := range expected {
+			if got := rr.Header().Get(header); got != want {
+				t.Fatalf("header %s: expected %q, got %q", header, want, got)
+			}
+		}
+		if cc := rr.Header().Get("Cache-Control"); cc != "" {
+			t.Fatalf("expected no Cache-Control header, got %q", cc)
+		}
+	})
+
+	t.Run("noCache adds Cache-Control no-store", func(t *testing.T) {
+		handler := SecurityHeadersMiddleware(true)(inner)
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+
+		if got := rr.Header().Get("Cache-Control"); got != "no-store" {
+			t.Fatalf("expected Cache-Control: no-store, got %q", got)
+		}
+		if got := rr.Header().Get("X-Frame-Options"); got != "DENY" {
+			t.Fatalf("expected X-Frame-Options: DENY, got %q", got)
+		}
+	})
+}
+
 func logBuffer(buf *bytes.Buffer) *log.Logger {
 	return log.New(buf, "", 0)
 }
