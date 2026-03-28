@@ -17,7 +17,7 @@ bin/
 /e2e-seed
 
 # Reference dependency repos (clone locally as needed)
-reference/
+# reference/
 
 # Live bridge database
 bridge-live.sqlite
