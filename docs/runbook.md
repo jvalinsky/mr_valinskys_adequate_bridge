@@ -101,6 +101,46 @@ bridge-cli serve-ui \
 bridge-cli stats --db bridge.sqlite
 ```
 
+## Backfill
+
+Replay historical records for one or more DIDs from their ATProto PDS via `sync.getRepo`. Use this after adding new accounts or to catch up accounts that missed records before activation.
+
+### Backfill specific DIDs
+
+```bash
+bridge-cli backfill \
+  --db bridge.sqlite \
+  --repo-path .ssb-bridge \
+  --did did:plc:example1 \
+  --did did:plc:example2
+```
+
+### Backfill all active accounts
+
+```bash
+bridge-cli backfill \
+  --db bridge.sqlite \
+  --repo-path .ssb-bridge \
+  --active-accounts
+```
+
+### Backfill with a time filter
+
+```bash
+bridge-cli backfill \
+  --db bridge.sqlite \
+  --repo-path .ssb-bridge \
+  --active-accounts \
+  --since "2025-01-01T00:00:00Z"
+```
+
+Key flags:
+- `--did` — repeatable, target specific DIDs
+- `--active-accounts` — backfill all active accounts from the local DB
+- `--since` — timestamp filter for partial backfill
+- `--xrpc-host` — override PDS host (useful for local/test stacks)
+- `--publish-workers` — parallel publish workers (default 1 for deterministic ordering)
+
 ## Retry Drain
 1. Inspect failure totals.
 
