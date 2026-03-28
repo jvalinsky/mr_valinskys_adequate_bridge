@@ -2,11 +2,21 @@ package security
 
 import (
 	"bytes"
+	"context"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/mr_valinskys_adequate_bridge/internal/logutil"
+	collogsv1 "go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	commonv1 "go.opentelemetry.io/proto/otlp/common/v1"
+	logsv1 "go.opentelemetry.io/proto/otlp/logs/v1"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestRequireAuthForBind(t *testing.T) {
@@ -87,6 +97,96 @@ func TestRequestLogMiddlewareRedactsSensitiveQueryFields(t *testing.T) {
 	}
 }
 
+func TestRequestLogMiddlewareRedactionPreservedInOTLPExport(t *testing.T) {
+	reqCh := make(chan *collogsv1.ExportLogsServiceRequest, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+			return
+		}
+
+		var req collogsv1.ExportLogsServiceRequest
+		if err := proto.Unmarshal(body, &req); err != nil {
+			t.Errorf("unmarshal export request: %v", err)
+			return
+		}
+		select {
+		case reqCh <- &req:
+		default:
+		}
+
+		respBody, _ := proto.Marshal(&collogsv1.ExportLogsServiceResponse{})
+		w.Header().Set("Content-Type", "application/x-protobuf")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(respBody)
+	}))
+	defer server.Close()
+
+	u, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse server URL: %v", err)
+	}
+
+	rt, err := logutil.NewRuntime(logutil.Config{
+		Endpoint:    u.Host,
+		Protocol:    "http",
+		Insecure:    true,
+		ServiceName: "bridge-ui",
+		CommandName: "serve-ui",
+		LocalOutput: "none",
+	})
+	if err != nil {
+		t.Fatalf("new log runtime: %v", err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = rt.Shutdown(ctx)
+	}()
+
+	mw := RequestLogMiddleware(rt.Logger("ui"))
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/state?cursor=123&token=abc123&password=shh", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := rt.Shutdown(flushCtx); err != nil {
+		t.Fatalf("shutdown log runtime: %v", err)
+	}
+
+	select {
+	case exportReq := <-reqCh:
+		record := findExportedLogRecordByBody(exportReq, "event=ui_request")
+		if record == nil {
+			t.Fatalf("expected exported ui_request record")
+		}
+		body := record.GetBody().GetStringValue()
+		if strings.Contains(body, "abc123") || strings.Contains(body, "shh") {
+			t.Fatalf("expected body redaction, got %q", body)
+		}
+		if !strings.Contains(body, "REDACTED") {
+			t.Fatalf("expected REDACTED marker in body, got %q", body)
+		}
+
+		attrs := flattenOTLPAttrs(record.GetAttributes())
+		path := attrs["path"]
+		if strings.Contains(path, "abc123") || strings.Contains(path, "shh") {
+			t.Fatalf("expected path attribute redaction, got %q", path)
+		}
+		if !strings.Contains(path, "REDACTED") {
+			t.Fatalf("expected REDACTED path attribute, got %q (body=%q attrs=%v)", path, body, attrs)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for OTLP export")
+	}
+}
+
 func TestSecurityHeadersMiddleware(t *testing.T) {
 	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -99,9 +199,9 @@ func TestSecurityHeadersMiddleware(t *testing.T) {
 		handler.ServeHTTP(rr, req)
 
 		expected := map[string]string{
-			"X-Content-Type-Options": "nosniff",
-			"X-Frame-Options":       "DENY",
-			"Referrer-Policy":       "strict-origin-when-cross-origin",
+			"X-Content-Type-Options":  "nosniff",
+			"X-Frame-Options":         "DENY",
+			"Referrer-Policy":         "strict-origin-when-cross-origin",
 			"Content-Security-Policy": "default-src 'self'; style-src 'unsafe-inline' 'self'; script-src 'unsafe-inline' 'self'",
 		}
 		for header, want := range expected {
@@ -131,4 +231,43 @@ func TestSecurityHeadersMiddleware(t *testing.T) {
 
 func logBuffer(buf *bytes.Buffer) *log.Logger {
 	return log.New(buf, "", 0)
+}
+
+func findExportedLogRecordByBody(req *collogsv1.ExportLogsServiceRequest, contains string) *logsv1.LogRecord {
+	if req == nil {
+		return nil
+	}
+	for _, resourceLogs := range req.ResourceLogs {
+		for _, scopeLogs := range resourceLogs.ScopeLogs {
+			for _, record := range scopeLogs.LogRecords {
+				if strings.Contains(record.GetBody().GetStringValue(), contains) {
+					return record
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func flattenOTLPAttrs(attrs []*commonv1.KeyValue) map[string]string {
+	out := make(map[string]string, len(attrs))
+	for _, kv := range attrs {
+		if kv == nil {
+			continue
+		}
+		out[kv.Key] = anyValueString(kv.Value)
+	}
+	return out
+}
+
+func anyValueString(v *commonv1.AnyValue) string {
+	if v == nil {
+		return ""
+	}
+	switch val := v.Value.(type) {
+	case *commonv1.AnyValue_StringValue:
+		return val.StringValue
+	default:
+		return ""
+	}
 }
