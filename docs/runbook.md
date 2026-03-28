@@ -68,6 +68,11 @@ Key runtime flags:
 - `--firehose-enable` (default: true) — set `=false` to run room-only without firehose ingestion
 - `--ssb-listen-addr` (default: `:8008`) — the embedded sbot MUXRPC listener for peer EBT replication
 - `--xrpc-host` — override the ATProto read host for dependency/blob fetches (defaults to AppView)
+- `--otel-logs-endpoint` — optional OTLP logs endpoint for OpenTelemetry log export
+- `--otel-logs-protocol` (`grpc|http`, default `grpc`) — OTLP transport protocol
+- `--otel-logs-insecure` — disable OTLP transport security when needed for local collectors
+- `--otel-service-name` — override `service.name` resource attribute
+- `--local-log-output` (`text|none`, default `text`) — keep or suppress local stdout logs while OTLP export runs
 
 3. Start the admin UI with auth (separate process or alongside).
 

@@ -52,7 +52,7 @@ See [`docs/runbook.md`](docs/runbook.md) for full operational procedures.
 | `retry-failures` | Retry failed unpublished bridge messages |
 | `serve-ui` | Run only the admin web UI (read-only dashboard mode) |
 
-Global flags: `--db` (SQLite path), `--relay-url` (firehose endpoint), `--bot-seed` (DID→SSB derivation seed). Run `bridge-cli --help` for full flag reference.
+Global flags: `--db` (SQLite path), `--relay-url` (firehose endpoint), `--bot-seed` (DID→SSB derivation seed), `--otel-logs-endpoint`, `--otel-logs-protocol` (`grpc|http`), `--otel-logs-insecure`, `--otel-service-name`, `--local-log-output` (`text|none`). Run `bridge-cli --help` for full flag reference.
 
 ## Architecture
 
