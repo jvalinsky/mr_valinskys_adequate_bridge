@@ -162,6 +162,10 @@ go test ./...
 
 ## Documentation
 
+- **[`docs/README.md`](docs/README.md)** — Docs index for architecture and translation notes.
+- **[`docs/atproto-ssb-translation-overview.md`](docs/atproto-ssb-translation-overview.md)** — High-level map of DID, AT URI, and blob translation layers.
+- **[`docs/atproto-ssb-identity-mapping.md`](docs/atproto-ssb-identity-mapping.md)** — How DIDs become deterministic SSB feed identities and why the bridge uses DIDs instead of handles.
+- **[`docs/atproto-ssb-record-translation.md`](docs/atproto-ssb-record-translation.md)** — How `_atproto_*` placeholders become SSB refs, when records defer, and how retries resolve them.
 - **[`docs/runbook.md`](docs/runbook.md)** — Operational runbook: startup, restart, retry, incident triage, pre-release E2E gates.
 - **[`docs/scratchpad/`](docs/scratchpad/)** — Development milestone notes (001–017) linked to the decision graph.
 - **[`reference/`](reference/)** — External project sources used as architectural reference (see [`reference/README.md`](reference/README.md)).
