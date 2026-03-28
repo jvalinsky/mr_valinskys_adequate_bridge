@@ -12,10 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bluesky-social/indigo/api/atproto"
 	lexutil "github.com/bluesky-social/indigo/lex/util"
 	indigorepo "github.com/bluesky-social/indigo/repo"
-	"github.com/bluesky-social/indigo/xrpc"
 	"github.com/ipfs/go-cid"
 	"github.com/mr_valinskys_adequate_bridge/internal/mapper"
 )
@@ -92,8 +90,12 @@ func (f SinceFilter) Include(recordJSON []byte) bool {
 	return !created.UTC().Before(*f.Timestamp)
 }
 
-// RunForDID backfills supported records for a single DID.
-func RunForDID(ctx context.Context, client *xrpc.Client, did string, since SinceFilter, processor RecordProcessor, logger *log.Logger) (Stats, error) {
+// RunForDID backfills supported records for a single DID using a resolved per-DID PDS host.
+func RunForDID(ctx context.Context, did string, since SinceFilter, processor RecordProcessor, logger *log.Logger, resolver HostResolver, fetcher RepoFetcher) DIDResult {
+	result := DIDResult{
+		DID:    did,
+		Status: StatusSuccess,
+	}
 	if logger == nil {
 		logger = log.New(io.Discard, "", 0)
 	}
@@ -102,11 +104,43 @@ func RunForDID(ctx context.Context, client *xrpc.Client, did string, since Since
 		logger.Printf("event=backfill_since_notice did=%s notice=%q", did, since.SequenceNotice)
 	}
 
-	carBytes, err := atproto.SyncGetRepo(ctx, client, did, "")
-	if err != nil {
-		return Stats{}, fmt.Errorf("sync.getRepo did=%s: %w", did, err)
+	if resolver == nil {
+		result.Status = StatusTransportError
+		result.Err = fmt.Errorf("backfill host resolver is nil")
+		return result
+	}
+	if fetcher == nil {
+		result.Status = StatusTransportError
+		result.Err = fmt.Errorf("backfill repo fetcher is nil")
+		return result
 	}
 
+	host, err := resolver.ResolvePDSEndpoint(ctx, did)
+	if err != nil {
+		result.Status = classifyDIDResult(err)
+		result.Err = err
+		return result
+	}
+	result.PDSHost = host
+
+	carBytes, err := fetcher.FetchRepo(ctx, host, did)
+	if err != nil {
+		result.Status = classifyDIDResult(err)
+		result.Err = fmt.Errorf("sync.getRepo did=%s pds_host=%s: %w", did, host, err)
+		return result
+	}
+
+	stats, err := processRepoCAR(ctx, carBytes, did, since, processor, logger)
+	if err != nil {
+		result.Status = classifyDIDResult(err)
+		result.Err = err
+		return result
+	}
+	result.Stats = stats
+	return result
+}
+
+func processRepoCAR(ctx context.Context, carBytes []byte, did string, since SinceFilter, processor RecordProcessor, logger *log.Logger) (Stats, error) {
 	rr, err := indigorepo.ReadRepoFromCar(ctx, bytes.NewReader(carBytes))
 	if err != nil {
 		return Stats{}, fmt.Errorf("read repo car did=%s: %w", did, err)
