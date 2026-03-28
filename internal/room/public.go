@@ -10,8 +10,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/mr_valinskys_adequate_bridge/internal/db"
 	"github.com/mr_valinskys_adequate_bridge/internal/presentation"
+	websecurity "github.com/mr_valinskys_adequate_bridge/internal/web/security"
 	ssbrefs "github.com/ssbc/go-ssb-refs"
 	"github.com/ssbc/go-ssb-room/v2/roomdb"
 	roomweb "github.com/ssbc/go-ssb-room/v2/web"
@@ -511,15 +513,18 @@ const publicLayoutTemplate = `
   <style>
     :root {
       color-scheme: light;
-      --paper: #f5efe3;
-      --panel: rgba(255, 252, 247, 0.9);
-      --ink: #163128;
-      --muted: #526258;
-      --line: rgba(22, 49, 40, 0.14);
-      --accent: #0f8b6d;
-      --accent-strong: #0b6a54;
-      --signal: #d55d36;
-      --shadow: 0 28px 60px rgba(16, 38, 29, 0.12);
+      --paper: #f3ebdd;
+      --panel: rgba(255, 250, 244, 0.96);
+      --panel-strong: rgba(255, 253, 250, 0.98);
+      --ink: #132820;
+      --muted: #334239;
+      --line: rgba(22, 49, 40, 0.18);
+      --line-strong: rgba(22, 49, 40, 0.28);
+      --accent: #0d7f64;
+      --accent-strong: #0a5f4a;
+      --signal: #c04e2e;
+      --warn: #6f5300;
+      --shadow: 0 24px 52px rgba(16, 38, 29, 0.12);
       --radius-lg: 28px;
       --radius-md: 18px;
       --radius-sm: 999px;
@@ -535,8 +540,8 @@ const publicLayoutTemplate = `
       color: var(--ink);
       font-family: "Avenir Next", "Trebuchet MS", "Segoe UI", sans-serif;
       background:
-        radial-gradient(circle at top left, rgba(15, 139, 109, 0.16), transparent 34%),
-        radial-gradient(circle at top right, rgba(213, 93, 54, 0.14), transparent 28%),
+        radial-gradient(circle at top left, rgba(13, 127, 100, 0.14), transparent 34%),
+        radial-gradient(circle at top right, rgba(192, 78, 46, 0.12), transparent 28%),
         linear-gradient(180deg, #faf6ef 0%, var(--paper) 52%, #ebe3d2 100%);
     }
 
@@ -547,7 +552,7 @@ const publicLayoutTemplate = `
     .page-shell {
       width: min(1180px, calc(100vw - 32px));
       margin: 0 auto;
-      padding: 24px 0 48px;
+      padding: 24px 0 56px;
     }
 
     .topbar {
@@ -575,7 +580,7 @@ const publicLayoutTemplate = `
       height: 14px;
       border-radius: 50%;
       background: linear-gradient(135deg, var(--accent), var(--signal));
-      box-shadow: 0 0 0 6px rgba(15, 139, 109, 0.08);
+      box-shadow: 0 0 0 6px rgba(13, 127, 100, 0.08);
     }
 
     .topnav {
@@ -593,8 +598,8 @@ const publicLayoutTemplate = `
       min-height: 42px;
       padding: 0 16px;
       border-radius: var(--radius-sm);
-      border: 1px solid var(--line);
-      background: rgba(255, 255, 255, 0.66);
+      border: 1px solid var(--line-strong);
+      background: rgba(255, 252, 247, 0.84);
       color: var(--ink);
       text-decoration: none;
       font-weight: 600;
@@ -603,20 +608,22 @@ const publicLayoutTemplate = `
     .hero,
     .panel,
     .bot-card,
-    .empty-state {
+    .empty-state,
+    .detail-hero,
+    .message-card {
       background: var(--panel);
-      border: 1px solid rgba(255, 255, 255, 0.65);
+      border: 1px solid var(--line);
       box-shadow: var(--shadow);
-      backdrop-filter: blur(10px);
+      backdrop-filter: blur(8px);
     }
 
     .hero {
       display: grid;
       grid-template-columns: minmax(0, 1.6fr) minmax(260px, 0.9fr);
-      gap: 22px;
-      padding: 28px;
+      gap: 26px;
+      padding: 32px;
       border-radius: var(--radius-lg);
-      margin-bottom: 24px;
+      margin-bottom: 28px;
     }
 
     .eyebrow {
@@ -645,10 +652,15 @@ const publicLayoutTemplate = `
       font-size: clamp(1.7rem, 3vw, 2.6rem);
     }
 
+    .page-title-wide {
+      font-size: clamp(1.6rem, 3vw, 2.6rem);
+      max-width: none;
+    }
+
     .lead,
     .body-copy {
       color: var(--muted);
-      line-height: 1.7;
+      line-height: 1.68;
       font-size: 1rem;
     }
 
@@ -665,6 +677,11 @@ const publicLayoutTemplate = `
       margin-top: 22px;
     }
 
+    .page-header-actions,
+    .action-row-compact {
+      margin-top: 0;
+    }
+
     .button,
     .button:visited {
       display: inline-flex;
@@ -678,11 +695,21 @@ const publicLayoutTemplate = `
       font-weight: 700;
       cursor: pointer;
       font: inherit;
-      transition: transform 120ms ease, background 120ms ease, border-color 120ms ease;
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45);
+      transition: transform 120ms ease, background 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
     }
 
     .button:hover {
       transform: translateY(-1px);
+    }
+
+    .button:focus-visible,
+    .pill-link:focus-visible,
+    .directory-field input:focus-visible,
+    .directory-field select:focus-visible,
+    .payload-toggle summary:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
     }
 
     .button-primary {
@@ -691,15 +718,15 @@ const publicLayoutTemplate = `
     }
 
     .button-secondary {
-      background: rgba(255, 255, 255, 0.82);
+      background: rgba(255, 251, 246, 0.94);
       color: var(--ink);
-      border-color: var(--line);
+      border-color: var(--line-strong);
     }
 
     .button-muted {
-      background: rgba(82, 98, 88, 0.12);
+      background: rgba(51, 66, 57, 0.10);
       color: var(--muted);
-      border-color: transparent;
+      border-color: rgba(51, 66, 57, 0.10);
       cursor: default;
     }
 
@@ -713,7 +740,7 @@ const publicLayoutTemplate = `
       display: grid;
       gap: 14px;
       align-content: start;
-      padding: 22px;
+      padding: 24px;
       border-radius: 22px;
       background: linear-gradient(180deg, rgba(17, 61, 49, 0.94), rgba(9, 33, 27, 0.94));
       color: #f7f4ed;
@@ -741,14 +768,14 @@ const publicLayoutTemplate = `
     .bot-grid {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 18px;
+      gap: 20px;
     }
 
     .panel,
     .bot-card,
     .empty-state {
       border-radius: var(--radius-md);
-      padding: 22px;
+      padding: 24px;
     }
 
     .panel h2,
@@ -758,30 +785,39 @@ const publicLayoutTemplate = `
     }
 
     .page-header {
-      display: flex;
-      flex-wrap: wrap;
-      justify-content: space-between;
-      gap: 16px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 16px 24px;
       align-items: end;
-      margin-bottom: 20px;
+      margin-bottom: 24px;
+    }
+
+    .page-header-main {
+      min-width: 0;
+    }
+
+    .page-header-actions {
+      justify-self: end;
+      align-self: end;
     }
 
     .page-header .lead {
-      margin: 14px 0 0;
-      max-width: 60ch;
+      margin: 16px 0 0;
+      max-width: 64ch;
     }
 
     .directory-controls {
-      margin-top: 16px;
+      margin-top: 6px;
       display: grid;
-      gap: 10px;
-      grid-template-columns: minmax(0, 1.7fr) minmax(180px, 0.8fr) auto;
+      gap: 14px 16px;
+      grid-template-columns: minmax(0, 1.75fr) minmax(220px, 0.9fr) auto;
       align-items: end;
     }
 
     .directory-field {
       display: grid;
-      gap: 6px;
+      gap: 7px;
+      min-width: 0;
     }
 
     .directory-field label {
@@ -794,19 +830,28 @@ const publicLayoutTemplate = `
 
     .directory-field input,
     .directory-field select {
-      min-height: 40px;
+      min-height: 46px;
       border-radius: 12px;
-      border: 1px solid var(--line);
-      padding: 0 12px;
+      border: 1px solid var(--line-strong);
+      padding: 0 14px;
       font: inherit;
       color: var(--ink);
-      background: rgba(255, 255, 255, 0.88);
+      background: var(--panel-strong);
+      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
+    }
+
+    .directory-field input::placeholder {
+      color: rgba(51, 66, 57, 0.75);
+    }
+
+    .directory-actions {
+      justify-self: end;
     }
 
     /* --- Enhanced Bot Card Styles --- */
     .bot-card {
       display: grid;
-      gap: 14px;
+      gap: 16px;
       text-decoration: none;
       color: inherit;
       transition: transform 180ms ease, box-shadow 180ms ease, border-color 180ms ease;
@@ -832,12 +877,14 @@ const publicLayoutTemplate = `
       transform: translateY(-3px);
       box-shadow: 0 32px 68px rgba(16, 38, 29, 0.18);
       border-color: var(--accent);
+      outline: none;
     }
 
     .bot-card-header {
       display: flex;
-      align-items: center;
+      align-items: flex-start;
       gap: 12px;
+      min-width: 0;
     }
 
     .bot-pulse {
@@ -845,18 +892,20 @@ const publicLayoutTemplate = `
       height: 10px;
       border-radius: 50%;
       background: var(--accent);
-      box-shadow: 0 0 0 0 rgba(15, 139, 109, 0.4);
+      box-shadow: 0 0 0 0 rgba(13, 127, 100, 0.4);
       animation: pulse-ring 2s ease-out infinite;
       flex-shrink: 0;
     }
 
     @keyframes pulse-ring {
-      0% { box-shadow: 0 0 0 0 rgba(15, 139, 109, 0.4); }
-      70% { box-shadow: 0 0 0 8px rgba(15, 139, 109, 0); }
-      100% { box-shadow: 0 0 0 0 rgba(15, 139, 109, 0); }
+      0% { box-shadow: 0 0 0 0 rgba(13, 127, 100, 0.4); }
+      70% { box-shadow: 0 0 0 8px rgba(13, 127, 100, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(13, 127, 100, 0); }
     }
 
     .bot-card-title {
+      min-width: 0;
+      flex: 1 1 auto;
       font-size: 1.05rem;
       font-weight: 700;
       font-family: "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
@@ -870,13 +919,14 @@ const publicLayoutTemplate = `
       margin: 0;
       font-size: 0.84rem;
       color: var(--muted);
+      overflow-wrap: anywhere;
     }
 
     .stats-bar {
       display: flex;
       flex-wrap: wrap;
-      gap: 8px;
-      margin-top: 2px;
+      gap: 8px 10px;
+      margin-top: 0;
     }
 
     .stat-pill {
@@ -885,63 +935,64 @@ const publicLayoutTemplate = `
       gap: 5px;
       padding: 4px 10px;
       border-radius: 999px;
-      font-size: 0.78rem;
+      border: 1px solid transparent;
+      font-size: 0.82rem;
       font-weight: 700;
       letter-spacing: 0.02em;
     }
 
     .stat-total {
       background: rgba(22, 49, 40, 0.08);
+      border-color: rgba(22, 49, 40, 0.12);
       color: var(--ink);
     }
 
     .stat-published {
       background: rgba(15, 139, 109, 0.12);
+      border-color: rgba(15, 139, 109, 0.12);
       color: var(--accent-strong);
     }
 
     .stat-failed {
       background: rgba(213, 93, 54, 0.12);
+      border-color: rgba(213, 93, 54, 0.14);
       color: var(--signal);
     }
 
     .stat-deferred {
-      background: rgba(200, 160, 40, 0.14);
-      color: #8a6d00;
+      background: rgba(200, 160, 40, 0.18);
+      border-color: rgba(144, 108, 0, 0.18);
+      color: var(--warn);
     }
 
     .bot-meta {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px 16px;
-      font-size: 0.82rem;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 8px 14px;
+      font-size: 0.84rem;
       color: var(--muted);
     }
 
     .bot-meta-item {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
+      min-width: 0;
+      display: block;
+      overflow-wrap: anywhere;
     }
 
     .bot-card .card-cta {
       font-size: 0.82rem;
       font-weight: 700;
       color: var(--accent);
-      margin-top: 2px;
+      margin-top: 4px;
     }
 
     /* --- Detail Page --- */
     .detail-hero {
       display: grid;
       gap: 22px;
-      padding: 28px;
+      padding: 32px;
       border-radius: var(--radius-lg);
-      margin-bottom: 24px;
-      background: var(--panel);
-      border: 1px solid rgba(255, 255, 255, 0.65);
-      box-shadow: var(--shadow);
-      backdrop-filter: blur(10px);
+      margin-bottom: 28px;
     }
 
     .detail-stats-grid {
@@ -981,7 +1032,7 @@ const publicLayoutTemplate = `
 
     .detail-stat-card.published .detail-stat-value { color: var(--accent-strong); }
     .detail-stat-card.failed .detail-stat-value { color: var(--signal); }
-    .detail-stat-card.deferred .detail-stat-value { color: #8a6d00; }
+    .detail-stat-card.deferred .detail-stat-value { color: var(--warn); }
     .detail-stat-card.total .detail-stat-value { color: var(--ink); }
 
     .field-label {
@@ -999,7 +1050,8 @@ const publicLayoutTemplate = `
       margin: 0;
       padding: 12px 14px;
       border-radius: 14px;
-      background: rgba(19, 49, 40, 0.06);
+      border: 1px solid rgba(22, 49, 40, 0.08);
+      background: rgba(255, 253, 250, 0.9);
       color: var(--ink);
       font-family: "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", monospace;
       font-size: 0.92rem;
@@ -1021,9 +1073,7 @@ const publicLayoutTemplate = `
     }
 
     .message-card {
-      border: 1px solid var(--line);
       border-radius: 18px;
-      background: rgba(255, 255, 255, 0.78);
       padding: 18px;
       display: grid;
       gap: 14px;
@@ -1063,7 +1113,7 @@ const publicLayoutTemplate = `
     .message-field-card {
       border: 1px solid var(--line);
       border-radius: 14px;
-      background: rgba(19, 49, 40, 0.04);
+      background: rgba(255, 252, 247, 0.85);
       padding: 12px 14px;
     }
 
@@ -1106,7 +1156,7 @@ const publicLayoutTemplate = `
       padding: 12px 14px;
       border-radius: 14px;
       border: 1px solid var(--line);
-      background: rgba(19, 49, 40, 0.05);
+      background: rgba(255, 253, 250, 0.88);
       overflow: auto;
       white-space: pre-wrap;
       word-break: break-word;
@@ -1116,7 +1166,9 @@ const publicLayoutTemplate = `
     }
 
     .footer-note {
-      margin-top: 22px;
+      margin-top: 32px;
+      padding-top: 18px;
+      border-top: 1px solid rgba(22, 49, 40, 0.12);
       color: var(--muted);
       font-size: 0.94rem;
       line-height: 1.6;
@@ -1130,7 +1182,21 @@ const publicLayoutTemplate = `
       }
 
       .directory-controls {
+        grid-template-columns: minmax(0, 1fr) minmax(220px, 0.75fr);
+      }
+
+      .directory-actions {
+        grid-column: 1 / -1;
+        justify-self: start;
+      }
+
+      .page-header {
         grid-template-columns: 1fr;
+        align-items: start;
+      }
+
+      .page-header-actions {
+        justify-self: start;
       }
 
       .page-shell {
@@ -1139,10 +1205,21 @@ const publicLayoutTemplate = `
 
       .hero,
       .panel,
-      .bot-card,
       .empty-state,
       .detail-hero {
         padding: 20px;
+      }
+
+      .bot-card {
+        padding: 16px;
+      }
+    }
+
+    @media (max-width: 680px) {
+      .directory-controls,
+      .detail-stats-grid,
+      .bot-meta {
+        grid-template-columns: 1fr;
       }
     }
   </style>
@@ -1241,12 +1318,12 @@ const botsContentTemplate = `
 {{define "pageTitle"}}Bridged Bots{{end}}
 {{define "content"}}
   <header class="page-header">
-    <div>
+    <div class="page-header-main">
       <p class="eyebrow">Bridged-account directory</p>
       <h1>Follow the bridge bots from your SSB client.</h1>
       <p class="lead">These are the active bridged accounts currently published by the bridge runtime. Click a card for full details, or open the feed URI in a compatible app.</p>
     </div>
-    <div class="hero-actions">
+    <div class="hero-actions page-header-actions">
       <a class="button button-secondary button-small" href="{{.HomeURL}}">Back to room</a>
       {{if .Mode.CanSelfServeInvite}}
         <a class="button button-primary button-small" href="{{.InviteURL}}">Need an invite?</a>
@@ -1270,7 +1347,7 @@ const botsContentTemplate = `
           {{end}}
         </select>
       </div>
-      <div class="hero-actions" style="margin-top:0">
+      <div class="hero-actions action-row-compact directory-actions">
         <button class="button button-primary button-small" type="submit">Apply</button>
       </div>
     </div>
@@ -1315,11 +1392,11 @@ const botDetailContentTemplate = `
 {{define "pageTitle"}}Bot · {{abbreviateDID .Bot.ATDID}}{{end}}
 {{define "content"}}
   <header class="page-header">
-    <div>
+    <div class="page-header-main">
       <p class="eyebrow">Bot detail</p>
-      <h1 style="font-size:clamp(1.6rem,3vw,2.6rem);max-width:none">{{abbreviateDID .Bot.ATDID}}</h1>
+      <h1 class="page-title-wide">{{abbreviateDID .Bot.ATDID}}</h1>
     </div>
-    <div class="hero-actions">
+    <div class="hero-actions page-header-actions">
       <a class="button button-secondary button-small" href="{{.BotsURL}}">← Back to directory</a>
       {{if .Bot.FeedHref}}
         <a class="button button-primary button-small" href="{{.Bot.FeedHref}}">Open feed URI</a>
@@ -1376,7 +1453,7 @@ const botDetailContentTemplate = `
 
   <section class="panel">
     <div class="page-header">
-      <div>
+      <div class="page-header-main">
         <p class="eyebrow">Recent bridged output</p>
         <h2>Published messages</h2>
         <p class="lead">Recent records this bot has already bridged into SSB, rendered from the stored ATProto and bridged SSB payloads.</p>
@@ -1392,7 +1469,7 @@ const botDetailContentTemplate = `
                 <span class="message-type-pill">{{.Type}}</span>
                 {{if .PublishedAt}}<span class="stat-pill stat-published">Published {{.PublishedAt}}</span>{{end}}
               </div>
-              <div class="bot-actions" style="margin-top:0">
+              <div class="bot-actions action-row-compact">
                 <button class="button button-secondary button-small" type="button" data-copy="{{.ATURI}}">Copy AT URI</button>
                 {{if .SSBMsgRef}}<button class="button button-secondary button-small" type="button" data-copy="{{.SSBMsgRef}}">Copy SSB ref</button>{{end}}
               </div>
