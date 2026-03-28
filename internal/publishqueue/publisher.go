@@ -5,8 +5,9 @@ import (
 	"context"
 	"fmt"
 	"hash/fnv"
-	"io"
 	"log"
+
+	"github.com/mr_valinskys_adequate_bridge/internal/logutil"
 	"sync"
 )
 
@@ -41,9 +42,7 @@ type publishResponse struct {
 
 // New constructs a WorkerPublisher that preserves publish order per DID.
 func New(delegate Publisher, workers int, logger *log.Logger) *WorkerPublisher {
-	if logger == nil {
-		logger = log.New(io.Discard, "", 0)
-	}
+	logger = logutil.Ensure(logger)
 	if workers <= 0 {
 		workers = 1
 	}

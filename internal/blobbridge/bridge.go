@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -19,6 +18,7 @@ import (
 	"go.cryptoscope.co/ssb"
 
 	"github.com/mr_valinskys_adequate_bridge/internal/db"
+	"github.com/mr_valinskys_adequate_bridge/internal/logutil"
 	"github.com/mr_valinskys_adequate_bridge/internal/mapper"
 )
 
@@ -39,9 +39,7 @@ type HostResolver interface {
 
 // New constructs a blob Bridge.
 func New(database *db.DB, blobStore ssb.BlobStore, xrpcClient lexutil.LexClient, logger *log.Logger) *Bridge {
-	if logger == nil {
-		logger = log.New(io.Discard, "", 0)
-	}
+	logger = logutil.Ensure(logger)
 	return &Bridge{
 		db:        database,
 		blobStore: blobStore,
@@ -53,9 +51,7 @@ func New(database *db.DB, blobStore ssb.BlobStore, xrpcClient lexutil.LexClient,
 // NewWithResolver constructs a blob Bridge that resolves the correct host per
 // DID before fetching each blob.
 func NewWithResolver(database *db.DB, blobStore ssb.BlobStore, resolver HostResolver, httpClient *http.Client, logger *log.Logger) *Bridge {
-	if logger == nil {
-		logger = log.New(io.Discard, "", 0)
-	}
+	logger = logutil.Ensure(logger)
 	return &Bridge{
 		db:        database,
 		blobStore: blobStore,

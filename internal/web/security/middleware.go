@@ -3,8 +3,9 @@ package security
 
 import (
 	"crypto/subtle"
-	"io"
 	"log"
+
+	"github.com/mr_valinskys_adequate_bridge/internal/logutil"
 	"net"
 	"net/http"
 	"net/url"
@@ -58,9 +59,7 @@ func BasicAuthMiddleware(username, password string) func(http.Handler) http.Hand
 
 // RequestLogMiddleware logs request metadata with sensitive query values redacted.
 func RequestLogMiddleware(logger *log.Logger) func(http.Handler) http.Handler {
-	if logger == nil {
-		logger = log.New(io.Discard, "", 0)
-	}
+	logger = logutil.Ensure(logger)
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

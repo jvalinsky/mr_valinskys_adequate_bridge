@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"strings"
 	"sync"
@@ -14,6 +13,7 @@ import (
 	lexutil "github.com/bluesky-social/indigo/lex/util"
 	"github.com/bluesky-social/indigo/xrpc"
 	"github.com/mr_valinskys_adequate_bridge/internal/db"
+	"github.com/mr_valinskys_adequate_bridge/internal/logutil"
 )
 
 const (
@@ -223,9 +223,7 @@ type recordDependencyCall struct {
 
 // NewATProtoDependencyResolver constructs the default resolver used by the bridge runtime.
 func NewATProtoDependencyResolver(database *db.DB, logger *log.Logger, fetcher RecordFetcher, process DependencyProcessFunc) DependencyResolver {
-	if logger == nil {
-		logger = log.New(io.Discard, "", 0)
-	}
+	logger = logutil.Ensure(logger)
 	return &ATProtoDependencyResolver{
 		db:       database,
 		logger:   logger,
@@ -443,9 +441,7 @@ func dependencyReasonFromContext(ctx context.Context) string {
 }
 
 func logDependencyEvent(logger *log.Logger, ctx context.Context, event, dependencyURI, dependencyDID, note string, err error) {
-	if logger == nil {
-		logger = log.New(io.Discard, "", 0)
-	}
+	logger = logutil.Ensure(logger)
 
 	rootDID := ""
 	rootURI := ""

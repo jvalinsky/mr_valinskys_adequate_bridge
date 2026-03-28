@@ -4,10 +4,10 @@ package ssbruntime
 import (
 	"context"
 	"fmt"
-	"io"
 	"log"
 	"os"
 
+	"github.com/mr_valinskys_adequate_bridge/internal/logutil"
 	"go.cryptoscope.co/margaret"
 	librarian "go.cryptoscope.co/margaret/indexes"
 	"go.cryptoscope.co/margaret/multilog"
@@ -40,9 +40,7 @@ type Config struct {
 
 // Open initializes an SSB runtime rooted at repoPath.
 func Open(ctx context.Context, cfg Config, logger *log.Logger) (*Runtime, error) {
-	if logger == nil {
-		logger = log.New(io.Discard, "", 0)
-	}
+	logger = logutil.Ensure(logger)
 	if len(cfg.MasterSeed) == 0 {
 		return nil, fmt.Errorf("master seed must not be empty")
 	}

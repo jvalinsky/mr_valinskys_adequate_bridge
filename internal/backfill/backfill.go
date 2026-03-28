@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"strconv"
 	"strings"
@@ -15,6 +14,7 @@ import (
 	lexutil "github.com/bluesky-social/indigo/lex/util"
 	indigorepo "github.com/bluesky-social/indigo/repo"
 	"github.com/ipfs/go-cid"
+	"github.com/mr_valinskys_adequate_bridge/internal/logutil"
 	"github.com/mr_valinskys_adequate_bridge/internal/mapper"
 )
 
@@ -96,9 +96,7 @@ func RunForDID(ctx context.Context, did string, since SinceFilter, processor Rec
 		DID:    did,
 		Status: StatusSuccess,
 	}
-	if logger == nil {
-		logger = log.New(io.Discard, "", 0)
-	}
+	logger = logutil.Ensure(logger)
 
 	if since.SequenceNotice != "" {
 		logger.Printf("event=backfill_since_notice did=%s notice=%q", did, since.SequenceNotice)

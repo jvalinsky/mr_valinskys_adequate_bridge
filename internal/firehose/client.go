@@ -20,6 +20,7 @@ import (
 	"github.com/bluesky-social/indigo/events/schedulers/sequential"
 	"github.com/bluesky-social/indigo/repo"
 	"github.com/gorilla/websocket"
+	"github.com/mr_valinskys_adequate_bridge/internal/logutil"
 )
 
 // EventHandler handles repository commit events emitted by the firehose stream.
@@ -57,6 +58,7 @@ func NewClient(relayURL string, handler EventHandler, logger *log.Logger, opts .
 	if relayURL == "" {
 		relayURL = "wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos"
 	}
+	logger = logutil.Ensure(logger)
 	client := &Client{
 		relayURL: relayURL,
 		handler:  handler,
@@ -124,9 +126,7 @@ func (c *Client) RunWithReconnect(ctx context.Context, cfg ReconnectConfig) erro
 }
 
 func runWithReconnectLoop(ctx context.Context, logger *log.Logger, cfg ReconnectConfig, runOnce func(context.Context) error) error {
-	if logger == nil {
-		logger = log.New(io.Discard, "", 0)
-	}
+	logger = logutil.Ensure(logger)
 
 	backoff := cfg.InitialBackoff
 	for {
