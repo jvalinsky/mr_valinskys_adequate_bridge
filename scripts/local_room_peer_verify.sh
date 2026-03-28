@@ -62,18 +62,22 @@ echo "[local-room-verify] building tunnel verifier helper"
   go build -o "${BIN_DIR}/room-tunnel-feed-verify" ./cmd/room-tunnel-feed-verify
 )
 
-if [[ ! -f "${BRIDGE_REPO_PATH}/secret" ]]; then
-  echo "[local-room-verify] bridge repo missing secret file at ${BRIDGE_REPO_PATH}/secret" >&2
+if [[ -f "${BRIDGE_REPO_PATH}/room/secret" ]]; then
+  ROOM_SECRET_PATH="${BRIDGE_REPO_PATH}/room/secret"
+elif [[ -f "${BRIDGE_REPO_PATH}/secret" ]]; then
+  ROOM_SECRET_PATH="${BRIDGE_REPO_PATH}/secret"
+else
+  echo "[local-room-verify] bridge repo missing secret file at ${BRIDGE_REPO_PATH}/room/secret or ${BRIDGE_REPO_PATH}/secret" >&2
   exit 1
 fi
 
-ROOM_FEED="$(jq -r '.id // empty' "${BRIDGE_REPO_PATH}/secret" | tr -d '[:space:]')"
+ROOM_FEED="$(jq -r '.id // empty' "${ROOM_SECRET_PATH}" | tr -d '[:space:]')"
 if [[ -z "${ROOM_FEED}" ]]; then
-  echo "[local-room-verify] failed to parse room feed id from ${BRIDGE_REPO_PATH}/secret" >&2
+  echo "[local-room-verify] failed to parse room feed id from ${ROOM_SECRET_PATH}" >&2
   exit 1
 fi
 if [[ "${ROOM_FEED}" != @*".ed25519" ]]; then
-  echo "[local-room-verify] invalid room feed id in ${BRIDGE_REPO_PATH}/secret: ${ROOM_FEED}" >&2
+  echo "[local-room-verify] invalid room feed id in ${ROOM_SECRET_PATH}: ${ROOM_FEED}" >&2
   exit 1
 fi
 

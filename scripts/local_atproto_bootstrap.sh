@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 ENV_OUT_PATH="${1:-/tmp/mvab-local-atproto-live.env}"
 LOCAL_ATPROTO_HOST="${LOCAL_ATPROTO_HOST:-http://127.0.0.1:2583}"
-LOCAL_ATPROTO_RELAY_URL="${LOCAL_ATPROTO_RELAY_URL:-ws://127.0.0.1:2583/xrpc/com.atproto.sync.subscribeRepos}"
+LOCAL_ATPROTO_RELAY_URL="${LOCAL_ATPROTO_RELAY_URL:-ws://127.0.0.1:2584/xrpc/com.atproto.sync.subscribeRepos}"
 
 if ! command -v jq >/dev/null 2>&1; then
   echo "[local-atproto] jq is required" >&2
