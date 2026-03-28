@@ -5,6 +5,8 @@ import (
 	"context"
 	"io"
 	"log"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"testing"
 
@@ -29,6 +31,20 @@ func (f *fakeLexClient) LexDo(_ context.Context, _ string, _ string, _ string, _
 }
 
 var _ lexutil.LexClient = (*fakeLexClient)(nil)
+
+type fakeHostResolver struct {
+	host string
+	err  error
+	dids []string
+}
+
+func (f *fakeHostResolver) ResolvePDSEndpoint(_ context.Context, did string) (string, error) {
+	f.dids = append(f.dids, did)
+	if f.err != nil {
+		return "", f.err
+	}
+	return f.host, nil
+}
 
 func TestBridgeRecordBlobsMapsPostImagesToMentionsAndMarkdown(t *testing.T) {
 	database, err := db.Open(":memory:")
@@ -180,5 +196,62 @@ func TestBridgeRecordBlobsMapsProfileAvatarUsingExistingBlob(t *testing.T) {
 	}
 	if image["link"] != "&existing.sha256" || image["type"] != "image/png" {
 		t.Fatalf("unexpected profile image mapping: %+v", image)
+	}
+}
+
+func TestBridgeRecordBlobsFetchesBlobFromResolvedDIDPDS(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer database.Close()
+
+	repo := ssbrepo.New(filepath.Join(t.TempDir(), "repo"))
+	blobStore, err := ssbrepo.OpenBlobStore(repo)
+	if err != nil {
+		t.Fatalf("open blobstore: %v", err)
+	}
+
+	var requestedPath string
+	var requestedDID string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestedPath = r.URL.Path
+		requestedDID = r.URL.Query().Get("did")
+		_, _ = w.Write([]byte("resolved-pds-image"))
+	}))
+	defer server.Close()
+
+	resolver := &fakeHostResolver{host: server.URL}
+	bridge := NewWithResolver(database, blobStore, resolver, server.Client(), log.New(io.Discard, "", 0))
+
+	mapped := map[string]interface{}{
+		"type": "post",
+		"text": "hello",
+	}
+	raw := []byte(`{
+		"text":"hello",
+		"embed":{
+			"$type":"app.bsky.embed.images",
+			"images":[
+				{
+					"alt":"Resolved blob",
+					"image":{"$type":"blob","ref":{"$link":"bafyreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"},"mimeType":"image/png","size":11}
+				}
+			]
+		}
+	}`)
+
+	if err := bridge.BridgeRecordBlobs(context.Background(), "did:plc:alice", mapper.RecordTypePost, mapped, raw); err != nil {
+		t.Fatalf("bridge record blobs: %v", err)
+	}
+
+	if len(resolver.dids) != 1 || resolver.dids[0] != "did:plc:alice" {
+		t.Fatalf("resolver dids = %+v", resolver.dids)
+	}
+	if requestedPath != "/xrpc/com.atproto.sync.getBlob" {
+		t.Fatalf("unexpected blob path %q", requestedPath)
+	}
+	if requestedDID != "did:plc:alice" {
+		t.Fatalf("unexpected blob did query %q", requestedDID)
 	}
 }

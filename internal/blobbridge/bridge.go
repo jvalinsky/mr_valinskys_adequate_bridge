@@ -8,11 +8,14 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"strings"
+	"time"
 
 	"github.com/bluesky-social/indigo/api/atproto"
 	appbsky "github.com/bluesky-social/indigo/api/bsky"
 	lexutil "github.com/bluesky-social/indigo/lex/util"
+	"github.com/bluesky-social/indigo/xrpc"
 	"go.cryptoscope.co/ssb"
 
 	"github.com/mr_valinskys_adequate_bridge/internal/db"
@@ -24,7 +27,14 @@ type Bridge struct {
 	db        *db.DB
 	blobStore ssb.BlobStore
 	xrpc      lexutil.LexClient
+	resolver  HostResolver
+	client    *http.Client
 	logger    *log.Logger
+}
+
+// HostResolver resolves the XRPC host to use for a DID-scoped blob fetch.
+type HostResolver interface {
+	ResolvePDSEndpoint(ctx context.Context, did string) (string, error)
 }
 
 // New constructs a blob Bridge.
@@ -36,6 +46,21 @@ func New(database *db.DB, blobStore ssb.BlobStore, xrpcClient lexutil.LexClient,
 		db:        database,
 		blobStore: blobStore,
 		xrpc:      xrpcClient,
+		logger:    logger,
+	}
+}
+
+// NewWithResolver constructs a blob Bridge that resolves the correct host per
+// DID before fetching each blob.
+func NewWithResolver(database *db.DB, blobStore ssb.BlobStore, resolver HostResolver, httpClient *http.Client, logger *log.Logger) *Bridge {
+	if logger == nil {
+		logger = log.New(io.Discard, "", 0)
+	}
+	return &Bridge{
+		db:        database,
+		blobStore: blobStore,
+		resolver:  resolver,
+		client:    configuredHTTPClient(httpClient),
 		logger:    logger,
 	}
 }
@@ -272,10 +297,17 @@ func (b *Bridge) ensureBlob(ctx context.Context, atDID string, cand blobCandidat
 	}
 
 	if b.xrpc == nil {
-		return "", fmt.Errorf("blob fetch unavailable for %s: no xrpc client configured", cand.CID)
+		if b.resolver == nil {
+			return "", fmt.Errorf("blob fetch unavailable for %s: no xrpc client or host resolver configured", cand.CID)
+		}
 	}
 
-	payload, err := atproto.SyncGetBlob(ctx, b.xrpc, cand.CID, atDID)
+	client, err := b.clientForDID(ctx, atDID)
+	if err != nil {
+		return "", fmt.Errorf("resolve blob host did=%s: %w", atDID, err)
+	}
+
+	payload, err := atproto.SyncGetBlob(ctx, client, cand.CID, atDID)
 	if err != nil {
 		return "", fmt.Errorf("fetch blob cid=%s did=%s: %w", cand.CID, atDID, err)
 	}
@@ -296,4 +328,28 @@ func (b *Bridge) ensureBlob(ctx context.Context, atDID string, cand blobCandidat
 
 	b.logger.Printf("event=blob_bridged did=%s cid=%s ssb_blob_ref=%s size=%d mime=%s", atDID, cand.CID, blobRef.Ref(), len(payload), strings.TrimSpace(cand.MimeType))
 	return blobRef.Ref(), nil
+}
+
+func (b *Bridge) clientForDID(ctx context.Context, atDID string) (lexutil.LexClient, error) {
+	if b.resolver != nil {
+		host, err := b.resolver.ResolvePDSEndpoint(ctx, atDID)
+		if err != nil {
+			return nil, err
+		}
+		return &xrpc.Client{
+			Host:   strings.TrimRight(strings.TrimSpace(host), "/"),
+			Client: configuredHTTPClient(b.client),
+		}, nil
+	}
+	if b.xrpc != nil {
+		return b.xrpc, nil
+	}
+	return nil, fmt.Errorf("no blob fetch client configured")
+}
+
+func configuredHTTPClient(client *http.Client) *http.Client {
+	if client != nil {
+		return client
+	}
+	return &http.Client{Timeout: 10 * time.Second}
 }
