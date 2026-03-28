@@ -151,6 +151,35 @@ func (db *DB) Close() error {
 	return db.conn.Close()
 }
 
+// querySlice executes a query and scans each row into T using the provided
+// scan function. It handles rows.Close and rows.Err automatically.
+func querySlice[T any](ctx context.Context, conn *sql.DB, op, query string, args []any, scan func(*sql.Rows) (T, error)) ([]T, error) {
+	rows, err := conn.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	defer rows.Close()
+
+	var result []T
+	for rows.Next() {
+		item, err := scan(rows)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", op, err)
+		}
+		result = append(result, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("%s: %w", op, err)
+	}
+	return result, nil
+}
+
+func scanBridgedAccount(rows *sql.Rows) (BridgedAccount, error) {
+	var acc BridgedAccount
+	err := rows.Scan(&acc.ATDID, &acc.SSBFeedID, &acc.CreatedAt, &acc.Active)
+	return acc, err
+}
+
 func (db *DB) initSchema() error {
 	if _, err := db.conn.Exec(schemaSQL); err != nil {
 		return err
@@ -238,7 +267,10 @@ func (db *DB) AddBridgedAccount(ctx context.Context, acc BridgedAccount) error {
 		 ON CONFLICT(at_did) DO UPDATE SET ssb_feed_id=excluded.ssb_feed_id, active=excluded.active`,
 		acc.ATDID, acc.SSBFeedID, acc.Active,
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("add bridged account %s: %w", acc.ATDID, err)
+	}
+	return nil
 }
 
 // GetBridgedAccount returns the account row for atDID, or nil when absent.
@@ -254,55 +286,34 @@ func (db *DB) GetBridgedAccount(ctx context.Context, atDID string) (*BridgedAcco
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
-		return nil, err
+		return nil, fmt.Errorf("get bridged account %s: %w", atDID, err)
 	}
 	return &acc, nil
 }
 
 // GetAllBridgedAccounts returns all bridged accounts sorted by newest first.
 func (db *DB) GetAllBridgedAccounts(ctx context.Context) ([]BridgedAccount, error) {
-	rows, err := db.conn.QueryContext(ctx, `SELECT at_did, ssb_feed_id, created_at, active FROM bridged_accounts ORDER BY created_at DESC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var accounts []BridgedAccount
-	for rows.Next() {
-		var acc BridgedAccount
-		if err := rows.Scan(&acc.ATDID, &acc.SSBFeedID, &acc.CreatedAt, &acc.Active); err != nil {
-			return nil, err
-		}
-		accounts = append(accounts, acc)
-	}
-	return accounts, nil
+	return querySlice(ctx, db.conn,
+		"list bridged accounts",
+		`SELECT at_did, ssb_feed_id, created_at, active FROM bridged_accounts ORDER BY created_at DESC`,
+		nil, scanBridgedAccount,
+	)
 }
 
 // ListActiveBridgedAccounts returns active bridged accounts sorted by newest first.
 func (db *DB) ListActiveBridgedAccounts(ctx context.Context) ([]BridgedAccount, error) {
-	rows, err := db.conn.QueryContext(ctx, `SELECT at_did, ssb_feed_id, created_at, active FROM bridged_accounts WHERE active = 1 ORDER BY created_at DESC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var accounts []BridgedAccount
-	for rows.Next() {
-		var acc BridgedAccount
-		if err := rows.Scan(&acc.ATDID, &acc.SSBFeedID, &acc.CreatedAt, &acc.Active); err != nil {
-			return nil, err
-		}
-		accounts = append(accounts, acc)
-	}
-	return accounts, nil
+	return querySlice(ctx, db.conn,
+		"list active bridged accounts",
+		`SELECT at_did, ssb_feed_id, created_at, active FROM bridged_accounts WHERE active = 1 ORDER BY created_at DESC`,
+		nil, scanBridgedAccount,
+	)
 }
 
 // CountBridgedAccounts returns the total number of bridged accounts.
 func (db *DB) CountBridgedAccounts(ctx context.Context) (int, error) {
 	var count int
-	err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM bridged_accounts`).Scan(&count)
-	if err != nil {
-		return 0, err
+	if err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM bridged_accounts`).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count bridged accounts: %w", err)
 	}
 	return count, nil
 }
@@ -310,9 +321,8 @@ func (db *DB) CountBridgedAccounts(ctx context.Context) (int, error) {
 // CountActiveBridgedAccounts returns the number of active bridged accounts.
 func (db *DB) CountActiveBridgedAccounts(ctx context.Context) (int, error) {
 	var count int
-	err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM bridged_accounts WHERE active = 1`).Scan(&count)
-	if err != nil {
-		return 0, err
+	if err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM bridged_accounts WHERE active = 1`).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count active bridged accounts: %w", err)
 	}
 	return count, nil
 }
@@ -344,40 +354,20 @@ LEFT JOIN (
 
 // ListActiveBridgedAccountsWithStats returns active accounts with per-bot message statistics.
 func (db *DB) ListActiveBridgedAccountsWithStats(ctx context.Context) ([]BridgedAccountStats, error) {
-	rows, err := db.conn.QueryContext(ctx, bridgedAccountStatsQuery+`WHERE ba.active = 1 ORDER BY ba.created_at DESC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var accounts []BridgedAccountStats
-	for rows.Next() {
-		acc, err := scanBridgedAccountStats(rows)
-		if err != nil {
-			return nil, err
-		}
-		accounts = append(accounts, acc)
-	}
-	return accounts, rows.Err()
+	return querySlice(ctx, db.conn,
+		"list active bridged accounts with stats",
+		bridgedAccountStatsQuery+`WHERE ba.active = 1 ORDER BY ba.created_at DESC`,
+		nil, scanBridgedAccountStatsRow,
+	)
 }
 
 // ListBridgedAccountsWithStats returns all bridged accounts with per-bot message statistics.
 func (db *DB) ListBridgedAccountsWithStats(ctx context.Context) ([]BridgedAccountStats, error) {
-	rows, err := db.conn.QueryContext(ctx, bridgedAccountStatsQuery+`ORDER BY ba.created_at DESC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var accounts []BridgedAccountStats
-	for rows.Next() {
-		acc, err := scanBridgedAccountStats(rows)
-		if err != nil {
-			return nil, err
-		}
-		accounts = append(accounts, acc)
-	}
-	return accounts, rows.Err()
+	return querySlice(ctx, db.conn,
+		"list bridged accounts with stats",
+		bridgedAccountStatsQuery+`ORDER BY ba.created_at DESC`,
+		nil, scanBridgedAccountStatsRow,
+	)
 }
 
 // ListActiveBridgedAccountsWithStatsSorted returns active accounts filtered/searched for room directory pages.
@@ -399,21 +389,12 @@ func (db *DB) ListActiveBridgedAccountsWithStatsSorted(ctx context.Context, sear
 	query.WriteString(` ORDER BY `)
 	query.WriteString(botDirectoryOrderClause(sort))
 
-	rows, err := db.conn.QueryContext(ctx, query.String(), args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var accounts []BridgedAccountStats
-	for rows.Next() {
-		acc, err := scanBridgedAccountStats(rows)
-		if err != nil {
-			return nil, err
-		}
-		accounts = append(accounts, acc)
-	}
-	return accounts, rows.Err()
+	return querySlice(ctx, db.conn,
+		"list active bridged accounts with stats sorted",
+		query.String(),
+		args,
+		scanBridgedAccountStatsRow,
+	)
 }
 
 // GetActiveBridgedAccountWithStats returns a single active account with stats, or nil.
@@ -430,7 +411,7 @@ func (db *DB) GetActiveBridgedAccountWithStats(ctx context.Context, atDID string
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
-		return nil, err
+		return nil, fmt.Errorf("get active bridged account with stats %s: %w", atDID, err)
 	}
 	acc.LastPublishedAt = parseNullableTime(lastPublishedAt)
 	return &acc, nil
@@ -453,6 +434,10 @@ func scanBridgedAccountStats(row scannable) (BridgedAccountStats, error) {
 	}
 	acc.LastPublishedAt = parseNullableTime(lastPublishedAt)
 	return acc, nil
+}
+
+func scanBridgedAccountStatsRow(rows *sql.Rows) (BridgedAccountStats, error) {
+	return scanBridgedAccountStats(rows)
 }
 
 func parseNullableTime(ns sql.NullString) *time.Time {
@@ -516,7 +501,10 @@ func (db *DB) AddMessage(ctx context.Context, msg Message) error {
 		msg.DeletedSeq,
 		msg.DeletedReason,
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("add message %s: %w", msg.ATURI, err)
+	}
+	return nil
 }
 
 // GetMessage returns the message row for atURI, or nil when absent.
@@ -557,7 +545,7 @@ func (db *DB) GetMessage(ctx context.Context, atURI string) (*Message, error) {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
-		return nil, err
+		return nil, fmt.Errorf("get message %s: %w", atURI, err)
 	}
 	msg.SSBMsgRef = ssbMsgRef.String
 	msg.MessageState = messageState.String
@@ -592,9 +580,8 @@ func (db *DB) GetMessage(ctx context.Context, atURI string) (*Message, error) {
 // CountMessages returns the total number of stored messages.
 func (db *DB) CountMessages(ctx context.Context) (int, error) {
 	var count int
-	err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages`).Scan(&count)
-	if err != nil {
-		return 0, err
+	if err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages`).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count messages: %w", err)
 	}
 	return count, nil
 }
@@ -614,69 +601,14 @@ func (db *DB) GetRecentMessages(ctx context.Context, limit int) ([]Message, erro
 		limit,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("query recent messages: %w", err)
 	}
 	defer rows.Close()
 
-	var messages []Message
-	for rows.Next() {
-		var msg Message
-		var ssbMsgRef, messageState, rawATJson, rawSSBJson, publishError, deferReason, deletedReason sql.NullString
-		var publishedAt, lastPublishAttemptAt, lastDeferAttemptAt, deletedAt sql.NullTime
-		var deletedSeq sql.NullInt64
-		if err := rows.Scan(
-			&msg.ATURI,
-			&msg.ATCID,
-			&ssbMsgRef,
-			&msg.ATDID,
-			&msg.Type,
-			&messageState,
-			&rawATJson,
-			&rawSSBJson,
-			&publishedAt,
-			&publishError,
-			&msg.PublishAttempts,
-			&lastPublishAttemptAt,
-			&deferReason,
-			&msg.DeferAttempts,
-			&lastDeferAttemptAt,
-			&deletedAt,
-			&deletedSeq,
-			&deletedReason,
-			&msg.CreatedAt,
-		); err != nil {
-			return nil, err
-		}
-		msg.SSBMsgRef = ssbMsgRef.String
-		msg.MessageState = messageState.String
-		msg.RawATJson = rawATJson.String
-		msg.RawSSBJson = rawSSBJson.String
-		msg.PublishError = publishError.String
-		msg.DeferReason = deferReason.String
-		msg.DeletedReason = deletedReason.String
-		if publishedAt.Valid {
-			t := publishedAt.Time
-			msg.PublishedAt = &t
-		}
-		if lastPublishAttemptAt.Valid {
-			t := lastPublishAttemptAt.Time
-			msg.LastPublishAttemptAt = &t
-		}
-		if lastDeferAttemptAt.Valid {
-			t := lastDeferAttemptAt.Time
-			msg.LastDeferAttemptAt = &t
-		}
-		if deletedAt.Valid {
-			t := deletedAt.Time
-			msg.DeletedAt = &t
-		}
-		if deletedSeq.Valid {
-			seq := deletedSeq.Int64
-			msg.DeletedSeq = &seq
-		}
-		messages = append(messages, msg)
+	messages, err := scanMessagesRows(rows)
+	if err != nil {
+		return nil, fmt.Errorf("scan recent messages: %w", err)
 	}
-
 	return messages, nil
 }
 
@@ -705,11 +637,15 @@ func (db *DB) ListRecentPublishedMessagesByDID(ctx context.Context, atDID string
 		limit,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("query recent published messages for did %s: %w", atDID, err)
 	}
 	defer rows.Close()
 
-	return scanMessagesRows(rows)
+	messages, err := scanMessagesRows(rows)
+	if err != nil {
+		return nil, fmt.Errorf("scan recent published messages for did %s: %w", atDID, err)
+	}
+	return messages, nil
 }
 
 const messageSelectColumns = `SELECT at_uri, at_cid, ssb_msg_ref, at_did, type, message_state, raw_at_json, raw_ssb_json, published_at, publish_error, publish_attempts, last_publish_attempt_at, defer_reason, defer_attempts, last_defer_attempt_at, deleted_at, deleted_seq, deleted_reason, created_at`
@@ -732,11 +668,15 @@ func (db *DB) ListMessages(ctx context.Context, query MessageListQuery) ([]Messa
 
 	rows, err := db.conn.QueryContext(ctx, builder.String(), args...)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("query messages: %w", err)
 	}
 	defer rows.Close()
 
-	return scanMessagesRows(rows)
+	messages, err := scanMessagesRows(rows)
+	if err != nil {
+		return nil, fmt.Errorf("scan messages: %w", err)
+	}
+	return messages, nil
 }
 
 // ListMessagesPage returns one keyset-paginated page of filtered messages.
@@ -848,35 +788,22 @@ func (db *DB) ListMessagesPage(ctx context.Context, query MessageListQuery) (Mes
 
 // ListMessageTypes returns the distinct record types currently stored.
 func (db *DB) ListMessageTypes(ctx context.Context) ([]string, error) {
-	rows, err := db.conn.QueryContext(
-		ctx,
+	return querySlice(ctx, db.conn,
+		"list message types",
 		`SELECT DISTINCT type
 		 FROM messages
 		 WHERE TRIM(COALESCE(type, '')) <> ''
 		 ORDER BY type ASC`,
+		nil,
+		scanMessageTypeRow,
 	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var types []string
-	for rows.Next() {
-		var recordType string
-		if err := rows.Scan(&recordType); err != nil {
-			return nil, err
-		}
-		types = append(types, recordType)
-	}
-	return types, rows.Err()
 }
 
 // CountPublishedMessages returns the number of messages with an SSB message ref.
 func (db *DB) CountPublishedMessages(ctx context.Context) (int, error) {
 	var count int
-	err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE ssb_msg_ref IS NOT NULL AND ssb_msg_ref <> ''`).Scan(&count)
-	if err != nil {
-		return 0, err
+	if err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE ssb_msg_ref IS NOT NULL AND ssb_msg_ref <> ''`).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count published messages: %w", err)
 	}
 	return count, nil
 }
@@ -884,27 +811,24 @@ func (db *DB) CountPublishedMessages(ctx context.Context) (int, error) {
 // CountPublishFailures returns the number of messages with a publish error.
 func (db *DB) CountPublishFailures(ctx context.Context) (int, error) {
 	var count int
-	err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE message_state = ?`, MessageStateFailed).Scan(&count)
-	if err != nil {
-		return 0, err
+	if err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE message_state = ?`, MessageStateFailed).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count publish failures: %w", err)
 	}
 	return count, nil
 }
 
 func (db *DB) CountDeferredMessages(ctx context.Context) (int, error) {
 	var count int
-	err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE message_state = ?`, MessageStateDeferred).Scan(&count)
-	if err != nil {
-		return 0, err
+	if err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE message_state = ?`, MessageStateDeferred).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count deferred messages: %w", err)
 	}
 	return count, nil
 }
 
 func (db *DB) CountDeletedMessages(ctx context.Context) (int, error) {
 	var count int
-	err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE message_state = ?`, MessageStateDeleted).Scan(&count)
-	if err != nil {
-		return 0, err
+	if err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE message_state = ?`, MessageStateDeleted).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count deleted messages: %w", err)
 	}
 	return count, nil
 }
@@ -915,8 +839,8 @@ func (db *DB) ListTopDeferredReasons(ctx context.Context, limit int) ([]Deferred
 		limit = 5
 	}
 
-	rows, err := db.conn.QueryContext(
-		ctx,
+	return querySlice(ctx, db.conn,
+		"list top deferred reasons",
 		`SELECT defer_reason, COUNT(*) AS reason_count
 		 FROM messages
 		 WHERE message_state = ?
@@ -924,23 +848,12 @@ func (db *DB) ListTopDeferredReasons(ctx context.Context, limit int) ([]Deferred
 		 GROUP BY defer_reason
 		 ORDER BY reason_count DESC, defer_reason ASC
 		 LIMIT ?`,
-		MessageStateDeferred,
-		limit,
+		[]any{
+			MessageStateDeferred,
+			limit,
+		},
+		scanDeferredReasonCountRow,
 	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var stats []DeferredReasonCount
-	for rows.Next() {
-		var stat DeferredReasonCount
-		if err := rows.Scan(&stat.Reason, &stat.Count); err != nil {
-			return nil, err
-		}
-		stats = append(stats, stat)
-	}
-	return stats, rows.Err()
 }
 
 // ListTopIssueAccounts returns bridged accounts ranked by issue volume.
@@ -949,8 +862,8 @@ func (db *DB) ListTopIssueAccounts(ctx context.Context, limit int) ([]AccountIss
 		limit = 5
 	}
 
-	rows, err := db.conn.QueryContext(
-		ctx,
+	return querySlice(ctx, db.conn,
+		"list top issue accounts",
 		`SELECT
 		   ba.at_did,
 		   ba.ssb_feed_id,
@@ -975,33 +888,9 @@ func (db *DB) ListTopIssueAccounts(ctx context.Context, limit int) ([]AccountIss
 		 WHERE COALESCE(m.issue_messages, 0) > 0
 		 ORDER BY issue_messages DESC, total_messages DESC, ba.at_did ASC
 		 LIMIT ?`,
-		limit,
+		[]any{limit},
+		scanAccountIssueSummaryRow,
 	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var stats []AccountIssueSummary
-	for rows.Next() {
-		var stat AccountIssueSummary
-		var active bool
-		if err := rows.Scan(
-			&stat.ATDID,
-			&stat.SSBFeedID,
-			&active,
-			&stat.TotalMessages,
-			&stat.IssueMessages,
-			&stat.FailedMessages,
-			&stat.DeferredCount,
-			&stat.DeletedCount,
-		); err != nil {
-			return nil, err
-		}
-		stat.Active = active
-		stats = append(stats, stat)
-	}
-	return stats, rows.Err()
 }
 
 // GetPublishFailures returns failed message rows up to limit.
@@ -1022,69 +911,14 @@ func (db *DB) GetPublishFailures(ctx context.Context, limit int) ([]Message, err
 		limit,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("query publish failures: %w", err)
 	}
 	defer rows.Close()
 
-	var messages []Message
-	for rows.Next() {
-		var msg Message
-		var ssbMsgRef, messageState, rawATJson, rawSSBJson, publishError, deferReason, deletedReason sql.NullString
-		var publishedAt, lastPublishAttemptAt, lastDeferAttemptAt, deletedAt sql.NullTime
-		var deletedSeq sql.NullInt64
-		if err := rows.Scan(
-			&msg.ATURI,
-			&msg.ATCID,
-			&ssbMsgRef,
-			&msg.ATDID,
-			&msg.Type,
-			&messageState,
-			&rawATJson,
-			&rawSSBJson,
-			&publishedAt,
-			&publishError,
-			&msg.PublishAttempts,
-			&lastPublishAttemptAt,
-			&deferReason,
-			&msg.DeferAttempts,
-			&lastDeferAttemptAt,
-			&deletedAt,
-			&deletedSeq,
-			&deletedReason,
-			&msg.CreatedAt,
-		); err != nil {
-			return nil, err
-		}
-		msg.SSBMsgRef = ssbMsgRef.String
-		msg.MessageState = messageState.String
-		msg.RawATJson = rawATJson.String
-		msg.RawSSBJson = rawSSBJson.String
-		msg.PublishError = publishError.String
-		msg.DeferReason = deferReason.String
-		msg.DeletedReason = deletedReason.String
-		if publishedAt.Valid {
-			t := publishedAt.Time
-			msg.PublishedAt = &t
-		}
-		if lastPublishAttemptAt.Valid {
-			t := lastPublishAttemptAt.Time
-			msg.LastPublishAttemptAt = &t
-		}
-		if lastDeferAttemptAt.Valid {
-			t := lastDeferAttemptAt.Time
-			msg.LastDeferAttemptAt = &t
-		}
-		if deletedAt.Valid {
-			t := deletedAt.Time
-			msg.DeletedAt = &t
-		}
-		if deletedSeq.Valid {
-			seq := deletedSeq.Int64
-			msg.DeletedSeq = &seq
-		}
-		messages = append(messages, msg)
+	messages, err := scanMessagesRows(rows)
+	if err != nil {
+		return nil, fmt.Errorf("scan publish failures: %w", err)
 	}
-
 	return messages, nil
 }
 
@@ -1116,69 +950,14 @@ func (db *DB) GetRetryCandidates(ctx context.Context, limit int, atDID string, m
 
 	rows, err := db.conn.QueryContext(ctx, query.String(), args...)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("query retry candidates: %w", err)
 	}
 	defer rows.Close()
 
-	var messages []Message
-	for rows.Next() {
-		var msg Message
-		var ssbMsgRef, messageState, rawATJson, rawSSBJson, publishError, deferReason, deletedReason sql.NullString
-		var publishedAt, lastPublishAttemptAt, lastDeferAttemptAt, deletedAt sql.NullTime
-		var deletedSeq sql.NullInt64
-		if err := rows.Scan(
-			&msg.ATURI,
-			&msg.ATCID,
-			&ssbMsgRef,
-			&msg.ATDID,
-			&msg.Type,
-			&messageState,
-			&rawATJson,
-			&rawSSBJson,
-			&publishedAt,
-			&publishError,
-			&msg.PublishAttempts,
-			&lastPublishAttemptAt,
-			&deferReason,
-			&msg.DeferAttempts,
-			&lastDeferAttemptAt,
-			&deletedAt,
-			&deletedSeq,
-			&deletedReason,
-			&msg.CreatedAt,
-		); err != nil {
-			return nil, err
-		}
-		msg.SSBMsgRef = ssbMsgRef.String
-		msg.MessageState = messageState.String
-		msg.RawATJson = rawATJson.String
-		msg.RawSSBJson = rawSSBJson.String
-		msg.PublishError = publishError.String
-		msg.DeferReason = deferReason.String
-		msg.DeletedReason = deletedReason.String
-		if publishedAt.Valid {
-			t := publishedAt.Time
-			msg.PublishedAt = &t
-		}
-		if lastPublishAttemptAt.Valid {
-			t := lastPublishAttemptAt.Time
-			msg.LastPublishAttemptAt = &t
-		}
-		if lastDeferAttemptAt.Valid {
-			t := lastDeferAttemptAt.Time
-			msg.LastDeferAttemptAt = &t
-		}
-		if deletedAt.Valid {
-			t := deletedAt.Time
-			msg.DeletedAt = &t
-		}
-		if deletedSeq.Valid {
-			seq := deletedSeq.Int64
-			msg.DeletedSeq = &seq
-		}
-		messages = append(messages, msg)
+	messages, err := scanMessagesRows(rows)
+	if err != nil {
+		return nil, fmt.Errorf("scan retry candidates: %w", err)
 	}
-
 	return messages, nil
 }
 
@@ -1208,70 +987,14 @@ func (db *DB) GetDeferredCandidates(ctx context.Context, limit int) ([]Message, 
 		limit,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("query deferred candidates: %w", err)
 	}
 	defer rows.Close()
 
-	var messages []Message
-	for rows.Next() {
-		var msg Message
-		var ssbMsgRef, messageState, rawATJSON, rawSSBJSON, publishError, deferReason, deletedReason sql.NullString
-		var publishedAt, lastPublishAttemptAt, lastDeferAttemptAt, deletedAt sql.NullTime
-		var deletedSeq sql.NullInt64
-		if err := rows.Scan(
-			&msg.ATURI,
-			&msg.ATCID,
-			&ssbMsgRef,
-			&msg.ATDID,
-			&msg.Type,
-			&messageState,
-			&rawATJSON,
-			&rawSSBJSON,
-			&publishedAt,
-			&publishError,
-			&msg.PublishAttempts,
-			&lastPublishAttemptAt,
-			&deferReason,
-			&msg.DeferAttempts,
-			&lastDeferAttemptAt,
-			&deletedAt,
-			&deletedSeq,
-			&deletedReason,
-			&msg.CreatedAt,
-		); err != nil {
-			return nil, err
-		}
-		msg.SSBMsgRef = ssbMsgRef.String
-		msg.MessageState = messageState.String
-		msg.RawATJson = rawATJSON.String
-		msg.RawSSBJson = rawSSBJSON.String
-		msg.PublishError = publishError.String
-		msg.DeferReason = deferReason.String
-		msg.DeletedReason = deletedReason.String
-		if publishedAt.Valid {
-			t := publishedAt.Time
-			msg.PublishedAt = &t
-		}
-		if lastPublishAttemptAt.Valid {
-			t := lastPublishAttemptAt.Time
-			msg.LastPublishAttemptAt = &t
-		}
-		if lastDeferAttemptAt.Valid {
-			t := lastDeferAttemptAt.Time
-			msg.LastDeferAttemptAt = &t
-		}
-		if deletedAt.Valid {
-			t := deletedAt.Time
-			msg.DeletedAt = &t
-		}
-		if deletedSeq.Valid {
-			seq := deletedSeq.Int64
-			msg.DeletedSeq = &seq
-		}
-
-		messages = append(messages, msg)
+	messages, err := scanMessagesRows(rows)
+	if err != nil {
+		return nil, fmt.Errorf("scan deferred candidates: %w", err)
 	}
-
 	return messages, nil
 }
 
@@ -1290,7 +1013,7 @@ func (db *DB) GetLatestDeferredReason(ctx context.Context) (string, bool, error)
 		if err == sql.ErrNoRows {
 			return "", false, nil
 		}
-		return "", false, err
+		return "", false, fmt.Errorf("get latest deferred reason: %w", err)
 	}
 	if !reason.Valid || strings.TrimSpace(reason.String) == "" {
 		return "", false, nil
@@ -1311,7 +1034,10 @@ func (db *DB) AddBlob(ctx context.Context, blob Blob) error {
 		 	downloaded_at=CURRENT_TIMESTAMP`,
 		blob.ATCID, blob.SSBBlobRef, blob.Size, blob.MimeType,
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("add blob %s: %w", blob.ATCID, err)
+	}
+	return nil
 }
 
 // GetBlob returns the blob row for atCID, or nil when absent.
@@ -1329,7 +1055,7 @@ func (db *DB) GetBlob(ctx context.Context, atCID string) (*Blob, error) {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
-		return nil, err
+		return nil, fmt.Errorf("get blob %s: %w", atCID, err)
 	}
 	blob.MimeType = mimeType.String
 	return &blob, nil
@@ -1338,9 +1064,8 @@ func (db *DB) GetBlob(ctx context.Context, atCID string) (*Blob, error) {
 // CountBlobs returns the total number of bridged blobs.
 func (db *DB) CountBlobs(ctx context.Context) (int, error) {
 	var count int
-	err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM blobs`).Scan(&count)
-	if err != nil {
-		return 0, err
+	if err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM blobs`).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count blobs: %w", err)
 	}
 	return count, nil
 }
@@ -1351,31 +1076,15 @@ func (db *DB) GetRecentBlobs(ctx context.Context, limit int) ([]Blob, error) {
 		limit = 50
 	}
 
-	rows, err := db.conn.QueryContext(
-		ctx,
+	return querySlice(ctx, db.conn,
+		"list recent blobs",
 		`SELECT at_cid, ssb_blob_ref, COALESCE(size, 0), mime_type, downloaded_at
 		 FROM blobs
 		 ORDER BY downloaded_at DESC
 		 LIMIT ?`,
-		limit,
+		[]any{limit},
+		scanBlobRow,
 	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var blobs []Blob
-	for rows.Next() {
-		var blob Blob
-		var mimeType sql.NullString
-		if err := rows.Scan(&blob.ATCID, &blob.SSBBlobRef, &blob.Size, &mimeType, &blob.DownloadedAt); err != nil {
-			return nil, err
-		}
-		blob.MimeType = mimeType.String
-		blobs = append(blobs, blob)
-	}
-
-	return blobs, nil
 }
 
 // SetBridgeState upserts a key/value runtime state entry.
@@ -1388,7 +1097,10 @@ func (db *DB) SetBridgeState(ctx context.Context, key, value string) error {
 		key,
 		value,
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("set bridge state %s: %w", key, err)
+	}
+	return nil
 }
 
 // GetBridgeState returns the value for key and whether it exists.
@@ -1399,16 +1111,16 @@ func (db *DB) GetBridgeState(ctx context.Context, key string) (string, bool, err
 		if err == sql.ErrNoRows {
 			return "", false, nil
 		}
-		return "", false, err
+		return "", false, fmt.Errorf("get bridge state %s: %w", key, err)
 	}
 	return value, true, nil
 }
 
 // BridgeHealthStatus holds the result of a health check query.
 type BridgeHealthStatus struct {
-	Status      string // e.g. "live", "starting", "stopping", ""
+	Status        string // e.g. "live", "starting", "stopping", ""
 	LastHeartbeat string // RFC3339 timestamp or ""
-	Healthy     bool
+	Healthy       bool
 }
 
 // CheckBridgeHealth returns the bridge runtime health based on stored state.
@@ -1419,7 +1131,7 @@ func (db *DB) CheckBridgeHealth(ctx context.Context, maxStale time.Duration) (*B
 
 	status, ok, err := db.GetBridgeState(ctx, "bridge_runtime_status")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("check bridge health status: %w", err)
 	}
 	if ok {
 		result.Status = status
@@ -1427,7 +1139,7 @@ func (db *DB) CheckBridgeHealth(ctx context.Context, maxStale time.Duration) (*B
 
 	heartbeat, ok, err := db.GetBridgeState(ctx, "bridge_runtime_last_heartbeat_at")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("check bridge health heartbeat: %w", err)
 	}
 	if ok {
 		result.LastHeartbeat = heartbeat
@@ -1447,27 +1159,14 @@ func (db *DB) CheckBridgeHealth(ctx context.Context, maxStale time.Duration) (*B
 
 // GetAllBridgeState returns all runtime state entries sorted by key.
 func (db *DB) GetAllBridgeState(ctx context.Context) ([]BridgeState, error) {
-	rows, err := db.conn.QueryContext(
-		ctx,
+	return querySlice(ctx, db.conn,
+		"list bridge state",
 		`SELECT key, value, updated_at
 		 FROM bridge_state
 		 ORDER BY key ASC`,
+		nil,
+		scanBridgeStateRow,
 	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var state []BridgeState
-	for rows.Next() {
-		var s BridgeState
-		if err := rows.Scan(&s.Key, &s.Value, &s.UpdatedAt); err != nil {
-			return nil, err
-		}
-		state = append(state, s)
-	}
-
-	return state, nil
 }
 
 func normalizeMessageLimit(limit int) int {
@@ -1736,4 +1435,57 @@ func scanMessageRow(scanner interface {
 		msg.DeletedSeq = &seq
 	}
 	return msg, nil
+}
+
+func scanMessageTypeRow(rows *sql.Rows) (string, error) {
+	var recordType string
+	if err := rows.Scan(&recordType); err != nil {
+		return "", err
+	}
+	return recordType, nil
+}
+
+func scanDeferredReasonCountRow(rows *sql.Rows) (DeferredReasonCount, error) {
+	var stat DeferredReasonCount
+	if err := rows.Scan(&stat.Reason, &stat.Count); err != nil {
+		return DeferredReasonCount{}, err
+	}
+	return stat, nil
+}
+
+func scanAccountIssueSummaryRow(rows *sql.Rows) (AccountIssueSummary, error) {
+	var stat AccountIssueSummary
+	var active bool
+	if err := rows.Scan(
+		&stat.ATDID,
+		&stat.SSBFeedID,
+		&active,
+		&stat.TotalMessages,
+		&stat.IssueMessages,
+		&stat.FailedMessages,
+		&stat.DeferredCount,
+		&stat.DeletedCount,
+	); err != nil {
+		return AccountIssueSummary{}, err
+	}
+	stat.Active = active
+	return stat, nil
+}
+
+func scanBlobRow(rows *sql.Rows) (Blob, error) {
+	var blob Blob
+	var mimeType sql.NullString
+	if err := rows.Scan(&blob.ATCID, &blob.SSBBlobRef, &blob.Size, &mimeType, &blob.DownloadedAt); err != nil {
+		return Blob{}, err
+	}
+	blob.MimeType = mimeType.String
+	return blob, nil
+}
+
+func scanBridgeStateRow(rows *sql.Rows) (BridgeState, error) {
+	var state BridgeState
+	if err := rows.Scan(&state.Key, &state.Value, &state.UpdatedAt); err != nil {
+		return BridgeState{}, err
+	}
+	return state, nil
 }
