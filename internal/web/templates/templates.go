@@ -14,567 +14,1155 @@ const pageLayout = `
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ATProto ↔ SSB Bridge Admin</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
     <style>
         :root {
             color-scheme: light;
+            --bg: #f4f1ea;
+            --panel: #fffdf9;
+            --ink: #1f2a26;
+            --muted: #5b6763;
+            --line: #d7d2c6;
+            --brand: #1f6f5f;
+            --brand-strong: #145246;
+            --warn: #9a6a18;
+            --danger: #9f2f2f;
+            --ok: #1f6f38;
+            --shadow: 0 10px 24px rgba(28, 41, 36, 0.08);
+            --radius: 14px;
         }
 
-        .mono-data {
-            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        * {
+            box-sizing: border-box;
         }
 
-        .clamp-2 {
-            display: -webkit-box;
-            -webkit-box-orient: vertical;
-            -webkit-line-clamp: 2;
+        body {
+            margin: 0;
+            min-height: 100vh;
+            font-family: "Avenir Next", "Segoe UI", sans-serif;
+            background: var(--bg);
+            color: var(--ink);
+        }
+
+        a {
+            color: inherit;
+        }
+
+        .skip-link {
+            position: absolute;
+            left: 10px;
+            top: -100px;
+            background: var(--ink);
+            color: #fff;
+            padding: 10px 12px;
+            border-radius: 10px;
+            z-index: 1000;
+            text-decoration: none;
+        }
+
+        .skip-link:focus {
+            top: 10px;
+        }
+
+        .app-header {
+            background: linear-gradient(135deg, var(--brand), var(--brand-strong));
+            color: #f8fffd;
+            box-shadow: var(--shadow);
+        }
+
+        .app-shell {
+            width: min(1300px, calc(100vw - 24px));
+            margin: 0 auto;
+        }
+
+        .header-row {
+            display: flex;
+            gap: 16px;
+            align-items: center;
+            justify-content: space-between;
+            padding: 16px 0;
+            flex-wrap: wrap;
+        }
+
+        .brand {
+            font-size: 1.1rem;
+            font-weight: 800;
+            letter-spacing: 0.02em;
+        }
+
+        .nav-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .nav-link {
+            text-decoration: none;
+            font-size: 0.9rem;
+            font-weight: 700;
+            padding: 8px 12px;
+            border-radius: 999px;
+            border: 1px solid transparent;
+            color: rgba(248, 255, 253, 0.94);
+        }
+
+        .nav-link:hover,
+        .nav-link:focus-visible {
+            border-color: rgba(248, 255, 253, 0.35);
+            outline: none;
+            background: rgba(255, 255, 255, 0.10);
+        }
+
+        .nav-link.is-active {
+            background: #f8fffd;
+            color: var(--brand-strong);
+        }
+
+        .app-main {
+            width: min(1300px, calc(100vw - 24px));
+            margin: 20px auto 32px;
+            display: grid;
+            gap: 18px;
+        }
+
+        .status-strip {
+            border-radius: var(--radius);
+            border: 1px solid var(--line);
+            background: var(--panel);
+            padding: 14px 16px;
+            box-shadow: var(--shadow);
+        }
+
+        .status-strip h2 {
+            margin: 0;
+            font-size: 1rem;
+        }
+
+        .status-strip p {
+            margin: 6px 0 0;
+            font-size: 0.92rem;
+            color: var(--muted);
+        }
+
+        .status-strip.tone-success { border-left: 6px solid var(--ok); }
+        .status-strip.tone-warning { border-left: 6px solid var(--warn); }
+        .status-strip.tone-danger { border-left: 6px solid var(--danger); }
+        .status-strip.tone-neutral { border-left: 6px solid var(--brand); }
+
+        .section {
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow);
             overflow: hidden;
+        }
+
+        .section-pad {
+            padding: 16px;
+        }
+
+        .page-title {
+            margin: 0;
+            font-size: clamp(1.5rem, 3vw, 2rem);
+            letter-spacing: -0.02em;
+        }
+
+        .subtitle {
+            margin: 8px 0 0;
+            color: var(--muted);
+            font-size: 0.95rem;
+            line-height: 1.5;
+        }
+
+        .metric-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 12px;
+        }
+
+        .metric-card {
+            text-decoration: none;
+            border: 1px solid var(--line);
+            border-radius: 12px;
+            background: #fff;
+            padding: 14px;
+            display: grid;
+            gap: 5px;
+            transition: transform 120ms ease, box-shadow 120ms ease;
+        }
+
+        .metric-card:hover,
+        .metric-card:focus-visible {
+            transform: translateY(-1px);
+            box-shadow: var(--shadow);
+            outline: none;
+        }
+
+        .metric-label {
+            color: var(--muted);
+            font-size: 0.78rem;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            font-weight: 700;
+        }
+
+        .metric-value {
+            font-size: 1.65rem;
+            font-weight: 800;
+            line-height: 1.1;
+        }
+
+        .metric-note {
+            color: var(--muted);
+            font-size: 0.84rem;
+        }
+
+        .tone-warning .metric-value { color: var(--warn); }
+        .tone-danger .metric-value { color: var(--danger); }
+        .tone-success .metric-value { color: var(--ok); }
+
+        .grid-two {
+            display: grid;
+            gap: 12px;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .mini-list {
+            margin: 0;
+            padding: 0;
+            list-style: none;
+            display: grid;
+            gap: 8px;
+        }
+
+        .mini-list li {
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            padding: 10px 12px;
+            background: #fff;
+            display: flex;
+            justify-content: space-between;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .pill {
+            border-radius: 999px;
+            padding: 2px 8px;
+            font-size: 0.75rem;
+            font-weight: 700;
+            border: 1px solid transparent;
+            white-space: nowrap;
+        }
+
+        .pill.state-published { background: #e6f6eb; color: #1f6f38; }
+        .pill.state-failed { background: #fde9e9; color: #9f2f2f; }
+        .pill.state-deferred { background: #fff2dd; color: #9a6a18; }
+        .pill.state-deleted { background: #eef0f2; color: #3f4b57; }
+        .pill.state-pending { background: #eceff2; color: #47505b; }
+
+        .table-wrap {
+            overflow-x: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            min-width: 780px;
+        }
+
+        th,
+        td {
+            padding: 10px 12px;
+            vertical-align: top;
+            border-top: 1px solid var(--line);
+            text-align: left;
+            font-size: 0.9rem;
+        }
+
+        th {
+            border-top: none;
+            font-size: 0.74rem;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--muted);
+            font-weight: 700;
+            background: #f8f6f1;
+        }
+
+        .mono {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+            font-size: 0.82rem;
+        }
+
+        .truncate {
+            display: inline-block;
+            max-width: 100%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            vertical-align: bottom;
+        }
+
+        .copy-btn,
+        .button,
+        .button-link {
+            border: 1px solid var(--line);
+            border-radius: 9px;
+            background: #fff;
+            color: var(--ink);
+            font-size: 0.82rem;
+            font-weight: 700;
+            padding: 5px 9px;
+            text-decoration: none;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+
+        .copy-btn:hover,
+        .button:hover,
+        .button-link:hover,
+        .copy-btn:focus-visible,
+        .button:focus-visible,
+        .button-link:focus-visible {
+            outline: none;
+            border-color: var(--brand);
+            color: var(--brand-strong);
+        }
+
+        .toolbar {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+            margin-top: 10px;
+        }
+
+        .filter-panel {
+            position: sticky;
+            top: 8px;
+            z-index: 20;
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow);
+        }
+
+        .filter-grid {
+            display: grid;
+            gap: 10px;
+            grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+            padding: 14px;
+        }
+
+        .field {
+            display: grid;
+            gap: 4px;
+        }
+
+        .field label {
+            font-size: 0.74rem;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: var(--muted);
+            font-weight: 700;
+        }
+
+        .field input,
+        .field select {
+            width: 100%;
+            border: 1px solid var(--line);
+            border-radius: 9px;
+            padding: 8px;
+            background: #fff;
+            color: var(--ink);
+        }
+
+        .field input:focus-visible,
+        .field select:focus-visible {
+            outline: 2px solid rgba(31, 111, 95, 0.22);
+            border-color: var(--brand);
+        }
+
+        .inline-toggle {
+            display: inline-flex;
+            gap: 6px;
+            align-items: center;
+            font-size: 0.86rem;
+            color: var(--ink);
+            font-weight: 600;
+        }
+
+        .active-filters {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            align-items: center;
+        }
+
+        .active-filters .chip {
+            display: inline-flex;
+            gap: 6px;
+            align-items: center;
+            border: 1px solid var(--line);
+            border-radius: 999px;
+            padding: 3px 10px;
+            background: #fff;
+            font-size: 0.8rem;
+        }
+
+        .issue-text {
+            color: var(--danger);
+        }
+
+        .issue-text.warning {
+            color: var(--warn);
+        }
+
+        .issue-text.muted {
+            color: var(--muted);
+        }
+
+        .details-grid {
+            display: grid;
+            gap: 12px;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        }
+
+        .detail-card {
+            border: 1px solid var(--line);
+            border-radius: 12px;
+            background: #fff;
+            padding: 12px;
+            display: grid;
+            gap: 6px;
+        }
+
+        .detail-card dt {
+            color: var(--muted);
+            font-size: 0.74rem;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            font-weight: 700;
+        }
+
+        .detail-card dd {
+            margin: 0;
+            font-size: 0.92rem;
+            line-height: 1.45;
+            word-break: break-word;
+        }
+
+        pre {
+            margin: 0;
+            white-space: pre-wrap;
+            word-break: break-word;
+            background: #f7f5ef;
+            border: 1px solid var(--line);
+            border-radius: 10px;
+            padding: 12px;
+            max-height: 380px;
+            overflow: auto;
+            font-size: 0.78rem;
+            line-height: 1.5;
+        }
+
+        .pagination {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            padding: 12px 14px;
+            border-top: 1px solid var(--line);
+            background: #fbfaf6;
+        }
+
+        .empty {
+            text-align: center;
+            color: var(--muted);
+            padding: 20px;
+        }
+
+        @media (max-width: 900px) {
+            .grid-two {
+                grid-template-columns: 1fr;
+            }
+
+            .header-row {
+                align-items: flex-start;
+            }
+
+            .toolbar {
+                align-items: stretch;
+            }
+
+            .app-shell,
+            .app-main {
+                width: min(1300px, calc(100vw - 16px));
+            }
         }
     </style>
 </head>
-<body class="bg-gray-100 min-h-screen">
-    <nav class="bg-indigo-700 text-white shadow-lg">
-        <div class="max-w-screen-2xl mx-auto px-4">
-            <div class="flex items-center justify-between h-16">
-                <div class="flex items-center">
-                    <span class="font-bold text-xl">Bridge Admin</span>
-                    <div class="ml-10 flex items-baseline space-x-4">
-                        <a href="/" class="hover:bg-indigo-600 px-3 py-2 rounded-md text-sm font-medium">Dashboard</a>
-                        <a href="/accounts" class="hover:bg-indigo-600 px-3 py-2 rounded-md text-sm font-medium">Accounts</a>
-                        <a href="/messages" class="hover:bg-indigo-600 px-3 py-2 rounded-md text-sm font-medium">Messages</a>
-                        <a href="/failures" class="hover:bg-indigo-600 px-3 py-2 rounded-md text-sm font-medium">Failures</a>
-                        <a href="/blobs" class="hover:bg-indigo-600 px-3 py-2 rounded-md text-sm font-medium">Blobs</a>
-                        <a href="/state" class="hover:bg-indigo-600 px-3 py-2 rounded-md text-sm font-medium">Cursor</a>
-                    </div>
-                </div>
-            </div>
+<body>
+    <a class="skip-link" href="#main-content">Skip to main content</a>
+    <header class="app-header">
+        <div class="app-shell header-row">
+            <div class="brand">Bridge Admin</div>
+            <nav class="nav-row" aria-label="Primary">
+                <a href="/" class="{{navClass .Chrome.ActiveNav "dashboard"}}" {{navCurrent .Chrome.ActiveNav "dashboard"}}>Dashboard</a>
+                <a href="/accounts" class="{{navClass .Chrome.ActiveNav "accounts"}}" {{navCurrent .Chrome.ActiveNav "accounts"}}>Accounts</a>
+                <a href="/messages" class="{{navClass .Chrome.ActiveNav "messages"}}" {{navCurrent .Chrome.ActiveNav "messages"}}>Messages</a>
+                <a href="/failures" class="{{navClass .Chrome.ActiveNav "failures"}}" {{navCurrent .Chrome.ActiveNav "failures"}}>Failures</a>
+                <a href="/blobs" class="{{navClass .Chrome.ActiveNav "blobs"}}" {{navCurrent .Chrome.ActiveNav "blobs"}}>Blobs</a>
+                <a href="/state" class="{{navClass .Chrome.ActiveNav "state"}}" {{navCurrent .Chrome.ActiveNav "state"}}>State</a>
+            </nav>
         </div>
-    </nav>
+    </header>
 
-    <main class="max-w-screen-2xl mx-auto py-6 sm:px-6 lg:px-8">
+    <main id="main-content" class="app-main">
+        {{if .Chrome.Status.Visible}}
+        <section class="status-strip {{statusToneClass .Chrome.Status.Tone}}" role="status" aria-live="polite">
+            <h2>{{.Chrome.Status.Title}}</h2>
+            <p>{{.Chrome.Status.Body}}</p>
+        </section>
+        {{end}}
         {{template "content" .}}
     </main>
+
+    <script>
+      document.addEventListener("click", function (event) {
+        var button = event.target.closest("[data-copy]");
+        if (!button) return;
+        event.preventDefault();
+        var value = button.getAttribute("data-copy");
+        var original = button.textContent;
+        function done() {
+          button.textContent = "Copied";
+          setTimeout(function () { button.textContent = original; }, 1000);
+        }
+        if (navigator.clipboard && window.isSecureContext) {
+          navigator.clipboard.writeText(value).then(done).catch(function () { window.prompt("Copy", value); });
+          return;
+        }
+        window.prompt("Copy", value);
+      });
+    </script>
 </body>
 </html>
 `
 
 const dashboardContent = `
 {{define "content"}}
-<div class="px-4 py-6 sm:px-0">
-    <h1 class="text-3xl font-bold text-gray-900 mb-6">Dashboard</h1>
+<section class="section section-pad">
+    <h1 class="page-title">Dashboard</h1>
+    <p class="subtitle">Triage-first runtime view with direct pivots into issue-heavy streams.</p>
+</section>
 
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <div class="bg-white overflow-hidden shadow rounded-lg">
-            <div class="p-5">
-                <div class="text-sm text-gray-500">Bridged Accounts</div>
-                <div class="text-3xl font-semibold text-gray-900">{{.AccountCount}}</div>
-            </div>
-        </div>
-        <div class="bg-white overflow-hidden shadow rounded-lg">
-            <div class="p-5">
-                <div class="text-sm text-gray-500">Messages Bridged</div>
-                <div class="text-3xl font-semibold text-gray-900">{{.MessageCount}}</div>
-            </div>
-        </div>
-        <div class="bg-white overflow-hidden shadow rounded-lg">
-            <div class="p-5">
-                <div class="text-sm text-gray-500">Messages Published</div>
-                <div class="text-3xl font-semibold text-gray-900">{{.PublishedCount}}</div>
-            </div>
-        </div>
-        <div class="bg-white overflow-hidden shadow rounded-lg">
-            <div class="p-5">
-                <div class="text-sm text-gray-500">Publish Failures</div>
-                <div class="text-3xl font-semibold text-red-700">{{.PublishFailureCount}}</div>
-            </div>
-        </div>
-        <div class="bg-white overflow-hidden shadow rounded-lg">
-            <div class="p-5">
-                <div class="text-sm text-gray-500">Messages Deferred</div>
-                <div class="text-3xl font-semibold text-amber-700">{{.DeferredCount}}</div>
-            </div>
-        </div>
-        <div class="bg-white overflow-hidden shadow rounded-lg">
-            <div class="p-5">
-                <div class="text-sm text-gray-500">Messages Deleted</div>
-                <div class="text-3xl font-semibold text-gray-900">{{.DeletedCount}}</div>
-            </div>
-        </div>
-        <div class="bg-white overflow-hidden shadow rounded-lg">
-            <div class="p-5">
-                <div class="text-sm text-gray-500">Blobs Bridged</div>
-                <div class="text-3xl font-semibold text-gray-900">{{.BlobCount}}</div>
-            </div>
-        </div>
-        <div class="bg-white overflow-hidden shadow rounded-lg">
-            <div class="p-5">
-                <div class="text-sm text-gray-500">Bridge Status</div>
-                <div class="text-xl font-semibold text-gray-900">{{.BridgeStatus}}</div>
-            </div>
-        </div>
-        <div class="bg-white overflow-hidden shadow rounded-lg">
-            <div class="p-5">
-                <div class="text-sm text-gray-500">Last Heartbeat</div>
-                <div class="text-lg font-semibold text-gray-900">{{if .LastHeartbeat}}{{.LastHeartbeat}}{{else}}(not set){{end}}</div>
-            </div>
-        </div>
+<section class="section section-pad">
+    <div class="metric-grid">
+        {{range .Metrics}}
+        <a class="metric-card {{statusToneClass .Tone}}" href="{{.Href}}">
+            <span class="metric-label">{{.Label}}</span>
+            <span class="metric-value">{{.Value}}</span>
+            {{if .Note}}<span class="metric-note">{{.Note}}</span>{{end}}
+        </a>
+        {{end}}
     </div>
+</section>
 
-    <div class="mt-6 bg-white overflow-hidden shadow rounded-lg">
-        <div class="p-5">
-            <div class="text-sm text-gray-500">Firehose Cursor</div>
-            <div class="text-lg font-semibold text-gray-900">{{if .FirehoseCursor}}{{.FirehoseCursor}}{{else}}(not set){{end}}</div>
-        </div>
+<section class="grid-two">
+    <article class="section section-pad">
+        <h2 class="page-title" style="font-size:1.2rem">Runtime Health</h2>
+        <p class="subtitle"><strong>{{.RuntimeHealth}}</strong> · {{.RuntimeHealthDescription}}</p>
+        <dl class="details-grid" style="margin-top:10px">
+            <div class="detail-card"><dt>Bridge Status</dt><dd>{{.BridgeStatus}}</dd></div>
+            <div class="detail-card"><dt>Last Heartbeat</dt><dd>{{if .LastHeartbeat}}{{.LastHeartbeat}}{{else}}(not set){{end}}</dd></div>
+            <div class="detail-card"><dt>Firehose Cursor</dt><dd>{{if .FirehoseCursor}}{{.FirehoseCursor}}{{else}}(not set){{end}}</dd></div>
+        </dl>
+    </article>
+
+    <article class="section section-pad">
+        <h2 class="page-title" style="font-size:1.2rem">Top Deferred Reasons</h2>
+        {{if .TopDeferredReasons}}
+        <ul class="mini-list" style="margin-top:10px">
+            {{range .TopDeferredReasons}}
+            <li>
+                <div class="mono truncate" title="{{.Reason}}">{{.Reason}}</div>
+                <a class="button-link" href="{{.MessagesURL}}">{{.Count}} msgs</a>
+            </li>
+            {{end}}
+        </ul>
+        {{else}}
+        <div class="empty">No deferred reasons recorded.</div>
+        {{end}}
+    </article>
+</section>
+
+<section class="section section-pad">
+    <h2 class="page-title" style="font-size:1.2rem">Accounts With Highest Issue Volume</h2>
+    {{if .TopIssueAccounts}}
+    <div class="table-wrap" style="margin-top:10px">
+        <table>
+            <thead>
+                <tr>
+                    <th>AT DID</th>
+                    <th>Status</th>
+                    <th>Issue Msgs</th>
+                    <th>Total Msgs</th>
+                    <th>Breakdown</th>
+                    <th>Pivot</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{range .TopIssueAccounts}}
+                <tr>
+                    <td class="mono"><span class="truncate" title="{{.ATDID}}">{{.ATDID}}</span></td>
+                    <td>{{if .Active}}active{{else}}inactive{{end}}</td>
+                    <td>{{.IssueMessages}}</td>
+                    <td>{{.TotalMessages}}</td>
+                    <td>F{{.FailedMessages}} / D{{.DeferredCount}} / X{{.DeletedCount}}</td>
+                    <td><a class="button-link" href="{{.MessagesURL}}">View Messages</a></td>
+                </tr>
+                {{end}}
+            </tbody>
+        </table>
     </div>
-</div>
+    {{else}}
+    <div class="empty">No issue-heavy accounts yet.</div>
+    {{end}}
+</section>
 {{end}}
 `
 
 const accountsContent = `
 {{define "content"}}
-<div class="px-4 py-6 sm:px-0">
-    <h1 class="text-3xl font-bold text-gray-900 mb-6">Accounts</h1>
+<section class="section section-pad">
+    <h1 class="page-title">Accounts</h1>
+    <p class="subtitle">Bridged account registry with per-account message and issue statistics.</p>
+</section>
 
-    <div class="bg-white shadow rounded-lg overflow-hidden">
-        <table class="min-w-full divide-y divide-gray-200">
-            <thead class="bg-gray-50">
+<section class="section">
+    <div class="table-wrap">
+        <table>
+            <thead>
                 <tr>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">AT DID</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">SSB Feed ID</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Created</th>
+                    <th>AT DID</th>
+                    <th>SSB Feed ID</th>
+                    <th>Status</th>
+                    <th>Total</th>
+                    <th>Published</th>
+                    <th>Failed</th>
+                    <th>Deferred</th>
+                    <th>Last Published</th>
+                    <th>Created</th>
+                    <th>Pivot</th>
                 </tr>
             </thead>
-            <tbody class="bg-white divide-y divide-gray-200">
+            <tbody>
                 {{range .Accounts}}
                 <tr>
-                    <td class="px-6 py-4 text-sm text-gray-900">{{.ATDID}}</td>
-                    <td class="px-6 py-4 text-sm text-gray-700">{{.SSBFeedID}}</td>
-                    <td class="px-6 py-4 text-sm">{{if .Active}}<span class="text-green-700">active</span>{{else}}<span class="text-gray-500">inactive</span>{{end}}</td>
-                    <td class="px-6 py-4 text-sm text-gray-500">{{fmtTime .CreatedAt}}</td>
+                    <td class="mono"><span class="truncate" title="{{.ATDID}}">{{.ATDID}}</span></td>
+                    <td class="mono"><span class="truncate" title="{{.SSBFeedID}}">{{.SSBFeedID}}</span></td>
+                    <td>{{if .Active}}active{{else}}inactive{{end}}</td>
+                    <td>{{.TotalMessages}}</td>
+                    <td>{{.PublishedMessages}}</td>
+                    <td>{{.FailedMessages}}</td>
+                    <td>{{.DeferredMessages}}</td>
+                    <td>{{if .LastPublishedAt}}{{.LastPublishedAt}}{{else}}(none){{end}}</td>
+                    <td>{{fmtTime .CreatedAt}}</td>
+                    <td><a class="button-link" href="{{.MessagesURL}}">Messages</a></td>
                 </tr>
                 {{else}}
-                <tr>
-                    <td colspan="4" class="px-6 py-8 text-sm text-gray-500 text-center">No bridged accounts yet.</td>
-                </tr>
+                <tr><td colspan="10" class="empty">No bridged accounts yet.</td></tr>
                 {{end}}
             </tbody>
         </table>
     </div>
-</div>
+</section>
 {{end}}
 `
 
 const messagesContent = `
 {{define "content"}}
-<div class="px-4 py-6 sm:px-0 space-y-6">
-    <div>
-        <h1 class="text-3xl font-bold text-gray-900">Messages</h1>
-        <p class="mt-2 text-sm text-gray-600">Filter by record type or lifecycle state, search across IDs and issue text, then open a message for the full ATProto and SSB payloads.</p>
+<section class="section section-pad">
+    <h1 class="page-title">Messages</h1>
+    <p class="subtitle">Filter and paginate bridged records, then pivot to detail views for payload and lifecycle diagnostics.</p>
+</section>
+
+<section class="filter-panel" aria-label="Message filters">
+    <form method="GET" action="/messages">
+        <div class="filter-grid">
+            <div class="field" style="grid-column: span 2;">
+                <label for="messages-search">Search</label>
+                <input id="messages-search" type="search" name="q" value="{{.Filters.Search}}" placeholder="URI, DID, SSB ref, error text">
+            </div>
+            <div class="field">
+                <label for="messages-did">Author DID</label>
+                <input id="messages-did" type="text" name="did" value="{{.Filters.ATDID}}" placeholder="did:plc:...">
+            </div>
+            <div class="field">
+                <label for="messages-type">Type</label>
+                <select id="messages-type" name="type">
+                    {{range .TypeOptions}}<option value="{{.Value}}" {{if .Selected}}selected{{end}}>{{.Label}}</option>{{end}}
+                </select>
+            </div>
+            <div class="field">
+                <label for="messages-state">State</label>
+                <select id="messages-state" name="state">
+                    {{range .StateOptions}}<option value="{{.Value}}" {{if .Selected}}selected{{end}}>{{.Label}}</option>{{end}}
+                </select>
+            </div>
+            <div class="field">
+                <label for="messages-sort">Sort</label>
+                <select id="messages-sort" name="sort">
+                    {{range .SortOptions}}<option value="{{.Value}}" {{if .Selected}}selected{{end}}>{{.Label}}</option>{{end}}
+                </select>
+            </div>
+            <div class="field">
+                <label for="messages-limit">Page Size</label>
+                <select id="messages-limit" name="limit">
+                    {{range .LimitOptions}}<option value="{{.Value}}" {{if .Selected}}selected{{end}}>{{.Label}}</option>{{end}}
+                </select>
+            </div>
+            <div class="field" style="align-content:end">
+                <label class="inline-toggle"><input type="checkbox" name="has_issue" value="1" {{if .Filters.HasIssue}}checked{{end}}>Only rows with issue text</label>
+            </div>
+            <div class="field" style="align-content:end">
+                <div class="toolbar">
+                    <button class="button" type="submit">Apply</button>
+                    <a class="button-link" href="/messages">Reset</a>
+                </div>
+            </div>
+        </div>
+    </form>
+    <div class="toolbar" style="padding:0 14px 12px">
+        <div class="subtitle">Showing <strong>{{.ResultCount}}</strong> rows{{if .UnsupportedKeysetSort}} · keyset pagination available on newest/oldest sorts{{end}}</div>
+        {{if .ActiveFilters}}
+        <div class="active-filters" aria-label="Active filters">
+            {{range .ActiveFilters}}<span class="chip"><strong>{{.Label}}</strong> {{.Value}}</span>{{end}}
+        </div>
+        {{end}}
     </div>
+</section>
 
-    <section class="bg-white shadow rounded-lg">
-        <form method="GET" action="/messages" class="p-5 space-y-4">
-            <div class="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-                <div>
-                    <h2 class="text-sm font-semibold text-gray-900">Browse Message Stream</h2>
-                    <p class="mt-1 text-sm text-gray-500">Search AT URIs, DIDs, SSB refs, publish failures, and defer reasons.</p>
-                </div>
-                <div class="flex items-center gap-3">
-                    <a href="/messages" class="text-sm font-medium text-gray-600 hover:text-gray-900">Reset</a>
-                    <button type="submit" class="inline-flex items-center rounded-md bg-indigo-700 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-800">Apply</button>
-                </div>
-            </div>
-
-            <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-4">
-                <div class="xl:col-span-2">
-                    <label for="messages-search" class="block text-xs font-semibold uppercase tracking-wide text-gray-500">Search</label>
-                    <input id="messages-search" type="search" name="q" value="{{.Filters.Search}}" placeholder="AT URI, DID, SSB ref, error, defer reason" class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500">
-                </div>
-                <div>
-                    <label for="messages-type" class="block text-xs font-semibold uppercase tracking-wide text-gray-500">Type</label>
-                    <select id="messages-type" name="type" class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500">
-                        {{range .TypeOptions}}
-                        <option value="{{.Value}}" {{if .Selected}}selected{{end}}>{{.Label}}</option>
+<section class="section">
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>AT URI</th>
+                    <th>Author DID</th>
+                    <th>Type</th>
+                    <th>State</th>
+                    <th>SSB Ref</th>
+                    <th>Retries</th>
+                    <th>Issue</th>
+                    <th>Created</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{range .Messages}}
+                <tr>
+                    <td>
+                        <div class="mono">
+                            <a href="{{.DetailURL}}" title="{{.ATURI}}"><span class="truncate">{{.ShortATURI}}</span></a>
+                        </div>
+                        <div class="toolbar" style="margin-top:6px">
+                            <a class="button-link" href="{{.DetailURL}}">Detail</a>
+                            <button class="copy-btn" type="button" data-copy="{{.ATURI}}">Copy</button>
+                        </div>
+                    </td>
+                    <td>
+                        <div class="mono"><span class="truncate" title="{{.ATDID}}">{{.ShortATDID}}</span></div>
+                        <button class="copy-btn" type="button" data-copy="{{.ATDID}}" style="margin-top:6px">Copy</button>
+                    </td>
+                    <td>
+                        <div><strong>{{.TypeLabel}}</strong></div>
+                        <div class="mono"><span class="truncate" title="{{.Type}}">{{.Type}}</span></div>
+                    </td>
+                    <td><span class="pill {{.StateClass}}">{{.StateLabel}}</span></td>
+                    <td>
+                        {{if .SSBMsgRef}}
+                        <div class="mono"><span class="truncate" title="{{.SSBMsgRef}}">{{.ShortSSBMsgRef}}</span></div>
+                        <button class="copy-btn" type="button" data-copy="{{.SSBMsgRef}}" style="margin-top:6px">Copy</button>
+                        {{else}}pending{{end}}
+                    </td>
+                    <td>{{.TotalAttempts}}<br><span class="subtitle">P{{.PublishAttempts}} / D{{.DeferAttempts}}</span></td>
+                    <td>
+                        <div class="issue-text {{.IssueClass}}">{{.IssueText}}</div>
+                        {{if .IssueDetail}}
+                        <details style="margin-top:6px"><summary class="subtitle">Show full issue</summary><div class="mono" style="margin-top:5px">{{.IssueDetail}}</div></details>
                         {{end}}
-                    </select>
-                </div>
-                <div>
-                    <label for="messages-state" class="block text-xs font-semibold uppercase tracking-wide text-gray-500">State</label>
-                    <select id="messages-state" name="state" class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500">
-                        {{range .StateOptions}}
-                        <option value="{{.Value}}" {{if .Selected}}selected{{end}}>{{.Label}}</option>
-                        {{end}}
-                    </select>
-                </div>
-                <div>
-                    <label for="messages-sort" class="block text-xs font-semibold uppercase tracking-wide text-gray-500">Sort</label>
-                    <select id="messages-sort" name="sort" class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500">
-                        {{range .SortOptions}}
-                        <option value="{{.Value}}" {{if .Selected}}selected{{end}}>{{.Label}}</option>
-                        {{end}}
-                    </select>
-                </div>
-                <div>
-                    <label for="messages-limit" class="block text-xs font-semibold uppercase tracking-wide text-gray-500">Page Size</label>
-                    <select id="messages-limit" name="limit" class="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 shadow-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500">
-                        {{range .LimitOptions}}
-                        <option value="{{.Value}}" {{if .Selected}}selected{{end}}>{{.Label}}</option>
-                        {{end}}
-                    </select>
-                </div>
-            </div>
-
-            <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                <div class="text-sm text-gray-600">
-                    Showing <span class="font-semibold text-gray-900">{{.ResultCount}}</span> matching messages{{if .ReachedLimit}} <span class="text-gray-500">(limit {{.Filters.Limit}})</span>{{end}}
-                </div>
-                {{if .ActiveFilters}}
-                <div class="flex flex-wrap gap-2">
-                    {{range .ActiveFilters}}
-                    <span class="inline-flex items-center gap-2 rounded-full bg-gray-100 px-3 py-1 text-xs text-gray-700">
-                        <span class="font-semibold uppercase tracking-wide text-gray-500">{{.Label}}</span>
-                        <span class="font-medium text-gray-900">{{.Value}}</span>
-                    </span>
-                    {{end}}
-                </div>
+                    </td>
+                    <td>{{fmtTime .CreatedAt}}</td>
+                </tr>
+                {{else}}
+                <tr><td colspan="8" class="empty">No bridged messages matched the current filters.</td></tr>
                 {{end}}
-            </div>
-        </form>
-    </section>
-
-    <div class="bg-white shadow rounded-lg overflow-hidden">
-        <div class="overflow-x-auto">
-            <table class="min-w-[96rem] table-fixed divide-y divide-gray-200">
-                <thead class="bg-gray-50">
-                    <tr>
-                        <th class="w-80 px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">AT URI</th>
-                        <th class="w-56 px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Author DID</th>
-                        <th class="w-44 px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Type</th>
-                        <th class="w-28 px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">State</th>
-                        <th class="w-52 px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">SSB Ref</th>
-                        <th class="w-24 px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Retries</th>
-                        <th class="w-[28rem] px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Issue</th>
-                        <th class="w-40 px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Created</th>
-                    </tr>
-                </thead>
-                <tbody class="bg-white divide-y divide-gray-200">
-                    {{range .Messages}}
-                    <tr class="align-top hover:bg-gray-50">
-                        <td class="px-6 py-4 text-sm text-gray-900">
-                            <a href="{{.DetailURL}}" class="block" title="{{.ATURI}}">
-                                <span class="block truncate mono-data text-xs font-medium text-indigo-700 hover:text-indigo-900 hover:underline">{{.ATURI}}</span>
-                                <span class="mt-1 block text-xs text-gray-500">Open detail view</span>
-                            </a>
-                        </td>
-                        <td class="px-6 py-4 text-sm text-gray-700">
-                            <div class="truncate mono-data text-xs text-gray-700" title="{{.ATDID}}">{{.ATDID}}</div>
-                        </td>
-                        <td class="px-6 py-4 text-sm text-gray-700">
-                            <div class="font-medium text-gray-900">{{.TypeLabel}}</div>
-                            <div class="truncate text-xs text-gray-500" title="{{.Type}}">{{.Type}}</div>
-                        </td>
-                        <td class="px-6 py-4 text-sm">
-                            <span class="inline-flex rounded-full px-2.5 py-1 text-xs font-semibold {{.StateClass}}">{{.StateLabel}}</span>
-                        </td>
-                        <td class="px-6 py-4 text-sm text-gray-700">
-                            {{if .SSBMsgRef}}
-                            <div class="truncate mono-data text-xs text-gray-700" title="{{.SSBMsgRef}}">{{.SSBMsgRef}}</div>
-                            {{else}}
-                            <span class="text-gray-500">pending</span>
-                            {{end}}
-                        </td>
-                        <td class="px-6 py-4 text-sm text-gray-700">
-                            <div class="font-medium text-gray-900">{{.TotalAttempts}}</div>
-                            <div class="text-xs text-gray-500">P{{.PublishAttempts}} / D{{.DeferAttempts}}</div>
-                        </td>
-                        <td class="px-6 py-4 text-sm {{.IssueClass}}">
-                            <div class="clamp-2 leading-6">{{.IssueText}}</div>
-                        </td>
-                        <td class="px-6 py-4 text-sm text-gray-500">{{fmtTime .CreatedAt}}</td>
-                    </tr>
-                    {{else}}
-                    <tr>
-                        <td colspan="8" class="px-6 py-8 text-sm text-gray-500 text-center">No bridged messages matched the current filters.</td>
-                    </tr>
-                    {{end}}
-                </tbody>
-            </table>
+            </tbody>
+        </table>
+    </div>
+    <div class="pagination">
+        <div class="subtitle">Use newest/oldest sort for stable cursor pagination.</div>
+        <div class="toolbar">
+            {{if .Pagination.HasPrev}}<a class="button-link" href="{{.Pagination.PrevURL}}">Previous</a>{{end}}
+            {{if .Pagination.HasNext}}<a class="button-link" href="{{.Pagination.NextURL}}">Next</a>{{end}}
         </div>
     </div>
-</div>
+</section>
 {{end}}
 `
 
 const messageDetailContent = `
 {{define "content"}}
-<div class="px-4 py-6 sm:px-0 space-y-6">
-    <div class="flex items-start justify-between gap-4">
+<section class="section section-pad">
+    <div class="toolbar">
         <div>
-            <div class="text-sm font-medium text-indigo-700"><a href="/messages" class="hover:underline">Back to Messages</a></div>
-            <h1 class="text-3xl font-bold text-gray-900 mt-2">Message Detail</h1>
-            <p class="mt-3 text-sm text-gray-600 break-all">{{.ATURI}}</p>
+            <a class="button-link" href="/messages">Back to Messages</a>
+            <h1 class="page-title" style="margin-top:10px">Message Detail</h1>
+            <p class="subtitle mono" title="{{.ATURI}}"><span class="truncate">{{.ATURI}}</span></p>
         </div>
-        <div class="text-right text-sm text-gray-500">
-            <div>State</div>
-            <div class="text-lg font-semibold text-gray-900">{{.State}}</div>
+        <div>
+            <span class="pill {{stateClass .State}}">{{.State}}</span>
         </div>
     </div>
+</section>
 
-    <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-        <div class="bg-white overflow-hidden shadow rounded-lg"><div class="p-4"><div class="text-sm text-gray-500">Author DID</div><div class="mt-1 text-sm font-semibold text-gray-900 break-all">{{.ATDID}}</div></div></div>
-        <div class="bg-white overflow-hidden shadow rounded-lg"><div class="p-4"><div class="text-sm text-gray-500">Record Type</div><div class="mt-1 text-sm font-semibold text-gray-900 break-all">{{.Type}}</div></div></div>
-        <div class="bg-white overflow-hidden shadow rounded-lg"><div class="p-4"><div class="text-sm text-gray-500">AT CID</div><div class="mt-1 text-sm font-semibold text-gray-900 break-all">{{if .ATCID}}{{.ATCID}}{{else}}(none){{end}}</div></div></div>
-        <div class="bg-white overflow-hidden shadow rounded-lg"><div class="p-4"><div class="text-sm text-gray-500">SSB Ref</div><div class="mt-1 text-sm font-semibold text-gray-900 break-all">{{if .SSBMsgRef}}{{.SSBMsgRef}}{{else}}pending{{end}}</div></div></div>
-        <div class="bg-white overflow-hidden shadow rounded-lg"><div class="p-4"><div class="text-sm text-gray-500">Created</div><div class="mt-1 text-sm font-semibold text-gray-900">{{.CreatedAt}}</div></div></div>
-        <div class="bg-white overflow-hidden shadow rounded-lg"><div class="p-4"><div class="text-sm text-gray-500">Published</div><div class="mt-1 text-sm font-semibold text-gray-900">{{if .PublishedAt}}{{.PublishedAt}}{{else}}(not published){{end}}</div></div></div>
-        <div class="bg-white overflow-hidden shadow rounded-lg"><div class="p-4"><div class="text-sm text-gray-500">Publish Attempts</div><div class="mt-1 text-sm font-semibold text-gray-900">{{.PublishAttempts}}</div></div></div>
-        <div class="bg-white overflow-hidden shadow rounded-lg"><div class="p-4"><div class="text-sm text-gray-500">Defer Attempts</div><div class="mt-1 text-sm font-semibold text-gray-900">{{.DeferAttempts}}</div></div></div>
+<section class="section section-pad">
+    <div class="toolbar">
+        <a class="button-link" href="{{.FilterByDIDURL}}">More from this DID</a>
+        <a class="button-link" href="{{.FilterByStateURL}}">More in this state</a>
+        <a class="button-link" href="{{.FilterByTypeURL}}">More of this type</a>
     </div>
+</section>
 
-    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <section class="bg-white shadow rounded-lg overflow-hidden">
-            <div class="border-b border-gray-200 px-5 py-4">
-                <h2 class="text-lg font-semibold text-gray-900">Original ATProto Message</h2>
-            </div>
-            <div class="p-5 space-y-3">
-                {{range .OriginalMessageFields}}
-                <div>
-                    <div class="text-xs font-semibold uppercase tracking-wide text-gray-500">{{.Label}}</div>
-                    <div class="mt-1 text-sm text-gray-900 break-words whitespace-pre-wrap">{{.Value}}</div>
-                </div>
-                {{else}}
-                <div class="text-sm text-gray-500">No structured ATProto fields available.</div>
-                {{end}}
-            </div>
-        </section>
-
-        <section class="bg-white shadow rounded-lg overflow-hidden">
-            <div class="border-b border-gray-200 px-5 py-4">
-                <h2 class="text-lg font-semibold text-gray-900">Bridged SSB Message</h2>
-            </div>
-            <div class="p-5 space-y-3">
-                {{range .BridgedMessageFields}}
-                <div>
-                    <div class="text-xs font-semibold uppercase tracking-wide text-gray-500">{{.Label}}</div>
-                    <div class="mt-1 text-sm text-gray-900 break-words whitespace-pre-wrap">{{.Value}}</div>
-                </div>
-                {{else}}
-                <div class="text-sm text-gray-500">No structured SSB fields available.</div>
-                {{end}}
-            </div>
-        </section>
+<section class="section section-pad">
+    <h2 class="page-title" style="font-size:1.2rem">Lifecycle Timeline</h2>
+    <div class="details-grid" style="margin-top:10px">
+        <div class="detail-card"><dt>Created</dt><dd>{{.CreatedAt}}</dd></div>
+        <div class="detail-card"><dt>Published</dt><dd>{{if .PublishedAt}}{{.PublishedAt}}{{else}}(not published){{end}}</dd></div>
+        <div class="detail-card"><dt>Last Publish Attempt</dt><dd>{{if .LastPublishAttemptAt}}{{.LastPublishAttemptAt}}{{else}}(none){{end}}</dd></div>
+        <div class="detail-card"><dt>Last Defer Attempt</dt><dd>{{if .LastDeferAttemptAt}}{{.LastDeferAttemptAt}}{{else}}(none){{end}}</dd></div>
+        <div class="detail-card"><dt>Deleted At</dt><dd>{{if .DeletedAt}}{{.DeletedAt}}{{else}}(not deleted){{end}}</dd></div>
+        <div class="detail-card"><dt>Deleted Seq</dt><dd>{{if .DeletedSeq}}{{.DeletedSeq}}{{else}}(none){{end}}</dd></div>
     </div>
+</section>
 
-    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <section class="bg-white shadow rounded-lg overflow-hidden">
-            <div class="border-b border-gray-200 px-5 py-4">
-                <h2 class="text-lg font-semibold text-gray-900">Raw ATProto JSON</h2>
-            </div>
-            <pre class="p-5 overflow-x-auto text-xs leading-6 text-gray-900 bg-gray-50 whitespace-pre-wrap break-all">{{.RawATProtoJSON}}</pre>
-        </section>
+<section class="grid-two">
+    <article class="section section-pad">
+        <h2 class="page-title" style="font-size:1.2rem">Record Metadata</h2>
+        <dl class="details-grid" style="margin-top:10px">
+            <div class="detail-card"><dt>Author DID</dt><dd class="mono">{{.ATDID}}</dd></div>
+            <div class="detail-card"><dt>Record Type</dt><dd>{{.Type}}</dd></div>
+            <div class="detail-card"><dt>AT CID</dt><dd class="mono">{{if .ATCID}}{{.ATCID}}{{else}}(none){{end}}</dd></div>
+            <div class="detail-card"><dt>SSB Ref</dt><dd class="mono">{{if .SSBMsgRef}}{{.SSBMsgRef}}{{else}}pending{{end}}</dd></div>
+            <div class="detail-card"><dt>Publish Attempts</dt><dd>{{.PublishAttempts}}</dd></div>
+            <div class="detail-card"><dt>Defer Attempts</dt><dd>{{.DeferAttempts}}</dd></div>
+        </dl>
+    </article>
 
-        <section class="bg-white shadow rounded-lg overflow-hidden">
-            <div class="border-b border-gray-200 px-5 py-4">
-                <h2 class="text-lg font-semibold text-gray-900">Raw SSB JSON</h2>
-            </div>
-            <pre class="p-5 overflow-x-auto text-xs leading-6 text-gray-900 bg-gray-50 whitespace-pre-wrap break-all">{{.RawSSBJSON}}</pre>
-        </section>
-    </div>
+    <article class="section section-pad">
+        <h2 class="page-title" style="font-size:1.2rem">Lifecycle Issues</h2>
+        <dl class="details-grid" style="margin-top:10px">
+            {{if .PublishError}}<div class="detail-card"><dt>Publish Error</dt><dd class="issue-text">{{.PublishError}}</dd></div>{{end}}
+            {{if .DeferReason}}<div class="detail-card"><dt>Defer Reason</dt><dd class="issue-text warning">{{.DeferReason}}</dd></div>{{end}}
+            {{if .DeletedReason}}<div class="detail-card"><dt>Deleted Reason</dt><dd>{{.DeletedReason}}</dd></div>{{end}}
+            {{if and (eq .PublishError "") (eq .DeferReason "") (eq .DeletedReason "")}}<div class="detail-card"><dt>Issues</dt><dd class="issue-text muted">No issue details recorded.</dd></div>{{end}}
+        </dl>
+    </article>
+</section>
 
-    {{if or .PublishError .DeferReason .DeletedReason .LastPublishAttemptAt .LastDeferAttemptAt .DeletedAt .DeletedSeq}}
-    <section class="bg-white shadow rounded-lg overflow-hidden">
-        <div class="border-b border-gray-200 px-5 py-4">
-            <h2 class="text-lg font-semibold text-gray-900">Lifecycle Details</h2>
-        </div>
-        <div class="p-5 grid grid-cols-1 md:grid-cols-2 gap-4">
-            {{if .LastPublishAttemptAt}}<div><div class="text-xs font-semibold uppercase tracking-wide text-gray-500">Last Publish Attempt</div><div class="mt-1 text-sm text-gray-900">{{.LastPublishAttemptAt}}</div></div>{{end}}
-            {{if .LastDeferAttemptAt}}<div><div class="text-xs font-semibold uppercase tracking-wide text-gray-500">Last Defer Attempt</div><div class="mt-1 text-sm text-gray-900">{{.LastDeferAttemptAt}}</div></div>{{end}}
-            {{if .DeletedAt}}<div><div class="text-xs font-semibold uppercase tracking-wide text-gray-500">Deleted At</div><div class="mt-1 text-sm text-gray-900">{{.DeletedAt}}</div></div>{{end}}
-            {{if .DeletedSeq}}<div><div class="text-xs font-semibold uppercase tracking-wide text-gray-500">Deleted Sequence</div><div class="mt-1 text-sm text-gray-900">{{.DeletedSeq}}</div></div>{{end}}
-            {{if .PublishError}}<div class="md:col-span-2"><div class="text-xs font-semibold uppercase tracking-wide text-gray-500">Publish Error</div><div class="mt-1 text-sm text-red-700 break-words whitespace-pre-wrap">{{.PublishError}}</div></div>{{end}}
-            {{if .DeferReason}}<div class="md:col-span-2"><div class="text-xs font-semibold uppercase tracking-wide text-gray-500">Defer Reason</div><div class="mt-1 text-sm text-amber-700 break-words whitespace-pre-wrap">{{.DeferReason}}</div></div>{{end}}
-            {{if .DeletedReason}}<div class="md:col-span-2"><div class="text-xs font-semibold uppercase tracking-wide text-gray-500">Deleted Reason</div><div class="mt-1 text-sm text-gray-900 break-words whitespace-pre-wrap">{{.DeletedReason}}</div></div>{{end}}
-        </div>
-    </section>
-    {{end}}
-</div>
+<section class="grid-two">
+    <article class="section section-pad">
+        <h2 class="page-title" style="font-size:1.2rem">Original ATProto Message</h2>
+        <dl class="details-grid" style="margin-top:10px">
+            {{range .OriginalMessageFields}}
+            <div class="detail-card"><dt>{{.Label}}</dt><dd>{{.Value}}</dd></div>
+            {{else}}
+            <div class="empty">No structured ATProto fields available.</div>
+            {{end}}
+        </dl>
+    </article>
+
+    <article class="section section-pad">
+        <h2 class="page-title" style="font-size:1.2rem">Bridged SSB Message</h2>
+        <dl class="details-grid" style="margin-top:10px">
+            {{range .BridgedMessageFields}}
+            <div class="detail-card"><dt>{{.Label}}</dt><dd>{{.Value}}</dd></div>
+            {{else}}
+            <div class="empty">No structured SSB fields available.</div>
+            {{end}}
+        </dl>
+    </article>
+</section>
+
+<section class="grid-two">
+    <article class="section section-pad">
+        <h2 class="page-title" style="font-size:1.2rem">Raw ATProto JSON</h2>
+        <pre>{{.RawATProtoJSON}}</pre>
+    </article>
+
+    <article class="section section-pad">
+        <h2 class="page-title" style="font-size:1.2rem">Raw SSB JSON</h2>
+        <pre>{{.RawSSBJSON}}</pre>
+    </article>
+</section>
 {{end}}
 `
 
 const failuresContent = `
 {{define "content"}}
-<div class="px-4 py-6 sm:px-0">
-    <h1 class="text-3xl font-bold text-gray-900 mb-6">Publish/Defer Issues</h1>
+<section class="section section-pad">
+    <h1 class="page-title">Publish/Defer Issues</h1>
+    <p class="subtitle">Split by lifecycle state with grouped reason hotspots for rapid triage.</p>
+</section>
 
-    <div class="bg-white shadow rounded-lg overflow-hidden">
-        <table class="min-w-full divide-y divide-gray-200">
-            <thead class="bg-gray-50">
-                <tr>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">AT URI</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Author DID</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Type</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">State</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Attempts</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Reason</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Created</th>
-                </tr>
-            </thead>
-            <tbody class="bg-white divide-y divide-gray-200">
-                {{range .Failures}}
-                <tr>
-                    <td class="px-6 py-4 text-sm text-gray-900">{{.ATURI}}</td>
-                    <td class="px-6 py-4 text-sm text-gray-700">{{.ATDID}}</td>
-                    <td class="px-6 py-4 text-sm text-gray-700">{{.Type}}</td>
-                    <td class="px-6 py-4 text-sm text-gray-700">{{.State}}</td>
-                    <td class="px-6 py-4 text-sm text-gray-700">{{.PublishAttempts}}</td>
-                    <td class="px-6 py-4 text-sm text-red-700">{{.Reason}}</td>
-                    <td class="px-6 py-4 text-sm text-gray-500">{{fmtTime .CreatedAt}}</td>
-                </tr>
-                {{else}}
-                <tr>
-                    <td colspan="7" class="px-6 py-8 text-sm text-gray-500 text-center">No publish/defer issues.</td>
-                </tr>
-                {{end}}
-            </tbody>
-        </table>
+<section class="section section-pad">
+    <div class="toolbar">
+        <div class="metric-card tone-danger" style="max-width:220px"><span class="metric-label">Failed</span><span class="metric-value">{{.FailedCount}}</span></div>
+        <div class="metric-card tone-warning" style="max-width:220px"><span class="metric-label">Deferred</span><span class="metric-value">{{.DeferredCount}}</span></div>
     </div>
-</div>
+</section>
+
+<section class="section section-pad">
+    <h2 class="page-title" style="font-size:1.2rem">Reason Groups</h2>
+    {{if .ReasonGroups}}
+    <ul class="mini-list" style="margin-top:10px">
+        {{range .ReasonGroups}}
+        <li>
+            <span class="mono truncate" title="{{.Reason}}">{{.State}} · {{.Reason}}</span>
+            <span class="pill">{{.Count}}</span>
+        </li>
+        {{end}}
+    </ul>
+    {{else}}
+    <div class="empty">No grouped reasons available.</div>
+    {{end}}
+</section>
+
+<section class="grid-two">
+    <article class="section">
+        <div class="section-pad"><h2 class="page-title" style="font-size:1.2rem">Failed</h2></div>
+        <div class="table-wrap">
+            <table>
+                <thead><tr><th>AT URI</th><th>DID</th><th>Type</th><th>Attempts</th><th>Reason</th><th>Created</th></tr></thead>
+                <tbody>
+                    {{range .FailedRows}}
+                    <tr>
+                        <td class="mono"><span class="truncate" title="{{.ATURI}}">{{.ATURI}}</span></td>
+                        <td class="mono">{{.ATDID}}</td>
+                        <td>{{.Type}}</td>
+                        <td>{{.PublishAttempts}}</td>
+                        <td class="issue-text">{{.Reason}}</td>
+                        <td>{{fmtTime .CreatedAt}}</td>
+                    </tr>
+                    {{else}}<tr><td colspan="6" class="empty">No failed rows.</td></tr>{{end}}
+                </tbody>
+            </table>
+        </div>
+    </article>
+
+    <article class="section">
+        <div class="section-pad"><h2 class="page-title" style="font-size:1.2rem">Deferred</h2></div>
+        <div class="table-wrap">
+            <table>
+                <thead><tr><th>AT URI</th><th>DID</th><th>Type</th><th>Attempts</th><th>Reason</th><th>Created</th></tr></thead>
+                <tbody>
+                    {{range .DeferredRows}}
+                    <tr>
+                        <td class="mono"><span class="truncate" title="{{.ATURI}}">{{.ATURI}}</span></td>
+                        <td class="mono">{{.ATDID}}</td>
+                        <td>{{.Type}}</td>
+                        <td>{{.PublishAttempts}}</td>
+                        <td class="issue-text warning">{{.Reason}}</td>
+                        <td>{{fmtTime .CreatedAt}}</td>
+                    </tr>
+                    {{else}}<tr><td colspan="6" class="empty">No deferred rows.</td></tr>{{end}}
+                </tbody>
+            </table>
+        </div>
+    </article>
+</section>
 {{end}}
 `
 
 const blobsContent = `
 {{define "content"}}
-<div class="px-4 py-6 sm:px-0">
-    <h1 class="text-3xl font-bold text-gray-900 mb-6">Blob Sync Status</h1>
+<section class="section section-pad">
+    <h1 class="page-title">Blob Sync Status</h1>
+    <p class="subtitle">Most recent bridged blob mappings and metadata.</p>
+</section>
 
-    <div class="bg-white shadow rounded-lg overflow-hidden">
-        <table class="min-w-full divide-y divide-gray-200">
-            <thead class="bg-gray-50">
-                <tr>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">AT CID</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">SSB Blob Ref</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Size</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">MIME</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Downloaded</th>
-                </tr>
+<section class="section">
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr><th>AT CID</th><th>SSB Blob Ref</th><th>Size</th><th>MIME</th><th>Downloaded</th></tr>
             </thead>
-            <tbody class="bg-white divide-y divide-gray-200">
+            <tbody>
                 {{range .Blobs}}
                 <tr>
-                    <td class="px-6 py-4 text-sm text-gray-900">{{.ATCID}}</td>
-                    <td class="px-6 py-4 text-sm text-gray-700">{{.SSBBlobRef}}</td>
-                    <td class="px-6 py-4 text-sm text-gray-700">{{.Size}}</td>
-                    <td class="px-6 py-4 text-sm text-gray-700">{{.MimeType}}</td>
-                    <td class="px-6 py-4 text-sm text-gray-500">{{fmtTime .DownloadedAt}}</td>
+                    <td class="mono"><span class="truncate" title="{{.ATCID}}">{{.ATCID}}</span></td>
+                    <td class="mono"><span class="truncate" title="{{.SSBBlobRef}}">{{.SSBBlobRef}}</span></td>
+                    <td>{{.Size}}</td>
+                    <td>{{.MimeType}}</td>
+                    <td>{{fmtTime .DownloadedAt}}</td>
                 </tr>
                 {{else}}
-                <tr>
-                    <td colspan="5" class="px-6 py-8 text-sm text-gray-500 text-center">No blobs bridged yet.</td>
-                </tr>
+                <tr><td colspan="5" class="empty">No blobs bridged yet.</td></tr>
                 {{end}}
             </tbody>
         </table>
     </div>
-</div>
+</section>
 {{end}}
 `
 
 const stateContent = `
 {{define "content"}}
-<div class="px-4 py-6 sm:px-0">
-    <h1 class="text-3xl font-bold text-gray-900 mb-6">Bridge State</h1>
+<section class="section section-pad">
+    <h1 class="page-title">Bridge State</h1>
+    <p class="subtitle">Grouped runtime keys with stale heartbeat visibility for operational triage.</p>
+</section>
 
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-        <div class="bg-white overflow-hidden shadow rounded-lg">
-            <div class="p-4">
-                <div class="text-sm text-gray-500">Deferred Count</div>
-                <div class="text-2xl font-semibold text-amber-700">{{.DeferredCount}}</div>
-            </div>
-        </div>
-        <div class="bg-white overflow-hidden shadow rounded-lg">
-            <div class="p-4">
-                <div class="text-sm text-gray-500">Deleted Count</div>
-                <div class="text-2xl font-semibold text-gray-900">{{.DeletedCount}}</div>
-            </div>
-        </div>
-        <div class="bg-white overflow-hidden shadow rounded-lg">
-            <div class="p-4">
-                <div class="text-sm text-gray-500">Latest Defer Reason</div>
-                <div class="text-sm font-semibold text-amber-700 break-words">{{if .LatestDeferReason}}{{.LatestDeferReason}}{{else}}(none){{end}}</div>
-            </div>
-        </div>
+<section class="section section-pad">
+    <div class="metric-grid">
+        <div class="metric-card tone-warning"><span class="metric-label">Deferred Count</span><span class="metric-value">{{.DeferredCount}}</span></div>
+        <div class="metric-card"><span class="metric-label">Deleted Count</span><span class="metric-value">{{.DeletedCount}}</span></div>
+        <div class="metric-card {{if .HeartbeatStale}}tone-warning{{else}}tone-success{{end}}"><span class="metric-label">Heartbeat</span><span class="metric-value">{{if .HeartbeatStale}}stale{{else}}fresh{{end}}</span><span class="metric-note">{{if .HeartbeatAge}}{{.HeartbeatAge}}{{else}}unknown{{end}}</span></div>
+        <div class="metric-card"><span class="metric-label">Latest Defer Reason</span><span class="metric-note mono" title="{{.LatestDeferReason}}">{{if .LatestDeferReason}}{{.LatestDeferReason}}{{else}}(none){{end}}</span></div>
     </div>
+</section>
 
-    <div class="bg-white shadow rounded-lg overflow-hidden">
-        <table class="min-w-full divide-y divide-gray-200">
-            <thead class="bg-gray-50">
-                <tr>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Key</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Value</th>
-                    <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Updated</th>
-                </tr>
-            </thead>
-            <tbody class="bg-white divide-y divide-gray-200">
-                {{range .State}}
-                <tr>
-                    <td class="px-6 py-4 text-sm text-gray-900">{{.Key}}</td>
-                    <td class="px-6 py-4 text-sm text-gray-700">{{.Value}}</td>
-                    <td class="px-6 py-4 text-sm text-gray-500">{{fmtTime .UpdatedAt}}</td>
-                </tr>
-                {{else}}
-                <tr>
-                    <td colspan="3" class="px-6 py-8 text-sm text-gray-500 text-center">No bridge state entries.</td>
-                </tr>
-                {{end}}
-            </tbody>
-        </table>
-    </div>
+<section class="grid-two">
+    <article class="section">
+        <div class="section-pad"><h2 class="page-title" style="font-size:1.2rem">Runtime Keys</h2></div>
+        {{template "stateRows" .RuntimeState}}
+    </article>
+    <article class="section">
+        <div class="section-pad"><h2 class="page-title" style="font-size:1.2rem">Firehose Keys</h2></div>
+        {{template "stateRows" .FirehoseState}}
+    </article>
+</section>
+
+<section class="section">
+    <div class="section-pad"><h2 class="page-title" style="font-size:1.2rem">Other Keys</h2></div>
+    {{template "stateRows" .OtherState}}
+</section>
+{{end}}
+
+{{define "stateRows"}}
+<div class="table-wrap">
+    <table>
+        <thead><tr><th>Key</th><th>Value</th><th>Updated</th></tr></thead>
+        <tbody>
+            {{range .}}
+            <tr>
+                <td class="mono">{{.Key}}</td>
+                <td class="mono"><span class="truncate" title="{{.Value}}">{{.Value}}</span></td>
+                <td>{{fmtTime .UpdatedAt}}</td>
+            </tr>
+            {{else}}
+            <tr><td colspan="3" class="empty">No entries.</td></tr>
+            {{end}}
+        </tbody>
+    </table>
 </div>
 {{end}}
 `
 
+// PageChrome controls global page shell behavior.
+type PageChrome struct {
+	ActiveNav string
+	Status    PageStatus
+}
+
+// PageStatus controls the optional top status strip.
+type PageStatus struct {
+	Visible bool
+	Tone    string
+	Title   string
+	Body    string
+}
+
+// DashboardMetric is one linked KPI tile on the dashboard.
+type DashboardMetric struct {
+	Label string
+	Value int
+	Tone  string
+	Href  string
+	Note  string
+}
+
+// DeferredReasonView is one dashboard deferred-reason summary row.
+type DeferredReasonView struct {
+	Reason      string
+	Count       int
+	MessagesURL string
+}
+
+// IssueAccountView is one dashboard issue-heavy account summary row.
+type IssueAccountView struct {
+	ATDID          string
+	Active         bool
+	TotalMessages  int
+	IssueMessages  int
+	FailedMessages int
+	DeferredCount  int
+	DeletedCount   int
+	MessagesURL    string
+}
+
 // DashboardData contains summary metrics for the dashboard page.
 type DashboardData struct {
-	AccountCount        int
-	MessageCount        int
-	PublishedCount      int
-	PublishFailureCount int
-	DeferredCount       int
-	DeletedCount        int
-	BlobCount           int
-	FirehoseCursor      string
-	BridgeStatus        string
-	LastHeartbeat       string
+	Chrome                   PageChrome
+	Metrics                  []DashboardMetric
+	BridgeStatus             string
+	LastHeartbeat            string
+	FirehoseCursor           string
+	RuntimeHealth            string
+	RuntimeHealthDescription string
+	TopDeferredReasons       []DeferredReasonView
+	TopIssueAccounts         []IssueAccountView
 }
 
 // AccountRow is one bridged account row in the accounts table.
 type AccountRow struct {
-	ATDID     string
-	SSBFeedID string
-	Active    bool
-	CreatedAt time.Time
+	ATDID            string
+	SSBFeedID        string
+	Active           bool
+	TotalMessages    int
+	PublishedMessages int
+	FailedMessages   int
+	DeferredMessages int
+	LastPublishedAt  string
+	CreatedAt        time.Time
+	MessagesURL      string
 }
 
 // AccountsData is the template model for the accounts page.
 type AccountsData struct {
+	Chrome   PageChrome
 	Accounts []AccountRow
 }
 
 // MessageRow is one bridged message row in the messages table.
 type MessageRow struct {
 	ATURI           string
+	ShortATURI      string
 	DetailURL       string
 	ATDID           string
+	ShortATDID      string
 	Type            string
 	TypeLabel       string
 	State           string
 	StateLabel      string
 	StateClass      string
 	SSBMsgRef       string
+	ShortSSBMsgRef  string
 	IssueText       string
 	IssueClass      string
+	IssueDetail     string
 	PublishAttempts int
 	DeferAttempts   int
 	TotalAttempts   int
@@ -603,24 +1191,36 @@ type ActiveFilter struct {
 
 // MessagesFilterState preserves current query-param state in the messages view.
 type MessagesFilterState struct {
-	Search string
-	Type   string
-	State  string
-	Sort   string
-	Limit  int
+	Search   string
+	ATDID    string
+	Type     string
+	State    string
+	Sort     string
+	Limit    int
+	HasIssue bool
+}
+
+// MessagePagination stores next/previous links for the keyset UI.
+type MessagePagination struct {
+	HasPrev bool
+	HasNext bool
+	PrevURL string
+	NextURL string
 }
 
 // MessagesData is the template model for the messages page.
 type MessagesData struct {
-	Messages      []MessageRow
-	Filters       MessagesFilterState
-	TypeOptions   []FilterOption
-	StateOptions  []FilterOption
-	SortOptions   []FilterOption
-	LimitOptions  []IntFilterOption
-	ActiveFilters []ActiveFilter
-	ResultCount   int
-	ReachedLimit  bool
+	Chrome               PageChrome
+	Messages             []MessageRow
+	Filters              MessagesFilterState
+	TypeOptions          []FilterOption
+	StateOptions         []FilterOption
+	SortOptions          []FilterOption
+	LimitOptions         []IntFilterOption
+	ActiveFilters        []ActiveFilter
+	ResultCount          int
+	Pagination           MessagePagination
+	UnsupportedKeysetSort bool
 }
 
 // DetailField is one labeled value rendered in message detail sections.
@@ -631,6 +1231,7 @@ type DetailField struct {
 
 // MessageDetailData is the template model for a per-message detail page.
 type MessageDetailData struct {
+	Chrome                PageChrome
 	ATURI                 string
 	ATCID                 string
 	ATDID                 string
@@ -652,9 +1253,12 @@ type MessageDetailData struct {
 	BridgedMessageFields  []DetailField
 	RawATProtoJSON        string
 	RawSSBJSON            string
+	FilterByDIDURL        string
+	FilterByStateURL      string
+	FilterByTypeURL       string
 }
 
-// FailureRow is one failed publish row in the failures table.
+// FailureRow is one failed/deferred row in the failures table.
 type FailureRow struct {
 	ATURI           string
 	ATDID           string
@@ -665,9 +1269,21 @@ type FailureRow struct {
 	CreatedAt       time.Time
 }
 
+// FailureReasonGroup is one grouped failure/defer reason bucket.
+type FailureReasonGroup struct {
+	State  string
+	Reason string
+	Count  int
+}
+
 // FailuresData is the template model for the failures page.
 type FailuresData struct {
-	Failures []FailureRow
+	Chrome       PageChrome
+	FailedRows   []FailureRow
+	DeferredRows []FailureRow
+	ReasonGroups []FailureReasonGroup
+	FailedCount  int
+	DeferredCount int
 }
 
 // BlobRow is one bridged blob row in the blobs table.
@@ -681,7 +1297,8 @@ type BlobRow struct {
 
 // BlobsData is the template model for the blobs page.
 type BlobsData struct {
-	Blobs []BlobRow
+	Chrome PageChrome
+	Blobs  []BlobRow
 }
 
 // StateRow is one key/value entry from bridge state.
@@ -693,10 +1310,15 @@ type StateRow struct {
 
 // StateData is the template model for the state page.
 type StateData struct {
-	State             []StateRow
-	DeferredCount     int
-	DeletedCount      int
+	Chrome           PageChrome
+	RuntimeState     []StateRow
+	FirehoseState    []StateRow
+	OtherState       []StateRow
+	DeferredCount    int
+	DeletedCount     int
 	LatestDeferReason string
+	HeartbeatStale   bool
+	HeartbeatAge     string
 }
 
 // RenderDashboard renders the dashboard page.
@@ -751,6 +1373,44 @@ func mustPageTemplate(name, content string) *template.Template {
 				return ""
 			}
 			return t.Format(time.RFC3339)
+		},
+		"navClass": func(activeNav, tab string) string {
+			if activeNav == tab {
+				return "nav-link is-active"
+			}
+			return "nav-link"
+		},
+		"navCurrent": func(activeNav, tab string) template.HTMLAttr {
+			if activeNav == tab {
+				return template.HTMLAttr(`aria-current="page"`)
+			}
+			return template.HTMLAttr("")
+		},
+		"statusToneClass": func(tone string) string {
+			switch tone {
+			case "success":
+				return "tone-success"
+			case "warning":
+				return "tone-warning"
+			case "danger":
+				return "tone-danger"
+			default:
+				return "tone-neutral"
+			}
+		},
+		"stateClass": func(state string) string {
+			switch state {
+			case "published":
+				return "state-published"
+			case "failed":
+				return "state-failed"
+			case "deferred":
+				return "state-deferred"
+			case "deleted":
+				return "state-deleted"
+			default:
+				return "state-pending"
+			}
 		},
 	}).Parse(pageLayout + content))
 }

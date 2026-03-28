@@ -174,8 +174,9 @@ func TestMessagesPageFiltersAndSortsResults(t *testing.T) {
 
 	body := fetchUI(t, database, "/messages?q=did:plc:alice&type=app.bsky.feed.post&state=deferred&sort=attempts_desc&limit=50")
 	for _, expected := range []string{
-		"Browse Message Stream",
+		"Filter and paginate bridged records",
 		"Page Size",
+		"value=\"did:plc:alice\"",
 		"value=\"50\" selected",
 		"value=\"app.bsky.feed.post\" selected",
 		"value=\"deferred\" selected",
@@ -220,8 +221,11 @@ func TestMessagesPageSummarizesLongDeferredIssues(t *testing.T) {
 	if !strings.Contains(body, "Waiting on reply target bridge") {
 		t.Fatalf("messages page should summarize long deferred reply issues: %s", body)
 	}
-	if strings.Contains(body, "_atproto_reply_root=at://did:plc:bob/app.bsky.feed.post/root;_atproto_reply_parent=") {
-		t.Fatalf("messages page should not show the full raw deferred reason inline: %s", body)
+	if !strings.Contains(body, "Show full issue") {
+		t.Fatalf("messages page should provide expand/collapse issue details: %s", body)
+	}
+	if !strings.Contains(body, "_atproto_reply_root=at://did:plc:bob/app.bsky.feed.post/root;_atproto_reply_parent=") {
+		t.Fatalf("messages page should keep full deferred reason available in expanded details: %s", body)
 	}
 }
 
