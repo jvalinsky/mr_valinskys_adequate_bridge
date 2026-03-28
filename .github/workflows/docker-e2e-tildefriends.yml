@@ -59,6 +59,29 @@ jobs:
             exit 1
           fi
 
+      - name: Assert bridge tunnel and runtime markers (positive only)
+        if: matrix.scenario == 'positive'
+        run: |
+          set -euo pipefail
+          log_file="/tmp/e2e-tf-logs/${{ matrix.scenario }}-bridge.log"
+          if [[ ! -f "${log_file}" ]]; then
+            echo "bridge log not found at ${log_file}"
+            exit 1
+          fi
+          missing=""
+          for marker in "event=room_dial_success" "event=room_tunnel_announce_success" "event=firehose_disabled"; do
+            if ! grep -q "${marker}" "${log_file}"; then
+              missing="${missing} ${marker}"
+            fi
+          done
+          if [[ -n "${missing}" ]]; then
+            echo "missing expected bridge log markers:${missing}"
+            echo "--- bridge log tail ---"
+            tail -50 "${log_file}"
+            exit 1
+          fi
+          echo "all expected bridge markers found"
+
       - name: Capture compose logs on failure
         if: failure()
         run: |

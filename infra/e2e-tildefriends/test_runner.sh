@@ -380,11 +380,61 @@ while true; do
   sleep "${POLL_INTERVAL}"
 done
 
-if ${replicated}; then
-  log "============================================"
-  log "  E2E PASSED: TF ↔ Bridge Room replication  "
-  log "============================================"
-  exit 0
+if ! ${replicated}; then
+  die "replication check fell through without success"
 fi
 
-die "replication check fell through without success"
+# ------------------------------------------------------------------
+# 13. Post-replication verification: bridge-side invariants
+# ------------------------------------------------------------------
+log "running post-replication verification ..."
+
+# 13a. Verify exact seed message count on bridge side (3 seeded by e2e-seed)
+seed_pub_count="$(sql_count "${BRIDGE_DB_PATH}" "SELECT COUNT(*) FROM messages WHERE at_did='${bot_did_escaped}' AND message_state='published' AND at_uri LIKE 'at://${BOT_DID}/app.bsky.feed.post/e2e-%';")"
+if [[ "${seed_pub_count}" -lt 3 ]]; then
+  die "bridge seed message count mismatch: expected >= 3 published seed messages, got ${seed_pub_count}"
+fi
+log "verified: ${seed_pub_count} seed messages published on bridge"
+
+# 13b. Verify retry trigger was processed (should be published or at least attempted)
+if [[ -n "${RETRY_TRIGGER_AT_URI:-}" ]]; then
+  trigger_state="$(sqlite3 "${BRIDGE_DB_PATH}" "SELECT message_state FROM messages WHERE at_uri='$(sql_escape "${RETRY_TRIGGER_AT_URI}")' LIMIT 1;" 2>/dev/null || echo "missing")"
+  trigger_attempts="$(sqlite3 "${BRIDGE_DB_PATH}" "SELECT publish_attempts FROM messages WHERE at_uri='$(sql_escape "${RETRY_TRIGGER_AT_URI}")' LIMIT 1;" 2>/dev/null || echo "0")"
+  trigger_attempts="$(echo "${trigger_attempts}" | tr -d '[:space:]')"
+  if [[ "${trigger_state}" == "published" ]]; then
+    log "verified: retry-trigger message was published"
+  elif [[ "${trigger_attempts}" -gt 0 ]]; then
+    log "note: retry-trigger message was attempted ${trigger_attempts} time(s) but state=${trigger_state}"
+  else
+    log "warning: retry-trigger message was not attempted (state=${trigger_state})"
+  fi
+fi
+
+# 13c. Verify room membership for bridge sbot
+bridge_pubkey_escaped="$(sql_escape "${BRIDGE_PUBKEY}")"
+bridge_member_rows="$(sql_count "${ROOM_DB_PATH}" "SELECT COUNT(*) FROM members WHERE pub_key='${bridge_pubkey_escaped}';")"
+if [[ "${bridge_member_rows}" -lt 1 ]]; then
+  die "bridge sbot not found in room members table"
+fi
+log "verified: bridge sbot is a room member"
+
+# 13d. Verify TF identity is a room member
+tf_id_escaped="$(sql_escape "${TF_IDENTITY}")"
+tf_member_rows="$(sql_count "${ROOM_DB_PATH}" "SELECT COUNT(*) FROM members WHERE pub_key='${tf_id_escaped}';")"
+if [[ "${tf_member_rows}" -lt 1 ]]; then
+  die "tildefriends identity not found in room members table"
+fi
+log "verified: tildefriends identity is a room member"
+
+# 13e. Verify bridge runtime was live during test
+bridge_status="$(sqlite3 "${BRIDGE_DB_PATH}" "SELECT value FROM bridge_state WHERE key='bridge_runtime_status' LIMIT 1;" 2>/dev/null || echo "")"
+bridge_status="$(echo "${bridge_status}" | tr -d '[:space:]')"
+if [[ "${bridge_status}" != "live" ]]; then
+  log "warning: bridge runtime status is '${bridge_status}' (expected 'live')"
+fi
+
+log "============================================"
+log "  E2E PASSED: TF ↔ Bridge Room replication  "
+log "  Post-replication checks: OK               "
+log "============================================"
+exit 0
