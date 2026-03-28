@@ -11,7 +11,8 @@ RUN go mod download
 
 COPY . .
 RUN CGO_ENABLED=1 go build -o /bridge-cli ./cmd/bridge-cli && \
-    CGO_ENABLED=1 go build -o /e2e-seed ./cmd/e2e-seed
+    CGO_ENABLED=1 go build -o /e2e-seed ./cmd/e2e-seed && \
+    CGO_ENABLED=1 go build -o /atproto-seed ./cmd/atproto-seed
 
 FROM debian:bookworm-slim
 
@@ -25,6 +26,7 @@ RUN apt-get update && \
 
 COPY --from=build /bridge-cli /usr/local/bin/bridge-cli
 COPY --from=build /e2e-seed /usr/local/bin/e2e-seed
+COPY --from=build /atproto-seed /usr/local/bin/atproto-seed
 
 WORKDIR /data
 EXPOSE 8989 8976

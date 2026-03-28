@@ -1,0 +1,16 @@
+reference
+!reference/go-ssb-room
+.git
+node_modules
+tmp
+bin
+out
+*.sqlite
+*.db
+*.log
+VARS
+mvab-local-atproto-live.env
+knowledge
+.gemini
+.idea
+.vscode

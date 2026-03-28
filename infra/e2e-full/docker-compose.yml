@@ -1,0 +1,168 @@
+services:
+  # ── ATProto Stack ────────────────────────────────────────────────
+  plc:
+    image: node:20-alpine
+    command: ["node", "/app/plc/server.mjs"]
+    environment:
+      PLC_PORT: "2582"
+      PLC_DATA_FILE: /data/state.json
+    volumes:
+      - ../local-atproto/plc:/app/plc:ro
+      - plc-data:/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:2582/_health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  relay_pg:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: relay
+      POSTGRES_PASSWORD: relay
+      POSTGRES_DB: relay
+    volumes:
+      - relay-pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U relay"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  relay:
+    image: blebbit/relay:latest
+    depends_on:
+      relay_pg:
+        condition: service_healthy
+      plc:
+        condition: service_healthy
+    environment:
+      RELAY_ADMIN_PASSWORD: local-dev-relay-admin
+      RELAY_PLC_HOST: http://plc:2582
+      DATABASE_URL: postgres://relay:relay@relay_pg:5432/relay?sslmode=disable
+      RELAY_PERSIST_DIR: /data
+      RELAY_INITIAL_SEQ_NUMBER: "1"
+      RELAY_TRUSTED_DOMAINS: ""
+      RELAY_ALLOW_INSECURE_HOSTS: "true"
+    volumes:
+      - relay-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:2470/ || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  pds:
+    image: ghcr.io/bluesky-social/pds:0.4
+    depends_on:
+      plc:
+        condition: service_healthy
+      relay:
+        condition: service_healthy
+    environment:
+      PDS_PORT: "80"
+      PDS_HOSTNAME: pds.test
+      PDS_SERVICE_HANDLE_DOMAINS: .test
+      PDS_DEV_MODE: "true"
+      PDS_RATE_LIMITS_ENABLED: "false"
+      PDS_INVITE_REQUIRED: "false"
+      PDS_CRAWLERS: http://relay:2470
+      PDS_ENABLE_DID_DOC_WITH_SESSION: "true"
+      PDS_DID_PLC_URL: http://plc:2582
+      PDS_JWT_SECRET: local-dev-jwt-secret-change-me
+      PDS_ADMIN_PASSWORD: local-dev-admin-password
+      PDS_PLC_ROTATION_KEY_K256_PRIVATE_KEY_HEX: "1111111111111111111111111111111111111111111111111111111111111111"
+      PDS_DATA_DIRECTORY: /pds
+      PDS_BLOBSTORE_DISK_LOCATION: /pds/blocks
+    networks:
+      default:
+        aliases:
+          - pds.test
+    volumes:
+      - pds-data:/pds
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:80/xrpc/_health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 3s
+      timeout: 3s
+      retries: 60
+
+  # ── Bridge ───────────────────────────────────────────────────────
+  bridge:
+    build:
+      context: ../..
+      dockerfile: infra/e2e-tildefriends/Dockerfile.bridge
+    entrypoint: ["/bin/bash", "/scripts/bridge_entrypoint.sh"]
+    environment:
+      DB_PATH: /data/bridge.sqlite
+      REPO_PATH: /data/ssb-repo
+      BOT_SEED: e2e-full-seed
+      ROOM_MUXRPC_ADDR: "0.0.0.0:8989"
+      ROOM_HTTP_ADDR: "0.0.0.0:8976"
+      ROOM_MODE: open
+      ROOM_HTTPS_DOMAIN: bridge
+      BRIDGE_FIREHOSE_ENABLE: "1"
+      BRIDGE_RELAY_URL: "ws://relay:2470/xrpc/com.atproto.sync.subscribeRepos"
+    volumes:
+      - bridge-data:/data
+      - ./bridge_entrypoint.sh:/scripts/bridge_entrypoint.sh:ro
+    depends_on:
+      relay:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8976/healthz"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  # ── Seeder ───────────────────────────────────────────────────────
+  seeder:
+    build:
+      context: ../..
+      dockerfile: infra/e2e-tildefriends/Dockerfile.bridge
+    entrypoint: ["/bin/bash", "-c", "atproto-seed --db /data/bridge.sqlite --bot-seed e2e-full-seed && tail -f /dev/null"]
+    environment:
+      # Map localhost to pds.test for the seeder
+      # Actually, since handle is 'seed.test', PDS will resolve it.
+      PDS_HOST: "http://pds:80"
+      TARGET_DID: "did:plc:bridge-bot" # Optional
+    volumes:
+      - bridge-data:/data
+    depends_on:
+      pds:
+        condition: service_healthy
+
+  # ── Test Runner (Tildefriends) ──────────────────────────────────
+  test-runner:
+    build:
+      context: ../../reference/tildefriends
+      dockerfile: ../../infra/e2e-tildefriends/Dockerfile.tildefriends
+    entrypoint: ["/bin/bash", "/scripts/test_runner.sh"]
+    ports:
+      - "12345:12345"
+    environment:
+      BRIDGE_HTTP_ADDR: bridge:8976
+      BRIDGE_MUXRPC_ADDR: bridge:8989
+      BRIDGE_DB_PATH: /bridge-data/bridge.sqlite
+      BRIDGE_REPO_PATH: /bridge-data/ssb-repo
+      TF_DB_PATH: /tf-data/db.sqlite
+      TF_BIN: /app/out/release/tildefriends
+      BOT_SEED: e2e-full-seed
+      MAX_WAIT_SECS: 180
+      POLL_INTERVAL: 5
+    volumes:
+      - bridge-data:/bridge-data
+      - tf-data:/tf-data
+      - ./test_runner.sh:/scripts/test_runner.sh:ro
+    depends_on:
+      bridge:
+        condition: service_healthy
+      seeder:
+        condition: service_started
+
+volumes:
+  plc-data:
+  relay-pg-data:
+  relay-data:
+  pds-data:
+  bridge-data:
+  tf-data:
