@@ -365,7 +365,8 @@ func main() {
 					}
 
 					blobBridge := blobbridge.NewWithResolver(database, ssbRuntime.BlobStore(), blobHostResolver, nil, bridgeLogger)
-					recordFetcher := bridge.NewXRPCRecordFetcher(xrpcClient)
+					pdsResolver := backfill.DIDPDSResolver{PLCURL: "https://plc.directory"}
+					recordFetcher := bridge.NewPDSAwareRecordFetcher(pdsResolver, xrpcClient)
 					var processor *bridge.Processor
 					dependencyResolver := bridge.NewATProtoDependencyResolver(
 						database,
@@ -606,7 +607,8 @@ func main() {
 					}
 
 					blobBridge := blobbridge.NewWithResolver(database, ssbRuntime.BlobStore(), blobHostResolver, nil, bridgeLogger)
-					recordFetcher := bridge.NewXRPCRecordFetcher(liveReadClient)
+					retryPDSResolver := backfill.DIDPDSResolver{PLCURL: "https://plc.directory"}
+					recordFetcher := bridge.NewPDSAwareRecordFetcher(retryPDSResolver, liveReadClient)
 					var processor *bridge.Processor
 					dependencyResolver := bridge.NewATProtoDependencyResolver(
 						database,
@@ -841,6 +843,7 @@ func main() {
 					uiLogger := log.New(os.Stdout, "ui: ", log.LstdFlags)
 					r := chi.NewRouter()
 					r.Use(websecurity.RequestLogMiddleware(uiLogger))
+					r.Use(websecurity.SecurityHeadersMiddleware(true))
 					if authConfigured {
 						r.Use(websecurity.BasicAuthMiddleware(authUser, authPass))
 					}
@@ -1227,7 +1230,7 @@ func runDeferredResolverScheduler(ctx context.Context, processor *bridge.Process
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			result, err := processor.ResolveDeferredMessages(ctx, 100)
+			result, err := processor.ResolveDeferredMessages(ctx, 500)
 			if err != nil {
 				logger.Printf("event=deferred_scheduler_error err=%v", err)
 				continue
