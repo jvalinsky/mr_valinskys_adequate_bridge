@@ -16,19 +16,60 @@ services:
       timeout: 2s
       retries: 30
 
+  relay_pg:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: relay
+      POSTGRES_PASSWORD: relay
+      POSTGRES_DB: relay
+    volumes:
+      - relay_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U relay"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  relay:
+    image: blebbit/relay:latest
+    depends_on:
+      relay_pg:
+        condition: service_healthy
+      plc:
+        condition: service_healthy
+    environment:
+      RELAY_ADMIN_PASSWORD: local-dev-relay-admin
+      RELAY_PLC_HOST: http://plc:2582
+      DATABASE_URL: postgres://relay:relay@relay_pg:5432/relay?sslmode=disable
+      RELAY_PERSIST_DIR: /data
+      RELAY_INITIAL_SEQ_NUMBER: "1"
+      RELAY_TRUSTED_DOMAINS: ""
+      RELAY_ALLOW_INSECURE_HOSTS: "true"
+    ports:
+      - "2584:2470"
+    volumes:
+      - relay_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:2470/ || exit 1"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
   pds:
     image: ghcr.io/bluesky-social/pds:0.4
     depends_on:
       plc:
         condition: service_healthy
+      relay:
+        condition: service_healthy
     environment:
-      PDS_PORT: "2583"
-      PDS_HOSTNAME: localhost
+      PDS_PORT: "80"
+      PDS_HOSTNAME: pds.test
       PDS_SERVICE_HANDLE_DOMAINS: .test
       PDS_DEV_MODE: "true"
       PDS_RATE_LIMITS_ENABLED: "false"
       PDS_INVITE_REQUIRED: "false"
-      PDS_CRAWLERS: ""
+      PDS_CRAWLERS: http://relay:2470
       PDS_ENABLE_DID_DOC_WITH_SESSION: "true"
       PDS_DID_PLC_URL: http://plc:2582
       PDS_JWT_SECRET: local-dev-jwt-secret-change-me
@@ -36,12 +77,20 @@ services:
       PDS_PLC_ROTATION_KEY_K256_PRIVATE_KEY_HEX: "1111111111111111111111111111111111111111111111111111111111111111"
       PDS_DATA_DIRECTORY: /pds
       PDS_BLOBSTORE_DISK_LOCATION: /pds/blocks
+    networks:
+      default:
+        aliases:
+          - pds.test
     ports:
-      - "2583:2583"
+      - "2583:80"
     volumes:
       - ${LOCAL_ATPROTO_DATA_DIR:-/tmp/mvab-local-atproto}/pds:/pds
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:2583/xrpc/_health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:80/xrpc/_health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 2s
       timeout: 2s
       retries: 60
+
+volumes:
+  relay_pg_data:
+  relay_data:

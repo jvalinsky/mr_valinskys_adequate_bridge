@@ -24,7 +24,7 @@ loadState()
 const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url || '/', `http://${req.headers.host || `127.0.0.1:${port}`}`)
-    const pathname = url.pathname
+    const pathname = decodeURIComponent(url.pathname)
 
     if (pathname === '/_health') {
       return sendJSON(res, 200, {
@@ -67,7 +67,7 @@ const server = createServer(async (req, res) => {
       return sendJSON(res, 404, { error: 'Not Found' })
     }
 
-    if (req.method === 'POST' && pathname === `/${encodeURIComponent(did)}`) {
+    if (req.method === 'POST' && pathname === `/${did}`) {
       const body = await readJSONBody(req)
       if (!body || typeof body !== 'object') {
         return sendJSON(res, 400, { error: 'Invalid JSON body' })
@@ -89,19 +89,19 @@ const server = createServer(async (req, res) => {
       return sendJSON(res, 404, { error: 'DID tombstoned' })
     }
 
-    if (req.method === 'GET' && pathname === `/${encodeURIComponent(did)}`) {
+    if (req.method === 'GET' && pathname === `/${did}`) {
       return sendJSON(res, 200, entry.doc)
     }
 
-    if (req.method === 'GET' && pathname === `/${encodeURIComponent(did)}/data`) {
+    if (req.method === 'GET' && pathname === `/${did}/data`) {
       return sendJSON(res, 200, entry.data)
     }
 
-    if (req.method === 'GET' && pathname === `/${encodeURIComponent(did)}/log`) {
+    if (req.method === 'GET' && pathname === `/${did}/log`) {
       return sendJSON(res, 200, entry.log)
     }
 
-    if (req.method === 'GET' && pathname === `/${encodeURIComponent(did)}/log/last`) {
+    if (req.method === 'GET' && pathname === `/${did}/log/last`) {
       const last = entry.log[entry.log.length - 1] || null
       if (!last) {
         return sendJSON(res, 404, { error: 'No operations for DID' })
