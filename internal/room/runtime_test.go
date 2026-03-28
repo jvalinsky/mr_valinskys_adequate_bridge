@@ -242,18 +242,22 @@ func TestRuntimeCloseIsIdempotent(t *testing.T) {
 	wg.Wait()
 }
 
-func startTestRuntime(t *testing.T, mode string, bridgeAccounts ActiveBridgeAccountLister) *Runtime {
+func startTestRuntime(t *testing.T, mode string, bridgeAccounts interface {
+	ActiveBridgeAccountLister
+	ActiveBridgeAccountDetailer
+}) *Runtime {
 	t.Helper()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
 	rt, err := Start(ctx, Config{
-		ListenAddr:     "127.0.0.1:0",
-		HTTPListenAddr: "127.0.0.1:0",
-		RepoPath:       t.TempDir(),
-		Mode:           mode,
-		BridgeAccounts: bridgeAccounts,
+		ListenAddr:            "127.0.0.1:0",
+		HTTPListenAddr:        "127.0.0.1:0",
+		RepoPath:              t.TempDir(),
+		Mode:                  mode,
+		BridgeAccountLister:   bridgeAccounts,
+		BridgeAccountDetailer: bridgeAccounts,
 	}, log.New(io.Discard, "", 0))
 	if err != nil {
 		if strings.Contains(err.Error(), "operation not permitted") {

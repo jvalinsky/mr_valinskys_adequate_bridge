@@ -19,18 +19,22 @@ import (
 	roomweb "github.com/ssbc/go-ssb-room/v2/web"
 )
 
-// ActiveBridgeAccountLister exposes the active bridged-account directory needed by the public room UI.
+// ActiveBridgeAccountLister exposes listing capabilities needed by the public room UI.
 type ActiveBridgeAccountLister interface {
-	ListActiveBridgedAccounts(ctx context.Context) ([]db.BridgedAccount, error)
 	ListActiveBridgedAccountsWithStats(ctx context.Context) ([]db.BridgedAccountStats, error)
+}
+
+// ActiveBridgeAccountDetailer exposes bot-detail capabilities needed by the public room UI.
+type ActiveBridgeAccountDetailer interface {
 	GetActiveBridgedAccountWithStats(ctx context.Context, atDID string) (*db.BridgedAccountStats, error)
 	ListRecentPublishedMessagesByDID(ctx context.Context, atDID string, limit int) ([]db.Message, error)
 }
 
 type bridgeRoomHandler struct {
-	stock      http.Handler
-	roomConfig roomdb.RoomConfig
-	bridgeBots ActiveBridgeAccountLister
+	stock             http.Handler
+	roomConfig        roomdb.RoomConfig
+	bridgeBotLister   ActiveBridgeAccountLister
+	bridgeBotDetailer ActiveBridgeAccountDetailer
 }
 
 type roomModeStatus struct {
@@ -111,14 +115,15 @@ var landingTemplate = template.Must(template.New("room-landing").Funcs(templateF
 var botsTemplate = template.Must(template.New("room-bots").Funcs(templateFuncs).Parse(publicLayoutTemplate + botsContentTemplate))
 var botDetailTemplate = template.Must(template.New("room-bot-detail").Funcs(templateFuncs).Parse(publicLayoutTemplate + botDetailContentTemplate))
 
-func newBridgeRoomHandler(stock http.Handler, roomConfig roomdb.RoomConfig, bridgeBots ActiveBridgeAccountLister) http.Handler {
+func newBridgeRoomHandler(stock http.Handler, roomConfig roomdb.RoomConfig, bridgeBotLister ActiveBridgeAccountLister, bridgeBotDetailer ActiveBridgeAccountDetailer) http.Handler {
 	if stock == nil {
 		stock = http.NotFoundHandler()
 	}
 	inner := bridgeRoomHandler{
-		stock:      stock,
-		roomConfig: roomConfig,
-		bridgeBots: bridgeBots,
+		stock:             stock,
+		roomConfig:        roomConfig,
+		bridgeBotLister:   bridgeBotLister,
+		bridgeBotDetailer: bridgeBotDetailer,
 	}
 	return websecurity.SecurityHeadersMiddleware(false)(inner)
 }
@@ -249,12 +254,12 @@ func (h bridgeRoomHandler) handleBotDetail(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if h.bridgeBots == nil {
+	if h.bridgeBotDetailer == nil {
 		http.NotFound(w, r)
 		return
 	}
 
-	acc, err := h.bridgeBots.GetActiveBridgedAccountWithStats(r.Context(), did)
+	acc, err := h.bridgeBotDetailer.GetActiveBridgedAccountWithStats(r.Context(), did)
 	if err != nil {
 		http.Error(w, "Failed to load bot details", http.StatusInternalServerError)
 		return
@@ -265,7 +270,7 @@ func (h bridgeRoomHandler) handleBotDetail(w http.ResponseWriter, r *http.Reques
 	}
 
 	bot := toBotCardData(*acc, r.UserAgent())
-	published, err := h.bridgeBots.ListRecentPublishedMessagesByDID(r.Context(), did, 12)
+	published, err := h.bridgeBotDetailer.ListRecentPublishedMessagesByDID(r.Context(), did, 12)
 	if err != nil {
 		http.Error(w, "Failed to load bot messages", http.StatusInternalServerError)
 		return
@@ -340,11 +345,11 @@ func (h bridgeRoomHandler) modeStatus(ctx context.Context) roomModeStatus {
 }
 
 func (h bridgeRoomHandler) listActiveBotsWithStats(ctx context.Context, userAgent string) ([]botCardData, error) {
-	if h.bridgeBots == nil {
+	if h.bridgeBotLister == nil {
 		return nil, nil
 	}
 
-	accounts, err := h.bridgeBots.ListActiveBridgedAccountsWithStats(ctx)
+	accounts, err := h.bridgeBotLister.ListActiveBridgedAccountsWithStats(ctx)
 	if err != nil {
 		return nil, err
 	}

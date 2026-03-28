@@ -410,12 +410,13 @@ func main() {
 					var roomRuntime *room.Runtime
 					if c.Bool("room-enable") {
 						roomRuntime, err = room.Start(runCtx, room.Config{
-							ListenAddr:     c.String("room-listen-addr"),
-							HTTPListenAddr: c.String("room-http-listen-addr"),
-							RepoPath:       filepath.Join(repoPath, "room"),
-							Mode:           c.String("room-mode"),
-							HTTPSDomain:    c.String("room-https-domain"),
-							BridgeAccounts: database,
+							ListenAddr:            c.String("room-listen-addr"),
+							HTTPListenAddr:        c.String("room-http-listen-addr"),
+							RepoPath:              filepath.Join(repoPath, "room"),
+							Mode:                  c.String("room-mode"),
+							HTTPSDomain:           c.String("room-https-domain"),
+							BridgeAccountLister:   database,
+							BridgeAccountDetailer: database,
 						}, roomLogger)
 						if err != nil {
 							_ = ssbRuntime.Close()
@@ -848,7 +849,7 @@ func main() {
 						r.Use(websecurity.BasicAuthMiddleware(authUser, authPass))
 					}
 
-					ui := handlers.NewUIHandler(database)
+					ui := handlers.NewUIHandler(database, uiLogger)
 					ui.Mount(r)
 
 					server := &http.Server{

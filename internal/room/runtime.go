@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
@@ -13,10 +12,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mr_valinskys_adequate_bridge/internal/logutil"
+	refs "github.com/ssbc/go-ssb-refs"
 	roomadapter "github.com/ssbc/go-ssb-room/v2/bridgeadapter"
 	"github.com/ssbc/go-ssb-room/v2/roomdb"
 	kitlog "go.mindeco.de/log"
-	refs "github.com/ssbc/go-ssb-refs"
 )
 
 const (
@@ -28,12 +28,13 @@ const (
 
 // Config controls embedded go-ssb-room runtime setup.
 type Config struct {
-	ListenAddr     string
-	HTTPListenAddr string
-	RepoPath       string
-	Mode           string
-	HTTPSDomain    string
-	BridgeAccounts ActiveBridgeAccountLister
+	ListenAddr            string
+	HTTPListenAddr        string
+	RepoPath              string
+	Mode                  string
+	HTTPSDomain           string
+	BridgeAccountLister   ActiveBridgeAccountLister
+	BridgeAccountDetailer ActiveBridgeAccountDetailer
 }
 
 // Runtime wraps the lifecycle of the embedded room adapter and HTTP server.
@@ -56,9 +57,7 @@ type Runtime struct {
 
 // Start boots the embedded room runtime and returns a managed Runtime.
 func Start(parentCtx context.Context, cfg Config, logger *log.Logger) (*Runtime, error) {
-	if logger == nil {
-		logger = log.New(io.Discard, "", 0)
-	}
+	logger = logutil.Ensure(logger)
 
 	cfg = cfg.withDefaults()
 	if err := cfg.validate(); err != nil {
@@ -97,7 +96,7 @@ func Start(parentCtx context.Context, cfg Config, logger *log.Logger) (*Runtime,
 	}
 
 	httpServer := &http.Server{
-		Handler:           adapter.Server.Network.WebsockHandler(newBridgeRoomHandler(stockHandler, adapter.RoomConfig(), cfg.BridgeAccounts)),
+		Handler:           adapter.Server.Network.WebsockHandler(newBridgeRoomHandler(stockHandler, adapter.RoomConfig(), cfg.BridgeAccountLister, cfg.BridgeAccountDetailer)),
 		ReadHeaderTimeout: 15 * time.Second,
 		WriteTimeout:      3 * time.Minute,
 		IdleTimeout:       3 * time.Minute,

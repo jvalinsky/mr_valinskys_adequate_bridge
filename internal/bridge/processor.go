@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"strings"
 	"sync"
@@ -16,6 +15,7 @@ import (
 	indigorepo "github.com/bluesky-social/indigo/repo"
 	"github.com/mr_valinskys_adequate_bridge/internal/db"
 	"github.com/mr_valinskys_adequate_bridge/internal/firehose"
+	"github.com/mr_valinskys_adequate_bridge/internal/logutil"
 	"github.com/mr_valinskys_adequate_bridge/internal/mapper"
 )
 
@@ -115,9 +115,7 @@ func WithFeedResolver(resolver FeedResolver) Option {
 
 // NewProcessor constructs a Processor with optional publisher/blob integrations.
 func NewProcessor(database *db.DB, logger *log.Logger, opts ...Option) *Processor {
-	if logger == nil {
-		logger = log.New(io.Discard, "", 0)
-	}
+	logger = logutil.Ensure(logger)
 	proc := &Processor{
 		db:           database,
 		logger:       logger,
@@ -398,7 +396,9 @@ func (p *Processor) mapMappedRecord(ctx context.Context, atDID, collection strin
 	}
 
 	p.resolveMappedRefs(ctx, mapped)
-	p.hydrateRecordDependencies(ctx, mapped)
+	if err := p.hydrateRecordDependencies(ctx, mapped); err != nil {
+		return nil, fmt.Errorf("hydrate dependencies: %w", err)
+	}
 	p.resolveMappedRefs(ctx, mapped)
 	return mapped, nil
 }
@@ -758,9 +758,12 @@ func cborToJSON(rawCBOR []byte) ([]byte, error) {
 	return json.Marshal(decoded)
 }
 
-func (p *Processor) hydrateRecordDependencies(ctx context.Context, mapped map[string]interface{}) {
-	if p == nil || p.dependencyResolver == nil {
-		return
+func (p *Processor) hydrateRecordDependencies(ctx context.Context, mapped map[string]interface{}) error {
+	if p == nil {
+		return fmt.Errorf("processor is nil")
+	}
+	if p.dependencyResolver == nil {
+		return nil
 	}
 
 	for _, dep := range unresolvedDependencies(mapped) {
@@ -769,6 +772,7 @@ func (p *Processor) hydrateRecordDependencies(ctx context.Context, mapped map[st
 			_ = p.dependencyResolver.EnsureRecord(withDependencyReason(ctx, dep.Key), dep.Value)
 		}
 	}
+	return nil
 }
 
 func (p *Processor) resolveMessageReference(ctx context.Context, uri string) string {

@@ -186,7 +186,7 @@ func TestBridgeSmoke(t *testing.T) {
 
 	router := chi.NewRouter()
 	router.Use(websecurity.BasicAuthMiddleware("admin", "smoke-pass"))
-	ui := handlers.NewUIHandler(database)
+	ui := handlers.NewUIHandler(database, log.New(io.Discard, "", 0))
 	ui.Mount(router)
 
 	fetch := func(path string) string {
@@ -252,11 +252,12 @@ func TestRoomHTTPSmoke(t *testing.T) {
 	}
 
 	rt, err := room.Start(context.Background(), room.Config{
-		ListenAddr:     "127.0.0.1:0",
-		HTTPListenAddr: "127.0.0.1:0",
-		RepoPath:       filepath.Join(tmpDir, "room-repo"),
-		Mode:           "open",
-		BridgeAccounts: database,
+		ListenAddr:            "127.0.0.1:0",
+		HTTPListenAddr:        "127.0.0.1:0",
+		RepoPath:              filepath.Join(tmpDir, "room-repo"),
+		Mode:                  "open",
+		BridgeAccountLister:   database,
+		BridgeAccountDetailer: database,
 	}, log.New(io.Discard, "", 0))
 	if err != nil {
 		if strings.Contains(err.Error(), "operation not permitted") {

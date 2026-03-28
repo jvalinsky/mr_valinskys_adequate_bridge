@@ -283,7 +283,7 @@ func TestHealthzReturns200WhenLive(t *testing.T) {
 	}
 
 	router := chi.NewRouter()
-	NewUIHandler(database).Mount(router)
+	NewUIHandler(database, nil).Mount(router)
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
@@ -302,7 +302,7 @@ func TestHealthzReturns503WhenNotLive(t *testing.T) {
 
 	// No bridge state set — status is empty.
 	router := chi.NewRouter()
-	NewUIHandler(database).Mount(router)
+	NewUIHandler(database, nil).Mount(router)
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
@@ -326,7 +326,7 @@ func TestHealthzReturns503WhenHeartbeatStale(t *testing.T) {
 	}
 
 	router := chi.NewRouter()
-	NewUIHandler(database).Mount(router)
+	NewUIHandler(database, nil).Mount(router)
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
@@ -350,7 +350,7 @@ func fetchUI(t *testing.T, database *db.DB, path string) string {
 	t.Helper()
 
 	router := chi.NewRouter()
-	NewUIHandler(database).Mount(router)
+	NewUIHandler(database, nil).Mount(router)
 
 	req := httptest.NewRequest(http.MethodGet, path, nil)
 	rr := httptest.NewRecorder()

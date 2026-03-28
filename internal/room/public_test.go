@@ -19,7 +19,7 @@ import (
 
 func TestBridgeRoomHandlerLandingPageOpenMode(t *testing.T) {
 	roomConfig := newTestRoomConfig(roomdb.ModeOpen)
-	handler := newBridgeRoomHandler(http.NotFoundHandler(), roomConfig, nil)
+	handler := newBridgeRoomHandler(http.NotFoundHandler(), roomConfig, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "http://room.test/", nil)
 	recorder := httptest.NewRecorder()
@@ -48,7 +48,7 @@ func TestBridgeRoomHandlerLandingPageOpenMode(t *testing.T) {
 
 func TestBridgeRoomHandlerLandingPageNonOpenDisablesInvite(t *testing.T) {
 	roomConfig := newTestRoomConfig(roomdb.ModeCommunity)
-	handler := newBridgeRoomHandler(http.NotFoundHandler(), roomConfig, nil)
+	handler := newBridgeRoomHandler(http.NotFoundHandler(), roomConfig, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "http://room.test/", nil)
 	recorder := httptest.NewRecorder()
@@ -108,7 +108,7 @@ func TestBridgeRoomHandlerBotsPageListsActiveAccountsOnly(t *testing.T) {
 	}
 
 	roomConfig := newTestRoomConfig(roomdb.ModeOpen)
-	handler := newBridgeRoomHandler(http.NotFoundHandler(), roomConfig, database)
+	handler := newBridgeRoomHandler(http.NotFoundHandler(), roomConfig, database, database)
 
 	req := httptest.NewRequest(http.MethodGet, "http://room.test/bots", nil)
 	recorder := httptest.NewRecorder()
@@ -182,7 +182,7 @@ func TestBridgeRoomHandlerBotsPageSearchAndSort(t *testing.T) {
 		}
 	}
 
-	handler := newBridgeRoomHandler(http.NotFoundHandler(), newTestRoomConfig(roomdb.ModeOpen), database)
+	handler := newBridgeRoomHandler(http.NotFoundHandler(), newTestRoomConfig(roomdb.ModeOpen), database, database)
 
 	// Search should narrow to delta only.
 	searchReq := httptest.NewRequest(http.MethodGet, "http://room.test/bots?q=delta&sort=activity_desc", nil)
@@ -259,7 +259,7 @@ func TestBridgeRoomHandlerBotDetailPage(t *testing.T) {
 	}
 
 	roomConfig := newTestRoomConfig(roomdb.ModeOpen)
-	handler := newBridgeRoomHandler(http.NotFoundHandler(), roomConfig, database)
+	handler := newBridgeRoomHandler(http.NotFoundHandler(), roomConfig, database, database)
 
 	req := httptest.NewRequest(http.MethodGet, "http://room.test/bots/did:plc:detail-test-bot", nil)
 	recorder := httptest.NewRecorder()
@@ -309,7 +309,7 @@ func TestBridgeRoomHandlerBotDetailPage404ForUnknownDID(t *testing.T) {
 	defer database.Close()
 
 	roomConfig := newTestRoomConfig(roomdb.ModeOpen)
-	handler := newBridgeRoomHandler(http.NotFoundHandler(), roomConfig, database)
+	handler := newBridgeRoomHandler(http.NotFoundHandler(), roomConfig, database, database)
 
 	req := httptest.NewRequest(http.MethodGet, "http://room.test/bots/did:plc:nonexistent", nil)
 	recorder := httptest.NewRecorder()
@@ -336,7 +336,7 @@ func TestBridgeRoomHandlerBotDetailPage404ForInactiveDID(t *testing.T) {
 	}
 
 	roomConfig := newTestRoomConfig(roomdb.ModeOpen)
-	handler := newBridgeRoomHandler(http.NotFoundHandler(), roomConfig, database)
+	handler := newBridgeRoomHandler(http.NotFoundHandler(), roomConfig, database, database)
 
 	req := httptest.NewRequest(http.MethodGet, "http://room.test/bots/did:plc:inactive-detail-bot", nil)
 	recorder := httptest.NewRecorder()
@@ -354,7 +354,7 @@ func TestBridgeRoomHandlerCreateInviteJSONFailsOutsideOpenMode(t *testing.T) {
 		delegated = true
 		w.WriteHeader(http.StatusOK)
 	})
-	handler := newBridgeRoomHandler(stockHandler, roomConfig, nil)
+	handler := newBridgeRoomHandler(stockHandler, roomConfig, nil, nil)
 
 	req := httptest.NewRequest(http.MethodPost, "http://room.test/create-invite", nil)
 	req.Header.Set("Accept", "application/json")
@@ -389,7 +389,7 @@ func TestBridgeRoomHandlerDelegatesStockRoutes(t *testing.T) {
 		w.WriteHeader(http.StatusTeapot)
 		_, _ = io.WriteString(w, "stock auth handler")
 	})
-	handler := newBridgeRoomHandler(stockHandler, roomConfig, nil)
+	handler := newBridgeRoomHandler(stockHandler, roomConfig, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "http://room.test/login", nil)
 	recorder := httptest.NewRecorder()
@@ -420,7 +420,7 @@ func TestBridgeRoomHandlerBotDetailWithURLEncodedDID(t *testing.T) {
 	}
 
 	roomConfig := newTestRoomConfig(roomdb.ModeOpen)
-	handler := newBridgeRoomHandler(http.NotFoundHandler(), roomConfig, database)
+	handler := newBridgeRoomHandler(http.NotFoundHandler(), roomConfig, database, database)
 
 	// URL-encode the colon in did:plc:encoded-test
 	req := httptest.NewRequest(http.MethodGet, "http://room.test/bots/did%3Aplc%3Aencoded-test", nil)
@@ -437,7 +437,7 @@ func TestBridgeRoomHandlerBotDetailWithURLEncodedDID(t *testing.T) {
 
 func TestBridgeRoomHandlerCacheHeaders(t *testing.T) {
 	roomConfig := newTestRoomConfig(roomdb.ModeOpen)
-	handler := newBridgeRoomHandler(http.NotFoundHandler(), roomConfig, nil)
+	handler := newBridgeRoomHandler(http.NotFoundHandler(), roomConfig, nil, nil)
 
 	tests := []struct {
 		path      string
@@ -465,7 +465,7 @@ func TestBridgeRoomHandlerCacheHeaders(t *testing.T) {
 
 func TestBridgeRoomHandlerSecurityHeaders(t *testing.T) {
 	roomConfig := newTestRoomConfig(roomdb.ModeOpen)
-	handler := newBridgeRoomHandler(http.NotFoundHandler(), roomConfig, nil)
+	handler := newBridgeRoomHandler(http.NotFoundHandler(), roomConfig, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "http://room.test/", nil)
 	recorder := httptest.NewRecorder()
@@ -473,8 +473,8 @@ func TestBridgeRoomHandlerSecurityHeaders(t *testing.T) {
 
 	expected := map[string]string{
 		"X-Content-Type-Options":  "nosniff",
-		"X-Frame-Options":        "DENY",
-		"Referrer-Policy":        "strict-origin-when-cross-origin",
+		"X-Frame-Options":         "DENY",
+		"Referrer-Policy":         "strict-origin-when-cross-origin",
 		"Content-Security-Policy": "default-src 'self'; style-src 'unsafe-inline' 'self'; script-src 'unsafe-inline' 'self'",
 	}
 	for header, want := range expected {
@@ -486,7 +486,7 @@ func TestBridgeRoomHandlerSecurityHeaders(t *testing.T) {
 
 func TestBridgeRoomHandlerBotDetailRejectsInvalidDID(t *testing.T) {
 	roomConfig := newTestRoomConfig(roomdb.ModeOpen)
-	handler := newBridgeRoomHandler(http.NotFoundHandler(), roomConfig, nil)
+	handler := newBridgeRoomHandler(http.NotFoundHandler(), roomConfig, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "http://room.test/bots/not-a-valid-did", nil)
 	recorder := httptest.NewRecorder()

@@ -3,6 +3,7 @@ package handlers
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"sort"
@@ -12,18 +13,23 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/mr_valinskys_adequate_bridge/internal/db"
+	"github.com/mr_valinskys_adequate_bridge/internal/logutil"
 	"github.com/mr_valinskys_adequate_bridge/internal/presentation"
 	"github.com/mr_valinskys_adequate_bridge/internal/web/templates"
 )
 
 // UIHandler serves admin pages backed by bridge database state.
 type UIHandler struct {
-	db *db.DB
+	db     *db.DB
+	logger *log.Logger
 }
 
 // NewUIHandler creates a UIHandler bound to database.
-func NewUIHandler(database *db.DB) *UIHandler {
-	return &UIHandler{db: database}
+func NewUIHandler(database *db.DB, logger *log.Logger) *UIHandler {
+	return &UIHandler{
+		db:     database,
+		logger: logutil.Ensure(logger),
+	}
 }
 
 // Mount registers admin UI routes on r.
@@ -38,9 +44,15 @@ func (h *UIHandler) Mount(r chi.Router) {
 	r.Get("/state", h.handleState)
 }
 
+func (h *UIHandler) writeInternalError(w http.ResponseWriter, handler, message string, err error) {
+	h.logger.Printf("event=handler_error handler=%s error=%v", handler, err)
+	http.Error(w, message, http.StatusInternalServerError)
+}
+
 func (h *UIHandler) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	health, err := h.db.CheckBridgeHealth(r.Context(), 60*time.Second)
 	if err != nil {
+		h.logger.Printf("event=handler_error handler=healthz error=%v", err)
 		http.Error(w, "unhealthy", http.StatusServiceUnavailable)
 		return
 	}
@@ -56,55 +68,55 @@ func (h *UIHandler) handleHealthz(w http.ResponseWriter, r *http.Request) {
 func (h *UIHandler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	accountCount, err := h.db.CountBridgedAccounts(r.Context())
 	if err != nil {
-		http.Error(w, "Failed to get account count", http.StatusInternalServerError)
+		h.writeInternalError(w, "dashboard", "Failed to get account count", err)
 		return
 	}
 
 	messageCount, err := h.db.CountMessages(r.Context())
 	if err != nil {
-		http.Error(w, "Failed to get message count", http.StatusInternalServerError)
+		h.writeInternalError(w, "dashboard", "Failed to get message count", err)
 		return
 	}
 
 	publishedCount, err := h.db.CountPublishedMessages(r.Context())
 	if err != nil {
-		http.Error(w, "Failed to get published count", http.StatusInternalServerError)
+		h.writeInternalError(w, "dashboard", "Failed to get published count", err)
 		return
 	}
 
 	publishFailureCount, err := h.db.CountPublishFailures(r.Context())
 	if err != nil {
-		http.Error(w, "Failed to get failure count", http.StatusInternalServerError)
+		h.writeInternalError(w, "dashboard", "Failed to get failure count", err)
 		return
 	}
 
 	deferredCount, err := h.db.CountDeferredMessages(r.Context())
 	if err != nil {
-		http.Error(w, "Failed to get deferred count", http.StatusInternalServerError)
+		h.writeInternalError(w, "dashboard", "Failed to get deferred count", err)
 		return
 	}
 
 	deletedCount, err := h.db.CountDeletedMessages(r.Context())
 	if err != nil {
-		http.Error(w, "Failed to get deleted count", http.StatusInternalServerError)
+		h.writeInternalError(w, "dashboard", "Failed to get deleted count", err)
 		return
 	}
 
 	blobCount, err := h.db.CountBlobs(r.Context())
 	if err != nil {
-		http.Error(w, "Failed to get blob count", http.StatusInternalServerError)
+		h.writeInternalError(w, "dashboard", "Failed to get blob count", err)
 		return
 	}
 
 	cursorValue, _, err := h.db.GetBridgeState(r.Context(), "firehose_seq")
 	if err != nil {
-		http.Error(w, "Failed to get cursor state", http.StatusInternalServerError)
+		h.writeInternalError(w, "dashboard", "Failed to get cursor state", err)
 		return
 	}
 
 	bridgeStatus, ok, err := h.db.GetBridgeState(r.Context(), "bridge_runtime_status")
 	if err != nil {
-		http.Error(w, "Failed to get bridge status", http.StatusInternalServerError)
+		h.writeInternalError(w, "dashboard", "Failed to get bridge status", err)
 		return
 	}
 	if !ok || strings.TrimSpace(bridgeStatus) == "" {
@@ -113,7 +125,7 @@ func (h *UIHandler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 
 	lastHeartbeat, _, err := h.db.GetBridgeState(r.Context(), "bridge_runtime_last_heartbeat_at")
 	if err != nil {
-		http.Error(w, "Failed to get bridge heartbeat", http.StatusInternalServerError)
+		h.writeInternalError(w, "dashboard", "Failed to get bridge heartbeat", err)
 		return
 	}
 
@@ -121,7 +133,7 @@ func (h *UIHandler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 
 	reasonStats, err := h.db.ListTopDeferredReasons(r.Context(), 5)
 	if err != nil {
-		http.Error(w, "Failed to get deferred reason summary", http.StatusInternalServerError)
+		h.writeInternalError(w, "dashboard", "Failed to get deferred reason summary", err)
 		return
 	}
 	topReasons := make([]templates.DeferredReasonView, 0, len(reasonStats))
@@ -135,7 +147,7 @@ func (h *UIHandler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 
 	issueAccounts, err := h.db.ListTopIssueAccounts(r.Context(), 5)
 	if err != nil {
-		http.Error(w, "Failed to get account issue summary", http.StatusInternalServerError)
+		h.writeInternalError(w, "dashboard", "Failed to get account issue summary", err)
 		return
 	}
 	topAccounts := make([]templates.IssueAccountView, 0, len(issueAccounts))
@@ -184,14 +196,14 @@ func (h *UIHandler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/html")
 	if err := templates.RenderDashboard(w, data); err != nil {
-		http.Error(w, "Template error", http.StatusInternalServerError)
+		h.writeInternalError(w, "dashboard", "Template error", err)
 	}
 }
 
 func (h *UIHandler) handleAccounts(w http.ResponseWriter, r *http.Request) {
 	accounts, err := h.db.ListBridgedAccountsWithStats(r.Context())
 	if err != nil {
-		http.Error(w, "Failed to get accounts", http.StatusInternalServerError)
+		h.writeInternalError(w, "accounts", "Failed to get accounts", err)
 		return
 	}
 
@@ -216,7 +228,7 @@ func (h *UIHandler) handleAccounts(w http.ResponseWriter, r *http.Request) {
 		Chrome:   templates.PageChrome{ActiveNav: "accounts"},
 		Accounts: rows,
 	}); err != nil {
-		http.Error(w, "Template error", http.StatusInternalServerError)
+		h.writeInternalError(w, "accounts", "Template error", err)
 	}
 }
 
@@ -225,13 +237,13 @@ func (h *UIHandler) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 	page, err := h.db.ListMessagesPage(r.Context(), query)
 	if err != nil {
-		http.Error(w, "Failed to get messages", http.StatusInternalServerError)
+		h.writeInternalError(w, "messages", "Failed to get messages", err)
 		return
 	}
 
 	recordTypes, err := h.db.ListMessageTypes(r.Context())
 	if err != nil {
-		http.Error(w, "Failed to get message types", http.StatusInternalServerError)
+		h.writeInternalError(w, "messages", "Failed to get message types", err)
 		return
 	}
 
@@ -295,7 +307,7 @@ func (h *UIHandler) handleMessages(w http.ResponseWriter, r *http.Request) {
 		Pagination:            pagination,
 		UnsupportedKeysetSort: unsupportedKeysetSort,
 	}); err != nil {
-		http.Error(w, "Template error", http.StatusInternalServerError)
+		h.writeInternalError(w, "messages", "Template error", err)
 	}
 }
 
@@ -308,7 +320,7 @@ func (h *UIHandler) handleMessageDetail(w http.ResponseWriter, r *http.Request) 
 
 	message, err := h.db.GetMessage(r.Context(), atURI)
 	if err != nil {
-		http.Error(w, "Failed to get message", http.StatusInternalServerError)
+		h.writeInternalError(w, "message_detail", "Failed to get message", err)
 		return
 	}
 	if message == nil {
@@ -346,14 +358,14 @@ func (h *UIHandler) handleMessageDetail(w http.ResponseWriter, r *http.Request) 
 
 	w.Header().Set("Content-Type", "text/html")
 	if err := templates.RenderMessageDetail(w, data); err != nil {
-		http.Error(w, "Template error", http.StatusInternalServerError)
+		h.writeInternalError(w, "message_detail", "Template error", err)
 	}
 }
 
 func (h *UIHandler) handleFailures(w http.ResponseWriter, r *http.Request) {
 	messages, err := h.db.GetPublishFailures(r.Context(), 300)
 	if err != nil {
-		http.Error(w, "Failed to get publish failures", http.StatusInternalServerError)
+		h.writeInternalError(w, "failures", "Failed to get publish failures", err)
 		return
 	}
 
@@ -414,14 +426,14 @@ func (h *UIHandler) handleFailures(w http.ResponseWriter, r *http.Request) {
 		FailedCount:   len(failedRows),
 		DeferredCount: len(deferredRows),
 	}); err != nil {
-		http.Error(w, "Template error", http.StatusInternalServerError)
+		h.writeInternalError(w, "failures", "Template error", err)
 	}
 }
 
 func (h *UIHandler) handleBlobs(w http.ResponseWriter, r *http.Request) {
 	blobs, err := h.db.GetRecentBlobs(r.Context(), 200)
 	if err != nil {
-		http.Error(w, "Failed to get blobs", http.StatusInternalServerError)
+		h.writeInternalError(w, "blobs", "Failed to get blobs", err)
 		return
 	}
 
@@ -441,14 +453,14 @@ func (h *UIHandler) handleBlobs(w http.ResponseWriter, r *http.Request) {
 		Chrome: templates.PageChrome{ActiveNav: "blobs"},
 		Blobs:  rows,
 	}); err != nil {
-		http.Error(w, "Template error", http.StatusInternalServerError)
+		h.writeInternalError(w, "blobs", "Template error", err)
 	}
 }
 
 func (h *UIHandler) handleState(w http.ResponseWriter, r *http.Request) {
 	state, err := h.db.GetAllBridgeState(r.Context())
 	if err != nil {
-		http.Error(w, "Failed to get bridge state", http.StatusInternalServerError)
+		h.writeInternalError(w, "state", "Failed to get bridge state", err)
 		return
 	}
 
@@ -474,19 +486,19 @@ func (h *UIHandler) handleState(w http.ResponseWriter, r *http.Request) {
 
 	deferredCount, err := h.db.CountDeferredMessages(r.Context())
 	if err != nil {
-		http.Error(w, "Failed to get deferred count", http.StatusInternalServerError)
+		h.writeInternalError(w, "state", "Failed to get deferred count", err)
 		return
 	}
 
 	deletedCount, err := h.db.CountDeletedMessages(r.Context())
 	if err != nil {
-		http.Error(w, "Failed to get deleted count", http.StatusInternalServerError)
+		h.writeInternalError(w, "state", "Failed to get deleted count", err)
 		return
 	}
 
 	latestReason, _, err := h.db.GetLatestDeferredReason(r.Context())
 	if err != nil {
-		http.Error(w, "Failed to get latest deferred reason", http.StatusInternalServerError)
+		h.writeInternalError(w, "state", "Failed to get latest deferred reason", err)
 		return
 	}
 
@@ -520,7 +532,7 @@ func (h *UIHandler) handleState(w http.ResponseWriter, r *http.Request) {
 		HeartbeatStale:    heartbeatStale,
 		HeartbeatAge:      heartbeatAge,
 	}); err != nil {
-		http.Error(w, "Template error", http.StatusInternalServerError)
+		h.writeInternalError(w, "state", "Template error", err)
 	}
 }
 
