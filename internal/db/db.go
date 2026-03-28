@@ -5,6 +5,8 @@ import (
 	"context"
 	"database/sql"
 	_ "embed"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -26,6 +28,16 @@ type BridgedAccount struct {
 	SSBFeedID string
 	CreatedAt time.Time
 	Active    bool
+}
+
+// BridgedAccountStats extends BridgedAccount with per-bot message statistics.
+type BridgedAccountStats struct {
+	BridgedAccount
+	TotalMessages     int
+	PublishedMessages int
+	FailedMessages    int
+	DeferredMessages  int
+	LastPublishedAt   *time.Time
 }
 
 // Message stores one bridged record and publish lifecycle metadata.
@@ -53,11 +65,42 @@ type Message struct {
 
 // MessageListQuery controls filtered browsing in the admin UI.
 type MessageListQuery struct {
-	Search string
-	Type   string
-	State  string
-	Sort   string
-	Limit  int
+	Search    string
+	Type      string
+	State     string
+	Sort      string
+	Limit     int
+	ATDID     string
+	HasIssue  bool
+	Cursor    string
+	Direction string
+}
+
+// MessagePage is one paginated message-list result for the admin UI.
+type MessagePage struct {
+	Messages   []Message
+	HasNext    bool
+	HasPrev    bool
+	NextCursor string
+	PrevCursor string
+}
+
+// DeferredReasonCount is one aggregated deferred-reason bucket.
+type DeferredReasonCount struct {
+	Reason string
+	Count  int
+}
+
+// AccountIssueSummary is one aggregated account-level issue summary.
+type AccountIssueSummary struct {
+	ATDID          string
+	SSBFeedID      string
+	Active         bool
+	TotalMessages  int
+	IssueMessages  int
+	FailedMessages int
+	DeferredCount  int
+	DeletedCount   int
 }
 
 // Blob stores one ATProto CID to SSB blob reference mapping.
@@ -235,6 +278,25 @@ func (db *DB) GetAllBridgedAccounts(ctx context.Context) ([]BridgedAccount, erro
 	return accounts, nil
 }
 
+// ListActiveBridgedAccounts returns active bridged accounts sorted by newest first.
+func (db *DB) ListActiveBridgedAccounts(ctx context.Context) ([]BridgedAccount, error) {
+	rows, err := db.conn.QueryContext(ctx, `SELECT at_did, ssb_feed_id, created_at, active FROM bridged_accounts WHERE active = 1 ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var accounts []BridgedAccount
+	for rows.Next() {
+		var acc BridgedAccount
+		if err := rows.Scan(&acc.ATDID, &acc.SSBFeedID, &acc.CreatedAt, &acc.Active); err != nil {
+			return nil, err
+		}
+		accounts = append(accounts, acc)
+	}
+	return accounts, nil
+}
+
 // CountBridgedAccounts returns the total number of bridged accounts.
 func (db *DB) CountBridgedAccounts(ctx context.Context) (int, error) {
 	var count int
@@ -253,6 +315,156 @@ func (db *DB) CountActiveBridgedAccounts(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	return count, nil
+}
+
+const bridgedAccountStatsQuery = `
+SELECT
+  ba.at_did,
+  ba.ssb_feed_id,
+  ba.created_at,
+  ba.active,
+  COALESCE(s.total_messages, 0),
+  COALESCE(s.published_messages, 0),
+  COALESCE(s.failed_messages, 0),
+  COALESCE(s.deferred_messages, 0),
+  s.last_published_at
+FROM bridged_accounts ba
+LEFT JOIN (
+  SELECT
+    at_did,
+    COUNT(*)                                                       AS total_messages,
+    SUM(CASE WHEN message_state = 'published' THEN 1 ELSE 0 END)  AS published_messages,
+    SUM(CASE WHEN message_state = 'failed' THEN 1 ELSE 0 END)     AS failed_messages,
+    SUM(CASE WHEN message_state = 'deferred' THEN 1 ELSE 0 END)   AS deferred_messages,
+    MAX(published_at)                                              AS last_published_at
+  FROM messages
+  GROUP BY at_did
+) s ON s.at_did = ba.at_did
+`
+
+// ListActiveBridgedAccountsWithStats returns active accounts with per-bot message statistics.
+func (db *DB) ListActiveBridgedAccountsWithStats(ctx context.Context) ([]BridgedAccountStats, error) {
+	rows, err := db.conn.QueryContext(ctx, bridgedAccountStatsQuery+`WHERE ba.active = 1 ORDER BY ba.created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var accounts []BridgedAccountStats
+	for rows.Next() {
+		acc, err := scanBridgedAccountStats(rows)
+		if err != nil {
+			return nil, err
+		}
+		accounts = append(accounts, acc)
+	}
+	return accounts, rows.Err()
+}
+
+// ListBridgedAccountsWithStats returns all bridged accounts with per-bot message statistics.
+func (db *DB) ListBridgedAccountsWithStats(ctx context.Context) ([]BridgedAccountStats, error) {
+	rows, err := db.conn.QueryContext(ctx, bridgedAccountStatsQuery+`ORDER BY ba.created_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var accounts []BridgedAccountStats
+	for rows.Next() {
+		acc, err := scanBridgedAccountStats(rows)
+		if err != nil {
+			return nil, err
+		}
+		accounts = append(accounts, acc)
+	}
+	return accounts, rows.Err()
+}
+
+// ListActiveBridgedAccountsWithStatsSorted returns active accounts filtered/searched for room directory pages.
+func (db *DB) ListActiveBridgedAccountsWithStatsSorted(ctx context.Context, search, sort string) ([]BridgedAccountStats, error) {
+	search = strings.TrimSpace(search)
+	sort = normalizeBotDirectorySort(sort)
+
+	var query strings.Builder
+	query.WriteString(bridgedAccountStatsQuery)
+	query.WriteString(`WHERE ba.active = 1`)
+
+	args := make([]interface{}, 0, 2)
+	if search != "" {
+		searchLike := "%" + search + "%"
+		query.WriteString(` AND (ba.at_did LIKE ? OR ba.ssb_feed_id LIKE ?)`)
+		args = append(args, searchLike, searchLike)
+	}
+
+	query.WriteString(` ORDER BY `)
+	query.WriteString(botDirectoryOrderClause(sort))
+
+	rows, err := db.conn.QueryContext(ctx, query.String(), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var accounts []BridgedAccountStats
+	for rows.Next() {
+		acc, err := scanBridgedAccountStats(rows)
+		if err != nil {
+			return nil, err
+		}
+		accounts = append(accounts, acc)
+	}
+	return accounts, rows.Err()
+}
+
+// GetActiveBridgedAccountWithStats returns a single active account with stats, or nil.
+func (db *DB) GetActiveBridgedAccountWithStats(ctx context.Context, atDID string) (*BridgedAccountStats, error) {
+	row := db.conn.QueryRowContext(ctx, bridgedAccountStatsQuery+`WHERE ba.active = 1 AND ba.at_did = ?`, atDID)
+	var acc BridgedAccountStats
+	var lastPublishedAt sql.NullString
+	err := row.Scan(
+		&acc.ATDID, &acc.SSBFeedID, &acc.CreatedAt, &acc.Active,
+		&acc.TotalMessages, &acc.PublishedMessages, &acc.FailedMessages, &acc.DeferredMessages,
+		&lastPublishedAt,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	acc.LastPublishedAt = parseNullableTime(lastPublishedAt)
+	return &acc, nil
+}
+
+type scannable interface {
+	Scan(dest ...interface{}) error
+}
+
+func scanBridgedAccountStats(row scannable) (BridgedAccountStats, error) {
+	var acc BridgedAccountStats
+	var lastPublishedAt sql.NullString
+	err := row.Scan(
+		&acc.ATDID, &acc.SSBFeedID, &acc.CreatedAt, &acc.Active,
+		&acc.TotalMessages, &acc.PublishedMessages, &acc.FailedMessages, &acc.DeferredMessages,
+		&lastPublishedAt,
+	)
+	if err != nil {
+		return acc, err
+	}
+	acc.LastPublishedAt = parseNullableTime(lastPublishedAt)
+	return acc, nil
+}
+
+func parseNullableTime(ns sql.NullString) *time.Time {
+	if !ns.Valid || strings.TrimSpace(ns.String) == "" {
+		return nil
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02 15:04:05.999999-07:00", "2006-01-02 15:04:05-07:00", "2006-01-02 15:04:05", "2006-01-02T15:04:05Z"} {
+		if t, err := time.Parse(layout, strings.TrimSpace(ns.String)); err == nil {
+			return &t
+		}
+	}
+	return nil
 }
 
 // AddMessage inserts or updates a message row keyed by AT URI.
@@ -468,35 +680,18 @@ func (db *DB) GetRecentMessages(ctx context.Context, limit int) ([]Message, erro
 	return messages, nil
 }
 
+const messageSelectColumns = `SELECT at_uri, at_cid, ssb_msg_ref, at_did, type, message_state, raw_at_json, raw_ssb_json, published_at, publish_error, publish_attempts, last_publish_attempt_at, defer_reason, defer_attempts, last_defer_attempt_at, deleted_at, deleted_seq, deleted_reason, created_at`
+
 // ListMessages returns messages filtered and sorted for interactive UI browsing.
 func (db *DB) ListMessages(ctx context.Context, query MessageListQuery) ([]Message, error) {
-	query.Search = strings.TrimSpace(query.Search)
-	query.Type = strings.TrimSpace(query.Type)
-	query.State = strings.TrimSpace(query.State)
-	query.Sort = normalizeMessageSort(query.Sort)
-	query.Limit = normalizeMessageLimit(query.Limit)
+	query = normalizeMessageListQuery(query)
 
 	var builder strings.Builder
-	builder.WriteString(
-		`SELECT at_uri, at_cid, ssb_msg_ref, at_did, type, message_state, raw_at_json, raw_ssb_json, published_at, publish_error, publish_attempts, last_publish_attempt_at, defer_reason, defer_attempts, last_defer_attempt_at, deleted_at, deleted_seq, deleted_reason, created_at
-		 FROM messages
-		 WHERE 1=1`,
-	)
+	builder.WriteString(messageSelectColumns)
+	builder.WriteString(` FROM messages WHERE 1=1`)
 
-	args := make([]interface{}, 0, 8)
-	if query.Search != "" {
-		search := "%" + query.Search + "%"
-		builder.WriteString(` AND (at_uri LIKE ? OR at_did LIKE ? OR COALESCE(ssb_msg_ref, '') LIKE ? OR COALESCE(publish_error, '') LIKE ? OR COALESCE(defer_reason, '') LIKE ?)`)
-		args = append(args, search, search, search, search, search)
-	}
-	if query.Type != "" {
-		builder.WriteString(` AND type = ?`)
-		args = append(args, query.Type)
-	}
-	if query.State != "" {
-		builder.WriteString(` AND message_state = ?`)
-		args = append(args, query.State)
-	}
+	args := make([]interface{}, 0, 12)
+	appendMessageListFilters(&builder, &args, query)
 
 	builder.WriteString(` ORDER BY `)
 	builder.WriteString(messageOrderClause(query.Sort))
@@ -510,6 +705,113 @@ func (db *DB) ListMessages(ctx context.Context, query MessageListQuery) ([]Messa
 	defer rows.Close()
 
 	return scanMessagesRows(rows)
+}
+
+// ListMessagesPage returns one keyset-paginated page of filtered messages.
+func (db *DB) ListMessagesPage(ctx context.Context, query MessageListQuery) (MessagePage, error) {
+	query = normalizeMessageListQuery(query)
+	page := MessagePage{}
+
+	// Keep compatibility for older non-keyset sorts while using keyset for newest/oldest.
+	if !supportsMessageKeysetSort(query.Sort) {
+		legacyRows, err := db.ListMessages(ctx, MessageListQuery{
+			Search:   query.Search,
+			Type:     query.Type,
+			State:    query.State,
+			Sort:     query.Sort,
+			Limit:    query.Limit + 1,
+			ATDID:    query.ATDID,
+			HasIssue: query.HasIssue,
+		})
+		if err != nil {
+			return page, err
+		}
+		if len(legacyRows) > query.Limit {
+			page.HasNext = true
+			legacyRows = legacyRows[:query.Limit]
+		}
+		page.Messages = legacyRows
+		if page.HasNext && len(legacyRows) > 0 {
+			page.NextCursor = encodeMessageListCursor(messageListCursor{
+				CreatedAt: legacyRows[len(legacyRows)-1].CreatedAt,
+				ATURI:     legacyRows[len(legacyRows)-1].ATURI,
+			})
+		}
+		return page, nil
+	}
+
+	var cursor messageListCursor
+	cursorProvided := strings.TrimSpace(query.Cursor) != ""
+	if cursorProvided {
+		decoded, ok := decodeMessageListCursor(query.Cursor)
+		if !ok {
+			cursorProvided = false
+		} else {
+			cursor = decoded
+		}
+	}
+
+	reverseQuery := false
+	var builder strings.Builder
+	builder.WriteString(messageSelectColumns)
+	builder.WriteString(` FROM messages WHERE 1=1`)
+	args := make([]interface{}, 0, 16)
+	appendMessageListFilters(&builder, &args, query)
+
+	if cursorProvided {
+		clause, clauseArgs, reverse := messageKeysetClause(query.Sort, query.Direction, cursor)
+		if clause != "" {
+			builder.WriteString(` AND `)
+			builder.WriteString(clause)
+			args = append(args, clauseArgs...)
+			reverseQuery = reverse
+		}
+	}
+
+	builder.WriteString(` ORDER BY `)
+	builder.WriteString(messageKeysetOrder(query.Sort, reverseQuery))
+	builder.WriteString(` LIMIT ?`)
+	args = append(args, query.Limit+1)
+
+	rows, err := db.conn.QueryContext(ctx, builder.String(), args...)
+	if err != nil {
+		return page, err
+	}
+	defer rows.Close()
+
+	messages, err := scanMessagesRows(rows)
+	if err != nil {
+		return page, err
+	}
+	hasMore := len(messages) > query.Limit
+	if hasMore {
+		messages = messages[:query.Limit]
+	}
+	if reverseQuery {
+		reverseMessages(messages)
+	}
+
+	page.Messages = messages
+	if query.Direction == "prev" {
+		page.HasPrev = hasMore
+		page.HasNext = cursorProvided
+	} else {
+		page.HasPrev = cursorProvided
+		page.HasNext = hasMore
+	}
+
+	if len(messages) > 0 {
+		first := messageListCursor{CreatedAt: messages[0].CreatedAt, ATURI: messages[0].ATURI}
+		last := messageListCursor{CreatedAt: messages[len(messages)-1].CreatedAt, ATURI: messages[len(messages)-1].ATURI}
+		if page.HasPrev {
+			page.PrevCursor = encodeMessageListCursor(first)
+		}
+		if page.HasNext {
+			page.NextCursor = encodeMessageListCursor(last)
+		}
+	}
+
+	return page, nil
 }
 
 // ListMessageTypes returns the distinct record types currently stored.
@@ -573,6 +875,101 @@ func (db *DB) CountDeletedMessages(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	return count, nil
+}
+
+// ListTopDeferredReasons returns the most common deferred reasons.
+func (db *DB) ListTopDeferredReasons(ctx context.Context, limit int) ([]DeferredReasonCount, error) {
+	if limit <= 0 {
+		limit = 5
+	}
+
+	rows, err := db.conn.QueryContext(
+		ctx,
+		`SELECT defer_reason, COUNT(*) AS reason_count
+		 FROM messages
+		 WHERE message_state = ?
+		   AND TRIM(COALESCE(defer_reason, '')) <> ''
+		 GROUP BY defer_reason
+		 ORDER BY reason_count DESC, defer_reason ASC
+		 LIMIT ?`,
+		MessageStateDeferred,
+		limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var stats []DeferredReasonCount
+	for rows.Next() {
+		var stat DeferredReasonCount
+		if err := rows.Scan(&stat.Reason, &stat.Count); err != nil {
+			return nil, err
+		}
+		stats = append(stats, stat)
+	}
+	return stats, rows.Err()
+}
+
+// ListTopIssueAccounts returns bridged accounts ranked by issue volume.
+func (db *DB) ListTopIssueAccounts(ctx context.Context, limit int) ([]AccountIssueSummary, error) {
+	if limit <= 0 {
+		limit = 5
+	}
+
+	rows, err := db.conn.QueryContext(
+		ctx,
+		`SELECT
+		   ba.at_did,
+		   ba.ssb_feed_id,
+		   ba.active,
+		   COALESCE(m.total_messages, 0) AS total_messages,
+		   COALESCE(m.issue_messages, 0) AS issue_messages,
+		   COALESCE(m.failed_messages, 0) AS failed_messages,
+		   COALESCE(m.deferred_messages, 0) AS deferred_messages,
+		   COALESCE(m.deleted_messages, 0) AS deleted_messages
+		 FROM bridged_accounts ba
+		 LEFT JOIN (
+		   SELECT
+		     at_did,
+		     COUNT(*) AS total_messages,
+		     SUM(CASE WHEN message_state IN ('failed', 'deferred', 'deleted') THEN 1 ELSE 0 END) AS issue_messages,
+		     SUM(CASE WHEN message_state = 'failed' THEN 1 ELSE 0 END) AS failed_messages,
+		     SUM(CASE WHEN message_state = 'deferred' THEN 1 ELSE 0 END) AS deferred_messages,
+		     SUM(CASE WHEN message_state = 'deleted' THEN 1 ELSE 0 END) AS deleted_messages
+		   FROM messages
+		   GROUP BY at_did
+		 ) m ON m.at_did = ba.at_did
+		 WHERE COALESCE(m.issue_messages, 0) > 0
+		 ORDER BY issue_messages DESC, total_messages DESC, ba.at_did ASC
+		 LIMIT ?`,
+		limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var stats []AccountIssueSummary
+	for rows.Next() {
+		var stat AccountIssueSummary
+		var active bool
+		if err := rows.Scan(
+			&stat.ATDID,
+			&stat.SSBFeedID,
+			&active,
+			&stat.TotalMessages,
+			&stat.IssueMessages,
+			&stat.FailedMessages,
+			&stat.DeferredCount,
+			&stat.DeletedCount,
+		); err != nil {
+			return nil, err
+		}
+		stat.Active = active
+		stats = append(stats, stat)
+	}
+	return stats, rows.Err()
 }
 
 // GetPublishFailures returns failed message rows up to limit.
@@ -1001,6 +1398,26 @@ func normalizeMessageLimit(limit int) int {
 	}
 }
 
+func normalizeMessageListQuery(query MessageListQuery) MessageListQuery {
+	query.Search = strings.TrimSpace(query.Search)
+	query.Type = strings.TrimSpace(query.Type)
+	query.State = strings.TrimSpace(query.State)
+	query.Sort = normalizeMessageSort(strings.TrimSpace(query.Sort))
+	query.Limit = normalizeMessageLimit(query.Limit)
+	query.ATDID = strings.TrimSpace(query.ATDID)
+	query.Direction = normalizeMessageDirection(query.Direction)
+	return query
+}
+
+func normalizeMessageDirection(direction string) string {
+	switch strings.TrimSpace(direction) {
+	case "prev":
+		return "prev"
+	default:
+		return "next"
+	}
+}
+
 func normalizeMessageSort(sort string) string {
 	switch sort {
 	case "oldest", "attempts_desc", "attempts_asc", "type_asc", "type_desc", "state_asc", "state_desc":
@@ -1010,24 +1427,159 @@ func normalizeMessageSort(sort string) string {
 	}
 }
 
+func appendMessageListFilters(builder *strings.Builder, args *[]interface{}, query MessageListQuery) {
+	if query.Search != "" {
+		search := "%" + query.Search + "%"
+		builder.WriteString(` AND (at_uri LIKE ? OR at_did LIKE ? OR COALESCE(ssb_msg_ref, '') LIKE ? OR COALESCE(publish_error, '') LIKE ? OR COALESCE(defer_reason, '') LIKE ? OR COALESCE(deleted_reason, '') LIKE ?)`)
+		*args = append(*args, search, search, search, search, search, search)
+	}
+	if query.Type != "" {
+		builder.WriteString(` AND type = ?`)
+		*args = append(*args, query.Type)
+	}
+	if query.State != "" {
+		builder.WriteString(` AND message_state = ?`)
+		*args = append(*args, query.State)
+	}
+	if query.ATDID != "" {
+		builder.WriteString(` AND at_did = ?`)
+		*args = append(*args, query.ATDID)
+	}
+	if query.HasIssue {
+		builder.WriteString(` AND (TRIM(COALESCE(publish_error, '')) <> '' OR TRIM(COALESCE(defer_reason, '')) <> '' OR TRIM(COALESCE(deleted_reason, '')) <> '')`)
+	}
+}
+
 func messageOrderClause(sort string) string {
 	switch sort {
 	case "oldest":
-		return "created_at ASC"
+		return "created_at ASC, at_uri ASC"
 	case "attempts_desc":
-		return "(publish_attempts + defer_attempts) DESC, created_at DESC"
+		return "(publish_attempts + defer_attempts) DESC, created_at DESC, at_uri DESC"
 	case "attempts_asc":
-		return "(publish_attempts + defer_attempts) ASC, created_at DESC"
+		return "(publish_attempts + defer_attempts) ASC, created_at DESC, at_uri DESC"
 	case "type_asc":
-		return "type ASC, created_at DESC"
+		return "type ASC, created_at DESC, at_uri DESC"
 	case "type_desc":
-		return "type DESC, created_at DESC"
+		return "type DESC, created_at DESC, at_uri DESC"
 	case "state_asc":
-		return "message_state ASC, created_at DESC"
+		return "message_state ASC, created_at DESC, at_uri DESC"
 	case "state_desc":
-		return "message_state DESC, created_at DESC"
+		return "message_state DESC, created_at DESC, at_uri DESC"
 	default:
-		return "created_at DESC"
+		return "created_at DESC, at_uri DESC"
+	}
+}
+
+func supportsMessageKeysetSort(sort string) bool {
+	switch sort {
+	case "newest", "oldest":
+		return true
+	default:
+		return false
+	}
+}
+
+type messageListCursor struct {
+	CreatedAt time.Time `json:"created_at"`
+	ATURI     string    `json:"at_uri"`
+}
+
+func encodeMessageListCursor(cursor messageListCursor) string {
+	if cursor.CreatedAt.IsZero() || strings.TrimSpace(cursor.ATURI) == "" {
+		return ""
+	}
+	payload, err := json.Marshal(struct {
+		CreatedAt string `json:"created_at"`
+		ATURI     string `json:"at_uri"`
+	}{
+		CreatedAt: cursor.CreatedAt.UTC().Format(time.RFC3339Nano),
+		ATURI:     cursor.ATURI,
+	})
+	if err != nil {
+		return ""
+	}
+	return base64.RawURLEncoding.EncodeToString(payload)
+}
+
+func decodeMessageListCursor(encoded string) (messageListCursor, bool) {
+	encoded = strings.TrimSpace(encoded)
+	if encoded == "" {
+		return messageListCursor{}, false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		return messageListCursor{}, false
+	}
+	var raw struct {
+		CreatedAt string `json:"created_at"`
+		ATURI     string `json:"at_uri"`
+	}
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		return messageListCursor{}, false
+	}
+	createdAt, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(raw.CreatedAt))
+	if err != nil {
+		return messageListCursor{}, false
+	}
+	if strings.TrimSpace(raw.ATURI) == "" {
+		return messageListCursor{}, false
+	}
+	return messageListCursor{
+		CreatedAt: createdAt,
+		ATURI:     strings.TrimSpace(raw.ATURI),
+	}, true
+}
+
+func messageKeysetClause(sort, direction string, cursor messageListCursor) (string, []interface{}, bool) {
+	desc := sort != "oldest"
+
+	switch {
+	case direction == "prev" && desc:
+		return `(created_at > ? OR (created_at = ? AND at_uri > ?))`, []interface{}{cursor.CreatedAt, cursor.CreatedAt, cursor.ATURI}, true
+	case direction == "prev" && !desc:
+		return `(created_at < ? OR (created_at = ? AND at_uri < ?))`, []interface{}{cursor.CreatedAt, cursor.CreatedAt, cursor.ATURI}, true
+	case direction != "prev" && desc:
+		return `(created_at < ? OR (created_at = ? AND at_uri < ?))`, []interface{}{cursor.CreatedAt, cursor.CreatedAt, cursor.ATURI}, false
+	default:
+		return `(created_at > ? OR (created_at = ? AND at_uri > ?))`, []interface{}{cursor.CreatedAt, cursor.CreatedAt, cursor.ATURI}, false
+	}
+}
+
+func messageKeysetOrder(sort string, reverse bool) string {
+	desc := sort != "oldest"
+	if reverse {
+		desc = !desc
+	}
+	if desc {
+		return "created_at DESC, at_uri DESC"
+	}
+	return "created_at ASC, at_uri ASC"
+}
+
+func reverseMessages(messages []Message) {
+	for left, right := 0, len(messages)-1; left < right; left, right = left+1, right-1 {
+		messages[left], messages[right] = messages[right], messages[left]
+	}
+}
+
+func normalizeBotDirectorySort(sort string) string {
+	switch strings.TrimSpace(sort) {
+	case "newest", "deferred_desc":
+		return strings.TrimSpace(sort)
+	default:
+		return "activity_desc"
+	}
+}
+
+func botDirectoryOrderClause(sort string) string {
+	switch normalizeBotDirectorySort(sort) {
+	case "newest":
+		return "ba.created_at DESC"
+	case "deferred_desc":
+		return "COALESCE(s.deferred_messages, 0) DESC, COALESCE(s.failed_messages, 0) DESC, ba.created_at DESC"
+	default:
+		return "COALESCE(s.total_messages, 0) DESC, COALESCE(s.published_messages, 0) DESC, ba.created_at DESC"
 	}
 }
 
