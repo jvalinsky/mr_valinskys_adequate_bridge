@@ -1,0 +1,32 @@
+FROM golang:1.25-bookworm AS build
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends gcc libc6-dev sqlite3 && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /src
+COPY go.mod go.sum ./
+COPY reference/go-ssb-room reference/go-ssb-room
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=1 go build -o /bridge-cli ./cmd/bridge-cli && \
+    CGO_ENABLED=1 go build -o /e2e-seed ./cmd/e2e-seed
+
+FROM debian:bookworm-slim
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        jq \
+        sqlite3 && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /bridge-cli /usr/local/bin/bridge-cli
+COPY --from=build /e2e-seed /usr/local/bin/e2e-seed
+
+WORKDIR /data
+EXPOSE 8989 8976
+
+ENTRYPOINT ["bridge-cli"]

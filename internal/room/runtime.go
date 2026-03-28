@@ -16,6 +16,7 @@ import (
 	roomadapter "github.com/ssbc/go-ssb-room/v2/bridgeadapter"
 	"github.com/ssbc/go-ssb-room/v2/roomdb"
 	kitlog "go.mindeco.de/log"
+	refs "github.com/ssbc/go-ssb-refs"
 )
 
 const (
@@ -32,6 +33,7 @@ type Config struct {
 	RepoPath       string
 	Mode           string
 	HTTPSDomain    string
+	BridgeAccounts ActiveBridgeAccountLister
 }
 
 // Runtime wraps the lifecycle of the embedded room adapter and HTTP server.
@@ -80,6 +82,13 @@ func Start(parentCtx context.Context, cfg Config, logger *log.Logger) (*Runtime,
 		return nil, fmt.Errorf("start room adapter: %w", err)
 	}
 
+	stockHandler, err := adapter.HTTPHandler()
+	if err != nil {
+		_ = adapter.Close()
+		cancel()
+		return nil, fmt.Errorf("build room http handler: %w", err)
+	}
+
 	httpListener, err := net.Listen("tcp", cfg.HTTPListenAddr)
 	if err != nil {
 		_ = adapter.Close()
@@ -87,18 +96,8 @@ func Start(parentCtx context.Context, cfg Config, logger *log.Logger) (*Runtime,
 		return nil, fmt.Errorf("listen room http interface: %w", err)
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-	})
-	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("room2 runtime ready"))
-	})
-
 	httpServer := &http.Server{
-		Handler:           adapter.Server.Network.WebsockHandler(mux),
+		Handler:           adapter.Server.Network.WebsockHandler(newBridgeRoomHandler(stockHandler, adapter.RoomConfig(), cfg.BridgeAccounts)),
 		ReadHeaderTimeout: 15 * time.Second,
 		WriteTimeout:      3 * time.Minute,
 		IdleTimeout:       3 * time.Minute,
@@ -142,6 +141,23 @@ func (r *Runtime) HTTPAddr() string {
 		return ""
 	}
 	return r.httpAddr
+}
+
+// RoomFeed returns the public feed of the embedded room.
+func (r *Runtime) RoomFeed() refs.FeedRef {
+	if r == nil || r.roomAdapter == nil {
+		return refs.FeedRef{}
+	}
+	return r.roomAdapter.Server.Whoami()
+}
+
+// AddMember adds a member to the room.
+func (r *Runtime) AddMember(ctx context.Context, feed refs.FeedRef, role roomdb.Role) error {
+	if r == nil || r.roomAdapter == nil {
+		return fmt.Errorf("room runtime not started")
+	}
+	_, err := r.roomAdapter.Server.Members.Add(ctx, feed, role)
+	return err
 }
 
 // Close stops the room runtime and releases listeners and background loops.

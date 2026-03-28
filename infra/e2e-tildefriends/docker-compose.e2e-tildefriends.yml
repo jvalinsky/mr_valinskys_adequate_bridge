@@ -1,0 +1,64 @@
+# E2E test: tildefriends (SSB client) connects to the bridge's embedded room
+# and replicates a bot feed.
+#
+# Usage:
+#   docker compose -f docker-compose.e2e-tildefriends.yml up \
+#     --build --abort-on-container-exit --exit-code-from test-runner
+
+services:
+  # ── Bridge server with embedded SSB room ──────────────────────────
+  bridge:
+    build:
+      context: ../..
+      dockerfile: infra/e2e-tildefriends/Dockerfile.bridge
+    entrypoint: ["/bin/bash", "/scripts/bridge_entrypoint.sh"]
+    environment:
+      DB_PATH: /data/bridge.sqlite
+      REPO_PATH: /data/ssb-repo
+      BOT_SEED: e2e-docker-seed
+      BOT_DID: "did:plc:e2e-docker-bot"
+      BOT_TARGET_DID: "did:plc:e2e-docker-target"
+      ROOM_MUXRPC_ADDR: "0.0.0.0:8989"
+      ROOM_HTTP_ADDR: "0.0.0.0:8976"
+      ROOM_MODE: open
+      ROOM_HTTPS_DOMAIN: bridge
+      BRIDGE_FIREHOSE_ENABLE: "${E2E_TF_BRIDGE_FIREHOSE_ENABLE:-0}"
+      BRIDGE_RELAY_URL: "${E2E_TF_BRIDGE_RELAY_URL:-}"
+    volumes:
+      - bridge-data:/data
+      - ./bridge_entrypoint.sh:/scripts/bridge_entrypoint.sh:ro
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8976/healthz"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 15s
+
+  # ── Test runner ───────────────────────────────────────────────────
+  test-runner:
+    build:
+      context: ../../reference/tildefriends
+      dockerfile: ../../infra/e2e-tildefriends/Dockerfile.tildefriends
+    entrypoint: ["/bin/bash", "/scripts/test_runner.sh"]
+    environment:
+      BRIDGE_HTTP_ADDR: ${E2E_TF_BRIDGE_HTTP_ADDR:-bridge:8976}
+      BRIDGE_MUXRPC_ADDR: ${E2E_TF_BRIDGE_MUXRPC_ADDR:-bridge:8989}
+      BRIDGE_DB_PATH: /bridge-data/bridge.sqlite
+      BRIDGE_REPO_PATH: /bridge-data/ssb-repo
+      TF_DB_PATH: /tf-data/db.sqlite
+      TF_BIN: /app/out/release/tildefriends
+      BOT_SEED: e2e-docker-seed
+      BOT_DID: "did:plc:e2e-docker-bot"
+      MAX_WAIT_SECS: "${E2E_TF_MAX_WAIT_SECS:-120}"
+      POLL_INTERVAL: "${E2E_TF_POLL_INTERVAL:-3}"
+    volumes:
+      - bridge-data:/bridge-data
+      - tf-data:/tf-data
+      - ./test_runner.sh:/scripts/test_runner.sh:ro
+    depends_on:
+      bridge:
+        condition: service_healthy
+
+volumes:
+  bridge-data:
+  tf-data:

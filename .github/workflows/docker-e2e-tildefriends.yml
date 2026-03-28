@@ -1,0 +1,136 @@
+name: Docker E2E Tildefriends
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_external_firehose:
+        description: "Run external firehose integration lane"
+        required: false
+        default: false
+        type: boolean
+      relay_url:
+        description: "subscribeRepos websocket URL for external lane"
+        required: false
+        type: string
+  pull_request:
+    paths:
+      - "scripts/e2e_tildefriends.sh"
+      - "infra/e2e-tildefriends/**"
+      - "cmd/e2e-seed/**"
+      - "cmd/bridge-cli/**"
+      - "internal/room/**"
+      - "internal/ssbruntime/**"
+      - ".github/workflows/docker-e2e-tildefriends.yml"
+
+jobs:
+  docker-e2e-deterministic:
+    name: "Deterministic Scenario: ${{ matrix.scenario }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - scenario: positive
+            expect: pass
+          - scenario: broken-room
+            expect: fail
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Docker E2E scenario (firehose off)
+        env:
+          E2E_TF_SCENARIO: ${{ matrix.scenario }}
+          E2E_TF_EXPECT: ${{ matrix.expect }}
+          E2E_TF_EXPOSE_PORTS: "0"
+          E2E_TF_FIREHOSE_MODE: "off"
+          E2E_TF_KEEP: "1"
+        run: ./scripts/e2e_tildefriends.sh
+
+      - name: Assert no firehose reconnect-noise in room-only mode
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/e2e-tf-logs
+          docker compose -p mvab-e2e-tf -f infra/e2e-tildefriends/docker-compose.e2e-tildefriends.yml logs --no-color bridge > "/tmp/e2e-tf-logs/${{ matrix.scenario }}-bridge.log" || true
+          if grep -q "event=firehose_reconnect_retry" "/tmp/e2e-tf-logs/${{ matrix.scenario }}-bridge.log"; then
+            echo "firehose reconnect noise detected while E2E_TF_FIREHOSE_MODE=off"
+            exit 1
+          fi
+
+      - name: Capture compose logs on failure
+        if: failure()
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/e2e-tf-logs
+          docker compose -p mvab-e2e-tf -f infra/e2e-tildefriends/docker-compose.e2e-tildefriends.yml logs --no-color bridge > "/tmp/e2e-tf-logs/${{ matrix.scenario }}-bridge.log" || true
+          docker compose -p mvab-e2e-tf -f infra/e2e-tildefriends/docker-compose.e2e-tildefriends.yml logs --no-color test-runner > "/tmp/e2e-tf-logs/${{ matrix.scenario }}-test-runner.log" || true
+
+      - name: Upload failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-tildefriends-${{ matrix.scenario }}-logs
+          path: /tmp/e2e-tf-logs/${{ matrix.scenario }}-*.log
+          if-no-files-found: warn
+
+      - name: Cleanup stack
+        if: always()
+        run: |
+          docker compose -p mvab-e2e-tf -f infra/e2e-tildefriends/docker-compose.e2e-tildefriends.yml down -v --remove-orphans || true
+
+  docker-e2e-external-firehose:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_external_firehose }}
+    name: External Firehose Integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Docker E2E scenario (external firehose)
+        env:
+          E2E_TF_SCENARIO: "positive"
+          E2E_TF_EXPECT: "pass"
+          E2E_TF_EXPOSE_PORTS: "0"
+          E2E_TF_FIREHOSE_MODE: "external"
+          E2E_TF_RELAY_URL: ${{ inputs.relay_url }}
+          E2E_TF_KEEP: "1"
+        run: ./scripts/e2e_tildefriends.sh
+
+      - name: Assert external firehose connection markers
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/e2e-tf-logs
+          docker compose -p mvab-e2e-tf -f infra/e2e-tildefriends/docker-compose.e2e-tildefriends.yml logs --no-color bridge > "/tmp/e2e-tf-logs/external-bridge.log" || true
+          if ! grep -q "Connected to firehose" "/tmp/e2e-tf-logs/external-bridge.log"; then
+            echo "expected firehose connection marker not found"
+            exit 1
+          fi
+          if grep -q "build stream url" "/tmp/e2e-tf-logs/external-bridge.log"; then
+            echo "fatal firehose stream URL error detected"
+            exit 1
+          fi
+
+      - name: Capture compose logs on failure
+        if: failure()
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/e2e-tf-logs
+          docker compose -p mvab-e2e-tf -f infra/e2e-tildefriends/docker-compose.e2e-tildefriends.yml logs --no-color bridge > "/tmp/e2e-tf-logs/external-bridge.log" || true
+          docker compose -p mvab-e2e-tf -f infra/e2e-tildefriends/docker-compose.e2e-tildefriends.yml logs --no-color test-runner > "/tmp/e2e-tf-logs/external-test-runner.log" || true
+
+      - name: Upload failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-tildefriends-external-logs
+          path: /tmp/e2e-tf-logs/external-*.log
+          if-no-files-found: warn
+
+      - name: Cleanup stack
+        if: always()
+        run: |
+          docker compose -p mvab-e2e-tf -f infra/e2e-tildefriends/docker-compose.e2e-tildefriends.yml down -v --remove-orphans || true

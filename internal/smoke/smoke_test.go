@@ -1,7 +1,9 @@
 package smoke
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"log"
 	"net/http"
@@ -9,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/mr_valinskys_adequate_bridge/internal/bots"
@@ -16,9 +19,11 @@ import (
 	"github.com/mr_valinskys_adequate_bridge/internal/db"
 	"github.com/mr_valinskys_adequate_bridge/internal/mapper"
 	"github.com/mr_valinskys_adequate_bridge/internal/publishqueue"
+	"github.com/mr_valinskys_adequate_bridge/internal/room"
 	"github.com/mr_valinskys_adequate_bridge/internal/ssbruntime"
 	"github.com/mr_valinskys_adequate_bridge/internal/web/handlers"
 	websecurity "github.com/mr_valinskys_adequate_bridge/internal/web/security"
+	refs "github.com/ssbc/go-ssb-refs"
 )
 
 func TestBridgeSmoke(t *testing.T) {
@@ -53,7 +58,10 @@ func TestBridgeSmoke(t *testing.T) {
 		}
 	}
 
-	ssbRuntime, err := ssbruntime.Open(filepath.Join(tmpDir, "ssb-repo"), []byte(seed), nil, log.New(io.Discard, "", 0))
+	ssbRuntime, err := ssbruntime.Open(ctx, ssbruntime.Config{
+		RepoPath:   filepath.Join(tmpDir, "ssb-repo"),
+		MasterSeed: []byte(seed),
+	}, log.New(io.Discard, "", 0))
 	if err != nil {
 		t.Fatalf("open ssb runtime: %v", err)
 	}
@@ -220,5 +228,109 @@ func TestBridgeSmoke(t *testing.T) {
 	state := fetch("/state")
 	if !strings.Contains(state, "firehose_seq") || !strings.Contains(state, "9001") {
 		t.Fatalf("state page missing firehose cursor row")
+	}
+}
+
+func TestRoomHTTPSmoke(t *testing.T) {
+	tmpDir := t.TempDir()
+	database, err := db.Open(filepath.Join(tmpDir, "bridge.sqlite"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer database.Close()
+
+	feedRef, err := refs.NewFeedRefFromBytes(bytes.Repeat([]byte{9}, 32), refs.RefAlgoFeedSSB1)
+	if err != nil {
+		t.Fatalf("create feed ref: %v", err)
+	}
+	if err := database.AddBridgedAccount(context.Background(), db.BridgedAccount{
+		ATDID:     "did:plc:room-smoke-bot",
+		SSBFeedID: feedRef.String(),
+		Active:    true,
+	}); err != nil {
+		t.Fatalf("add bridged account: %v", err)
+	}
+
+	rt, err := room.Start(context.Background(), room.Config{
+		ListenAddr:     "127.0.0.1:0",
+		HTTPListenAddr: "127.0.0.1:0",
+		RepoPath:       filepath.Join(tmpDir, "room-repo"),
+		Mode:           "open",
+		BridgeAccounts: database,
+	}, log.New(io.Discard, "", 0))
+	if err != nil {
+		if strings.Contains(err.Error(), "operation not permitted") {
+			t.Skipf("sandbox does not allow local listen sockets: %v", err)
+		}
+		t.Fatalf("start room runtime: %v", err)
+	}
+	defer rt.Close()
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	fetch := func(path string) string {
+		resp, err := client.Get("http://" + rt.HTTPAddr() + path)
+		if err != nil {
+			t.Fatalf("request %s failed: %v", path, err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			t.Fatalf("request %s expected 200 got %d\nbody:\n%s", path, resp.StatusCode, string(body))
+		}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read response %s: %v", path, err)
+		}
+		return string(body)
+	}
+
+	if body := fetch("/healthz"); strings.TrimSpace(body) != "ok" {
+		t.Fatalf("healthz body mismatch: %q", body)
+	}
+
+	landing := fetch("/")
+	for _, want := range []string{"Create room invite", "Browse bridged bots"} {
+		if !strings.Contains(landing, want) {
+			t.Fatalf("landing page missing %q\nbody:\n%s", want, landing)
+		}
+	}
+
+	botsPage := fetch("/bots")
+	for _, want := range []string{"did:plc:room-smoke-bot"} {
+		if !strings.Contains(botsPage, want) {
+			t.Fatalf("bots directory missing %q\nbody:\n%s", want, botsPage)
+		}
+	}
+
+	botDetail := fetch("/bots/did:plc:room-smoke-bot")
+	for _, want := range []string{"did:plc:room-smoke-bot", feedRef.String(), feedRef.URI()} {
+		if !strings.Contains(botDetail, want) {
+			t.Fatalf("bot detail page missing %q", want)
+		}
+	}
+
+	req, err := http.NewRequest(http.MethodPost, "http://"+rt.HTTPAddr()+"/create-invite", nil)
+	if err != nil {
+		t.Fatalf("build invite request: %v", err)
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("create invite request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("create invite expected 200 got %d\nbody:\n%s", resp.StatusCode, string(body))
+	}
+
+	var payload map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode invite response: %v", err)
+	}
+	if !strings.Contains(payload["url"], "/join?token=") {
+		t.Fatalf("unexpected invite url: %q", payload["url"])
 	}
 }

@@ -1,0 +1,29 @@
+# Build tildefriends from source (reference copy)
+FROM bitnami/minideb:trixie AS build
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        gcc \
+        libc6-dev \
+        make
+
+COPY . /app
+RUN make -C /app -j $(nproc) release
+
+FROM bitnami/minideb:trixie
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        curl \
+        jq \
+        sqlite3 && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=build /app/out/release/tildefriends /app/out/release/tildefriends
+COPY --from=build /app/apps /app/apps
+COPY --from=build /app/core /app/core
+COPY --from=build /app/deps /app/deps
+WORKDIR /app
+EXPOSE 12345
+
+ENTRYPOINT ["/app/out/release/tildefriends"]

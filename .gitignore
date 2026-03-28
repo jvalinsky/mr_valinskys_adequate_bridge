@@ -10,7 +10,7 @@ bin/
 .ssb-bridge-live/
 
 # Compiled binaries
-e2e-seed
+/e2e-seed
 
 # Reference dependency repos (clone locally as needed)
 reference/
