@@ -1,0 +1,3 @@
+[submodule "reference/tildefriends"]
+	path = reference/tildefriends
+	url = https://dev.tildefriends.net/cory/tildefriends.git

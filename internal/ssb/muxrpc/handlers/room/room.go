@@ -49,6 +49,10 @@ func NewAliasHandler(s *RoomServer) *AliasHandler {
 	return &AliasHandler{server: s}
 }
 
+func (s *RoomServer) KeyPair() *refs.FeedRef {
+	return s.keyPair
+}
+
 func (h *AliasHandler) Handled(m muxrpc.Method) bool {
 	return len(m) >= 1 && m[0] == "room"
 }

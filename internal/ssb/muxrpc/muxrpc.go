@@ -3,6 +3,7 @@ package muxrpc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -31,10 +32,23 @@ const (
 	TypeJSON
 )
 
+func (rt RequestEncoding) String() string {
+	switch rt {
+	case TypeBinary:
+		return "binary"
+	case TypeString:
+		return "string"
+	case TypeJSON:
+		return "json"
+	default:
+		return "unknown"
+	}
+}
+
 type Type = RequestEncoding
 
 func (rt RequestEncoding) IsValid() bool {
-	return rt >= 0 && rt <= TypeJSON
+	return rt <= TypeJSON
 }
 
 func (rt RequestEncoding) AsCodecFlag() (codec.Flag, error) {
@@ -129,8 +143,8 @@ type Request struct {
 	sink   *ByteSink
 	source *ByteSource
 
-	id    int32
-	abort context.CancelFunc
+	id     int32
+	abort  context.CancelFunc
 
 	remoteAddr net.Addr
 	endpoint   *rpc
@@ -146,21 +160,21 @@ func (req Request) RemoteAddr() net.Addr {
 
 func (req *Request) ResponseSink() (*ByteSink, error) {
 	if req.Type != "source" && req.Type != "duplex" {
-		return nil, fmt.Errorf("muxrpc: wrong stream type")
+		return nil, errors.New("muxrpc: wrong stream type")
 	}
 	return req.sink, nil
 }
 
 func (req *Request) ResponseSource() (*ByteSource, error) {
 	if req.Type != "sink" && req.Type != "duplex" {
-		return nil, fmt.Errorf("muxrpc: wrong stream type")
+		return nil, errors.New("muxrpc: wrong stream type")
 	}
 	return req.source, nil
 }
 
 func (req *Request) Return(ctx context.Context, v interface{}) error {
 	if req.Type != "async" && req.Type != "sync" {
-		return fmt.Errorf("cannot return value on %q stream", req.Type)
+		return errors.New("cannot return value on stream")
 	}
 
 	var b []byte
@@ -176,15 +190,15 @@ func (req *Request) Return(ctx context.Context, v interface{}) error {
 		req.sink.SetEncoding(TypeJSON)
 		b, err = json.Marshal(v)
 		if err != nil {
-			return fmt.Errorf("muxrpc: error marshaling return value: %w", err)
+			return err
 		}
 	}
 
 	if _, err := req.sink.Write(b); err != nil {
-		return fmt.Errorf("muxrpc: error writing return value: %w", err)
+		return err
 	}
 
-	return nil
+	return req.Close()
 }
 
 func (req *Request) CloseWithError(cerr error) error {
@@ -219,8 +233,7 @@ type Conn interface {
 }
 
 type rpc struct {
-	ctx context.Context
-
+	ctx      context.Context
 	conn     Conn
 	packer   *Packer
 	handler  Handler
@@ -229,18 +242,23 @@ type rpc struct {
 	mu      sync.Mutex
 	streams map[int32]*Request
 	nextID  int32
+	out     []codec.Packet
+	sendCh  chan struct{}
 }
 
 func NewRPC(ctx context.Context, conn Conn, handler Handler, manifest *Manifest) *rpc {
 	r := &rpc{
 		ctx:      ctx,
 		conn:     conn,
-		packer:   NewPacker(conn),
 		handler:  handler,
-		streams:  make(map[int32]*Request),
 		manifest: manifest,
+		streams:  make(map[int32]*Request),
+		nextID:   1,
+		sendCh:   make(chan struct{}, 1),
 	}
+	r.packer = NewPacker(r.conn)
 	go r.serve()
+	go r.sender()
 	return r
 }
 
@@ -258,44 +276,72 @@ func (r *rpc) Remote() net.Addr {
 	return r.conn.RemoteAddr()
 }
 
+func (r *rpc) WritePacket(pkt codec.Packet) error {
+	r.mu.Lock()
+	r.out = append(r.out, pkt)
+	r.mu.Unlock()
+
+	select {
+	case r.sendCh <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+func (r *rpc) Produce() []codec.Packet {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := r.out
+	r.out = nil
+	return out
+}
+
 func (r *rpc) serve() {
 	for {
-		var hdr codec.Header
-		err := r.packer.NextHeader(r.ctx, &hdr)
+		pkt, err := r.packer.NextPacket(r.ctx)
 		if err != nil {
-			if err != io.EOF {
-				fmt.Printf("[muxrpc] serve error: %v\n", err)
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) {
+				return
 			}
-			return
+			continue
 		}
-
-		stream := r.packer.NewPacketStream(hdr.Req, hdr.Flag)
-		go r.handlePacket(hdr, stream)
+		r.HandlePacket(pkt)
 	}
 }
 
-func (r *rpc) handlePacket(hdr codec.Header, stream *PacketStream) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+func (r *rpc) sender() {
+	for {
+		select {
+		case <-r.ctx.Done():
+			return
+		case <-r.sendCh:
+			for _, outPkt := range r.Produce() {
+				r.packer.WritePacket(outPkt)
+			}
+		}
+	}
+}
 
-	if hdr.Req > 0 {
+func (r *rpc) HandlePacket(p *codec.Packet) {
+	if p.Req > 0 {
 		req := &Request{
-			id:         hdr.Req,
+			id:         p.Req,
 			Method:     ParseMethod("unknown"),
 			Type:       CallType("async"),
-			sink:       NewByteSinkFromStream(stream),
+			sink:       NewByteSink(r.packer),
 			source:     NewByteSource(r.ctx),
 			remoteAddr: r.conn.RemoteAddr(),
 			endpoint:   r,
 		}
-		r.streams[hdr.Req] = req
-		stream.SetRequest(req)
+		req.sink.SetReqID(p.Req)
+		
+		r.mu.Lock()
+		r.streams[p.Req] = req
+		r.mu.Unlock()
 
-		args := stream.Bytes()
-		if len(args) > 0 {
-			json.Unmarshal(args, &req.RawArgs)
-			if req.RawArgs == nil {
-				req.RawArgs = args
+		if len(p.Body) > 0 {
+			if err := json.Unmarshal(p.Body, req); err != nil {
+				req.RawArgs = json.RawMessage(p.Body)
 			}
 		}
 
@@ -303,16 +349,15 @@ func (r *rpc) handlePacket(hdr codec.Header, stream *PacketStream) {
 			r.handler.HandleCall(r.ctx, req)
 		}
 	} else {
-		if req, ok := r.streams[-hdr.Req]; ok {
-			if hdr.Flag.Get(codec.FlagEndErr) {
-				req.source.Cancel(fmt.Errorf("remote error"))
+		r.mu.Lock()
+		req, ok := r.streams[-p.Req]
+		r.mu.Unlock()
+		if ok {
+			if err := req.source.WritePacket(p); err != nil {
 			}
-			if err := req.sink.Consume(hdr.Len, hdr.Flag, stream); err != nil {
-				fmt.Printf("[muxrpc] stream consume error: %v\n", err)
-			}
-			if !hdr.Flag.Get(codec.FlagStream) {
-				req.sink.Close()
-				delete(r.streams, -hdr.Req)
+			if p.Flag.Get(codec.FlagEndErr) && !p.Flag.Get(codec.FlagStream) {
+				req.source.Cancel(nil)
+				r.closeStream(req)
 			}
 		}
 	}
@@ -325,7 +370,7 @@ func (r *rpc) closeStream(req *Request) {
 }
 
 func (r *rpc) Async(ctx context.Context, ret interface{}, tipe RequestEncoding, method Method, args ...interface{}) error {
-	src, err := r.Source(ctx, tipe, method, args...)
+	src, err := r.call(ctx, "async", tipe, method, args...)
 	if err != nil {
 		return err
 	}
@@ -337,7 +382,7 @@ func (r *rpc) Async(ctx context.Context, ret interface{}, tipe RequestEncoding, 
 
 	if len(b) > 0 && tipe == TypeJSON && ret != nil {
 		if err := json.Unmarshal(b, ret); err != nil {
-			return fmt.Errorf("muxrpc: failed to unmarshal response: %w", err)
+			return err
 		}
 	}
 
@@ -345,6 +390,10 @@ func (r *rpc) Async(ctx context.Context, ret interface{}, tipe RequestEncoding, 
 }
 
 func (r *rpc) Source(ctx context.Context, tipe RequestEncoding, method Method, args ...interface{}) (*ByteSource, error) {
+	return r.call(ctx, "source", tipe, method, args...)
+}
+
+func (r *rpc) call(ctx context.Context, callType string, tipe RequestEncoding, method Method, args ...interface{}) (*ByteSource, error) {
 	encFlag, err := tipe.AsCodecFlag()
 	if err != nil {
 		return nil, err
@@ -355,35 +404,42 @@ func (r *rpc) Source(ctx context.Context, tipe RequestEncoding, method Method, a
 	r.nextID++
 	r.mu.Unlock()
 
-	sink := NewByteSink(r.packer)
+	sink := NewByteSink(r)
 	sink.SetReqID(id)
 	src := NewByteSource(ctx)
 
 	req := &Request{
 		id:         id,
 		Method:     method,
-		Type:       "source",
+		Type:       CallType(callType),
 		sink:       sink,
 		source:     src,
 		remoteAddr: r.conn.RemoteAddr(),
 		endpoint:   r,
 	}
 
-	var argBytes []byte
 	if len(args) > 0 {
-		argBytes, err = json.Marshal(args)
-		if err != nil {
-			return nil, fmt.Errorf("muxrpc: failed to marshal args: %w", err)
-		}
+		req.RawArgs, _ = json.Marshal(args)
+	}
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("muxrpc: failed to marshal request: %w", err)
 	}
 
 	pkt := codec.Packet{
-		Flag: codec.FlagStream | encFlag,
+		Flag: encFlag,
 		Req:  id,
-		Body: argBytes,
+		Body: body,
+	}
+	if tipe == TypeJSON {
+		pkt.Flag |= codec.FlagJSON
+	}
+	if callType != "async" && callType != "sync" {
+		pkt.Flag |= codec.FlagStream
 	}
 
-	if err := r.packer.WritePacket(pkt); err != nil {
+	if err := r.WritePacket(pkt); err != nil {
 		return nil, fmt.Errorf("muxrpc: failed to send packet: %w", err)
 	}
 

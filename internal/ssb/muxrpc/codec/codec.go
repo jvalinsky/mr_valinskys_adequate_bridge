@@ -52,6 +52,72 @@ const (
 	FlagStream
 )
 
+var (
+	ErrNeedInput = errors.New("pkt-codec: need more input")
+)
+
+type Decoder struct {
+	buffer []byte
+}
+
+func NewDecoder() *Decoder {
+	return &Decoder{}
+}
+
+func (d *Decoder) AddData(p []byte) {
+	if len(p) > 0 {
+		d.buffer = append(d.buffer, p...)
+	}
+}
+
+func (d *Decoder) NextPacket() (*Packet, error) {
+	if len(d.buffer) < HeaderSize {
+		return nil, ErrNeedInput
+	}
+
+	buf := d.buffer[:HeaderSize]
+	var hdr Header
+	hdr.Flag = Flag(buf[0])
+	hdr.Len = binary.BigEndian.Uint32(buf[1:5])
+	hdr.Req = int32(binary.BigEndian.Uint32(buf[5:9]))
+
+	if hdr.Flag == 0 && hdr.Len == 0 && hdr.Req == 0 {
+		d.buffer = d.buffer[HeaderSize:]
+		return nil, io.EOF
+	}
+
+	if uint32(len(d.buffer)) < HeaderSize+hdr.Len {
+		return nil, ErrNeedInput
+	}
+
+	p := &Packet{
+		Flag: hdr.Flag,
+		Req:  hdr.Req,
+		Body: make([]byte, hdr.Len),
+	}
+	copy(p.Body, d.buffer[HeaderSize:HeaderSize+hdr.Len])
+
+	d.buffer = d.buffer[HeaderSize+hdr.Len:]
+	return p, nil
+}
+
+type Encoder struct{}
+
+func (Encoder) EncodePacket(p Packet) ([]byte, error) {
+	bodyLen := len(p.Body)
+	if bodyLen > maxBufferSize {
+		return nil, fmt.Errorf("pkt-codec: body too large (%d)", bodyLen)
+	}
+
+	buf := make([]byte, HeaderSize+bodyLen)
+	buf[0] = byte(p.Flag)
+	binary.BigEndian.PutUint32(buf[1:5], uint32(bodyLen))
+	binary.BigEndian.PutUint32(buf[5:9], uint32(p.Req))
+	copy(buf[HeaderSize:], p.Body)
+
+	return buf, nil
+}
+
 type Reader struct{ r io.Reader }
 
 func NewReader(r io.Reader) *Reader {

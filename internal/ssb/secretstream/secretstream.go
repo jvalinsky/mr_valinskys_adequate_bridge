@@ -10,18 +10,207 @@ import (
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/secretstream/boxstream"
 
+	"filippo.io/edwards25519"
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/crypto/ed25519"
 	"golang.org/x/crypto/nacl/auth"
 	"golang.org/x/crypto/nacl/box"
+	"crypto/sha512"
+	"time"
 )
 
 const NetworkString = "boxstream"
 
+// Standard SSB public network identifier (Base64: 1KHLiKZvAvjbY1wiZEHMXOWBBYm2hPU10pkVkyQ183M=)
+var DefaultAppKey = AppKey{
+	0xd4, 0xa1, 0xcb, 0x88, 0xa6, 0x6f, 0x02, 0xf8,
+	0xdb, 0x63, 0x5c, 0x22, 0x64, 0x41, 0xcc, 0x5c,
+	0xe5, 0x81, 0x05, 0x89, 0xb6, 0x84, 0xf5, 0x35,
+	0xd2, 0x99, 0x15, 0x93, 0x24, 0x35, 0xf3, 0x73,
+}
+
 var (
 	ErrInvalidKey      = errors.New("secretstream: invalid key")
 	ErrHandshakeFailed = errors.New("secretstream: handshake failed")
+	ErrNeedInput       = errors.New("secretstream: need more input")
 )
+
+type Handshaker interface {
+	Next(input []byte) (output []byte, err error)
+	IsDone() bool
+	State() *State
+}
+
+type shsState int
+
+const (
+	shsInitial shsState = iota
+	shsWaitingChallenge
+	shsWaitingClientAuth
+	shsWaitingServerAccept
+	shsDone
+)
+
+type HandshakeMachine struct {
+	state   *State
+	role    shsState
+	isClient bool
+	buffer  []byte
+}
+
+func NewClientHandshake(appKey AppKey, local ed25519.PrivateKey, remote ed25519.PublicKey) (*HandshakeMachine, error) {
+	state, err := NewClientState(appKey, local, remote)
+	if err != nil {
+		return nil, err
+	}
+	return &HandshakeMachine{
+		state:    state,
+		role:     shsInitial,
+		isClient: true,
+	}, nil
+}
+
+func NewServerHandshake(appKey AppKey, local ed25519.PrivateKey) (*HandshakeMachine, error) {
+	state, err := NewServerState(appKey, local)
+	if err != nil {
+		return nil, err
+	}
+	return &HandshakeMachine{
+		state:    state,
+		role:     shsInitial,
+		isClient: false,
+	}, nil
+}
+
+func (m *HandshakeMachine) IsDone() bool {
+	return m.role == shsDone
+}
+
+func (m *HandshakeMachine) State() *State {
+	return m.state
+}
+
+func (m *HandshakeMachine) ExpectedBytes() int {
+	if m.IsDone() {
+		return 0
+	}
+	if m.isClient {
+		switch m.role {
+		case shsWaitingChallenge:
+			return 64
+		case shsWaitingServerAccept:
+			return 80
+		default:
+			return 0
+		}
+	} else {
+		switch m.role {
+		case shsInitial:
+			return 64
+		case shsWaitingClientAuth:
+			return 112
+		default:
+			return 0
+		}
+	}
+}
+
+func (m *HandshakeMachine) Next(input []byte) ([]byte, error) {
+	if m.role == shsDone {
+		return nil, nil
+	}
+
+	if len(input) > 0 {
+		m.buffer = append(m.buffer, input...)
+	}
+
+	if m.isClient {
+		return m.nextClient()
+	}
+	return m.nextServer()
+}
+
+func (m *HandshakeMachine) nextClient() ([]byte, error) {
+	switch m.role {
+	case shsInitial:
+		challenge := m.state.createChallenge()
+		m.role = shsWaitingChallenge
+		return challenge, nil
+
+	case shsWaitingChallenge:
+		if len(m.buffer) < 64 {
+			return nil, ErrNeedInput
+		}
+		challenge := m.buffer[:64]
+		m.buffer = m.buffer[64:]
+
+		if !m.state.verifyChallenge(challenge) {
+			return nil, ErrHandshakeFailed
+		}
+
+		clientAuth := m.state.createClientAuth()
+		m.role = shsWaitingServerAccept
+		return clientAuth, nil
+
+	case shsWaitingServerAccept:
+		if len(m.buffer) < 80 {
+			return nil, ErrNeedInput
+		}
+		serverAccept := m.buffer[:80]
+		m.buffer = m.buffer[80:]
+
+		if !m.state.verifyServerAccept(serverAccept) {
+			return nil, ErrHandshakeFailed
+		}
+
+		m.state.cleanSecrets()
+		m.role = shsDone
+		return nil, nil
+
+	default:
+		return nil, nil
+	}
+}
+
+func (m *HandshakeMachine) nextServer() ([]byte, error) {
+	switch m.role {
+	case shsInitial:
+		if len(m.buffer) < 64 {
+			return nil, ErrNeedInput
+		}
+		challenge := m.buffer[:64]
+		m.buffer = m.buffer[64:]
+
+		if !m.state.verifyChallenge(challenge) {
+			return nil, ErrHandshakeFailed
+		}
+
+		challengeResp := m.state.createChallenge()
+		m.role = shsWaitingClientAuth
+		return challengeResp, nil
+
+	case shsWaitingClientAuth:
+		if len(m.buffer) < 112 {
+			return nil, ErrNeedInput
+		}
+		clientAuth := m.buffer[:112]
+		m.buffer = m.buffer[112:]
+
+		if !m.state.verifyClientAuth(clientAuth) {
+			return nil, ErrHandshakeFailed
+		}
+
+		serverAccept := m.state.createServerAccept()
+		m.role = shsWaitingServerAccept
+		m.state.cleanSecrets()
+		m.role = shsDone
+
+		return serverAccept, nil
+
+	default:
+		return nil, nil
+	}
+}
 
 type Addr struct {
 	net.Addr
@@ -35,6 +224,9 @@ func (a Addr) String() string {
 type AppKey [32]byte
 
 func NewAppKey(s string) AppKey {
+	if s == "boxstream" || s == "" {
+		return DefaultAppKey
+	}
 	h := sha256.Sum256([]byte(s))
 	return h
 }
@@ -140,7 +332,7 @@ func (s *State) createClientAuth() []byte {
 	s.hello = append(s.hello, sig[:]...)
 	s.hello = append(s.hello, pub[:]...)
 
-	out := make([]byte, 0, len(s.hello)-box.Overhead)
+	out := make([]byte, 0, len(s.hello)+box.Overhead)
 	var n [24]byte
 	out = box.SealAfterPrecomputation(out, s.hello, &n, &s.secret2)
 	return out
@@ -159,7 +351,7 @@ func (s *State) verifyClientAuth(data []byte) bool {
 	secHasher.Write(s.aBob[:])
 	copy(s.secret2[:], secHasher.Sum(nil))
 
-	s.hello = make([]byte, 0, len(data)-16)
+	s.hello = make([]byte, 0, len(data)-box.Overhead)
 	var nonce [24]byte
 	var openOk bool
 	s.hello, openOk = box.OpenAfterPrecomputation(s.hello, data, &nonce, &s.secret2)
@@ -202,9 +394,9 @@ func (s *State) createServerAccept() []byte {
 
 	okay := ed25519.Sign(s.local, sigMsg)
 
-	var out = make([]byte, 0, len(okay)+16)
+	var out = make([]byte, 0, len(okay)+box.Overhead)
 	var nonce [24]byte
-	return box.SealAfterPrecomputation(out, okay[:], &nonce, &s.secret3)
+	return box.SealAfterPrecomputation(out, okay, &nonce, &s.secret3)
 }
 
 func (s *State) verifyServerAccept(boxedOkay []byte) bool {
@@ -280,16 +472,24 @@ func (s *State) GetBoxstreamDecKeys() ([32]byte, [24]byte) {
 }
 
 func ed25519PublicToCurve25519(edPub ed25519.PublicKey) [32]byte {
-	var curvePub [32]byte
-	curve25519.ScalarBaseMult(&curvePub, (*[32]byte)(edPub))
-	return curvePub
+	pt, err := new(edwards25519.Point).SetBytes(edPub)
+	if err != nil {
+		return [32]byte{}
+	}
+	var out [32]byte
+	copy(out[:], pt.BytesMontgomery())
+	return out
 }
 
 func ed25519PrivateToCurve25519(edPriv ed25519.PrivateKey) [32]byte {
-	var curvePriv [32]byte
-	var base [32]byte
-	curve25519.ScalarMult(&curvePriv, &base, (*[32]byte)(edPriv))
-	return curvePriv
+	h := sha512.Sum512(edPriv[:32])
+	s := h[:32]
+	s[0] &= 248
+	s[31] &= 127
+	s[31] |= 64
+	var out [32]byte
+	copy(out[:], s)
+	return out
 }
 
 type Client struct {
@@ -310,33 +510,42 @@ func NewClient(conn net.Conn, appKey AppKey, local ed25519.PrivateKey, remote ed
 }
 
 func (c *Client) Handshake() error {
-	challenge := c.state.createChallenge()
-	if _, err := c.conn.Write(challenge); err != nil {
+	m := &HandshakeMachine{
+		state:    c.state,
+		role:     shsInitial,
+		isClient: true,
+	}
+
+	// Client Handshake Loop
+	output, err := m.Next(nil)
+	if err != nil {
+		return err
+	}
+	if _, err := c.conn.Write(output); err != nil {
 		return err
 	}
 
-	resp := make([]byte, 64)
-	if _, err := io.ReadFull(c.conn, resp); err != nil {
-		return err
-	}
-	if !c.state.verifyChallenge(resp) {
-		return ErrHandshakeFailed
-	}
+	for !m.IsDone() {
+		expected := m.ExpectedBytes()
+		if expected == 0 {
+			return ErrHandshakeFailed
+		}
 
-	clientAuth := c.state.createClientAuth()
-	if _, err := c.conn.Write(clientAuth); err != nil {
-		return err
-	}
+		input := make([]byte, expected)
+		if _, err := io.ReadFull(c.conn, input); err != nil {
+			return err
+		}
 
-	serverAccept := make([]byte, 64+16)
-	if _, err := io.ReadFull(c.conn, serverAccept); err != nil {
-		return err
+		output, err = m.Next(input)
+		if err != nil {
+			return err
+		}
+		if len(output) > 0 {
+			if _, err := c.conn.Write(output); err != nil {
+				return err
+			}
+		}
 	}
-	if !c.state.verifyServerAccept(serverAccept) {
-		return ErrHandshakeFailed
-	}
-
-	c.state.cleanSecrets()
 
 	encKey, encNonce := c.state.GetBoxstreamEncKeys()
 	decKey, decNonce := c.state.GetBoxstreamDecKeys()
@@ -353,18 +562,6 @@ func (c *Client) WriteMessage(msg []byte) error {
 
 func (c *Client) ReadMessage() ([]byte, error) {
 	return c.unboxer.ReadMessage()
-}
-
-func (c *Client) Close() error {
-	c.boxer.WriteGoodbye()
-	return c.conn.Close()
-}
-
-func (c *Client) RemoteAddr() net.Addr {
-	return Addr{
-		Addr:   c.conn.RemoteAddr(),
-		PubKey: c.state.Remote(),
-	}
 }
 
 type Server struct {
@@ -385,33 +582,33 @@ func NewServer(conn net.Conn, appKey AppKey, local ed25519.PrivateKey) (*Server,
 }
 
 func (s *Server) Handshake() error {
-	challenge := make([]byte, 64)
-	if _, err := io.ReadFull(s.conn, challenge); err != nil {
-		return err
-	}
-	if !s.state.verifyChallenge(challenge) {
-		return ErrHandshakeFailed
+	m := &HandshakeMachine{
+		state:    s.state,
+		role:     shsInitial,
+		isClient: false,
 	}
 
-	challengeResp := s.state.createChallenge()
-	if _, err := s.conn.Write(challengeResp); err != nil {
-		return err
-	}
+	for !m.IsDone() {
+		expected := m.ExpectedBytes()
+		if expected == 0 {
+			return ErrHandshakeFailed
+		}
 
-	clientAuth := make([]byte, 80)
-	if _, err := io.ReadFull(s.conn, clientAuth); err != nil {
-		return err
-	}
-	if !s.state.verifyClientAuth(clientAuth) {
-		return ErrHandshakeFailed
-	}
+		input := make([]byte, expected)
+		if _, err := io.ReadFull(s.conn, input); err != nil {
+			return err
+		}
 
-	serverAccept := s.state.createServerAccept()
-	if _, err := s.conn.Write(serverAccept); err != nil {
-		return err
+		output, err := m.Next(input)
+		if err != nil {
+			return err
+		}
+		if len(output) > 0 {
+			if _, err := s.conn.Write(output); err != nil {
+				return err
+			}
+		}
 	}
-
-	s.state.cleanSecrets()
 
 	encKey, encNonce := s.state.GetBoxstreamEncKeys()
 	decKey, decNonce := s.state.GetBoxstreamDecKeys()
@@ -422,17 +619,21 @@ func (s *Server) Handshake() error {
 	return nil
 }
 
-func (s *Server) WriteMessage(msg []byte) error {
-	return s.boxer.WriteMessage(msg)
+func (s *Server) Read(b []byte) (int, error) {
+	return s.unboxer.Read(b)
 }
 
-func (s *Server) ReadMessage() ([]byte, error) {
-	return s.unboxer.ReadMessage()
+func (s *Server) Write(b []byte) (int, error) {
+	return s.boxer.Write(b)
 }
 
 func (s *Server) Close() error {
 	s.boxer.WriteGoodbye()
 	return s.conn.Close()
+}
+
+func (s *Server) LocalAddr() net.Addr {
+	return s.conn.LocalAddr()
 }
 
 func (s *Server) RemoteAddr() net.Addr {
@@ -441,3 +642,35 @@ func (s *Server) RemoteAddr() net.Addr {
 		PubKey: s.state.Remote(),
 	}
 }
+
+func (s *Server) SetDeadline(t time.Time) error      { return s.conn.SetDeadline(t) }
+func (s *Server) SetReadDeadline(t time.Time) error  { return s.conn.SetReadDeadline(t) }
+func (s *Server) SetWriteDeadline(t time.Time) error { return s.conn.SetWriteDeadline(t) }
+
+func (c *Client) Read(b []byte) (int, error) {
+	return c.unboxer.Read(b)
+}
+
+func (c *Client) Write(b []byte) (int, error) {
+	return c.boxer.Write(b)
+}
+
+func (c *Client) Close() error {
+	c.boxer.WriteGoodbye()
+	return c.conn.Close()
+}
+
+func (c *Client) LocalAddr() net.Addr {
+	return c.conn.LocalAddr()
+}
+
+func (c *Client) RemoteAddr() net.Addr {
+	return Addr{
+		Addr:   c.conn.RemoteAddr(),
+		PubKey: c.state.Remote(),
+	}
+}
+
+func (c *Client) SetDeadline(t time.Time) error      { return c.conn.SetDeadline(t) }
+func (c *Client) SetReadDeadline(t time.Time) error  { return c.conn.SetReadDeadline(t) }
+func (c *Client) SetWriteDeadline(t time.Time) error { return c.conn.SetWriteDeadline(t) }

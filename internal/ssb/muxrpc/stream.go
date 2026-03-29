@@ -109,7 +109,17 @@ func (bs *ByteSource) Bytes() ([]byte, error) {
 	defer bs.mu.Unlock()
 
 	if bs.buf.frames == 0 {
-		return nil, io.EOF
+		if bs.failed != nil {
+			return nil, bs.failed
+		}
+
+		// Wait for at least one frame
+		bs.mu.Unlock()
+		if !bs.Next(context.Background()) {
+			bs.mu.Lock()
+			return nil, bs.failed
+		}
+		bs.mu.Lock()
 	}
 
 	pktLen, rd, err := bs.buf.getNextFrameReader()
@@ -126,7 +136,15 @@ func (bs *ByteSource) Source() *ByteSource {
 	return bs
 }
 
-func (bs *ByteSource) consume(pktLen uint32, r io.Reader) error {
+func (bs *ByteSource) WritePacket(p *codec.Packet) error {
+	return bs.consume(p.Body)
+}
+
+type PacketWriter interface {
+	WritePacket(p codec.Packet) error
+}
+
+func (bs *ByteSource) consume(body []byte) error {
 	bs.mu.Lock()
 	defer bs.mu.Unlock()
 
@@ -134,7 +152,7 @@ func (bs *ByteSource) consume(pktLen uint32, r io.Reader) error {
 		return bs.failed
 	}
 
-	err := bs.buf.copyBody(pktLen, r)
+	err := bs.buf.writeBody(body)
 	if err != nil {
 		return err
 	}
@@ -143,7 +161,7 @@ func (bs *ByteSource) consume(pktLen uint32, r io.Reader) error {
 }
 
 type ByteSink struct {
-	packer    *Packer
+	pkr       PacketWriter
 	req       int32
 	flag      codec.Flag
 	encoding  RequestEncoding
@@ -154,9 +172,9 @@ type ByteSink struct {
 	usePacker bool
 }
 
-func NewByteSink(p *Packer) *ByteSink {
+func NewByteSink(p PacketWriter) *ByteSink {
 	return &ByteSink{
-		packer:    p,
+		pkr:       p,
 		writer:    new(bytes.Buffer),
 		usePacker: p != nil,
 	}
@@ -164,7 +182,7 @@ func NewByteSink(p *Packer) *ByteSink {
 
 func NewByteSinkFromStream(ps *PacketStream) *ByteSink {
 	return &ByteSink{
-		packer:    nil,
+		pkr:       nil,
 		writer:    new(bytes.Buffer),
 		usePacker: false,
 		flag:      ps.flag,
@@ -204,8 +222,7 @@ func (bs *ByteSink) Close() error {
 		return bs.closeErr
 	}
 	bs.closed = true
-
-	if bs.usePacker && bs.packer != nil {
+	if bs.usePacker && bs.pkr != nil {
 		encFlag, err := bs.encoding.AsCodecFlag()
 		if err != nil {
 			bs.closeErr = err
@@ -214,10 +231,10 @@ func (bs *ByteSink) Close() error {
 
 		pkt := codec.Packet{
 			Flag: encFlag | codec.FlagEndErr,
-			Req:  bs.req,
+			Req:  -bs.req,
 			Body: bs.writer.Bytes(),
 		}
-		bs.closeErr = bs.packer.WritePacket(pkt)
+		bs.closeErr = bs.pkr.WritePacket(pkt)
 	}
 
 	return bs.closeErr
@@ -233,20 +250,20 @@ func (bs *ByteSink) CloseWithError(err error) error {
 	bs.closed = true
 	bs.closeErr = err
 
-	if bs.usePacker && bs.packer != nil {
+	if bs.usePacker && bs.pkr != nil {
 		errBytes := []byte(fmt.Sprintf(`{"name":"Error","message":"%v"}`, err))
 		pkt := codec.Packet{
 			Flag: codec.FlagJSON | codec.FlagEndErr,
-			Req:  bs.req,
+			Req:  -bs.req,
 			Body: errBytes,
 		}
-		bs.packer.WritePacket(pkt)
+		bs.pkr.WritePacket(pkt)
 	}
 
 	return bs.closeErr
 }
 
-func (bs *ByteSink) Consume(pktLen uint32, flag codec.Flag, r io.Reader) error {
+func (bs *ByteSink) Consume(p *codec.Packet) error {
 	bs.mu.Lock()
 	defer bs.mu.Unlock()
 
@@ -254,14 +271,7 @@ func (bs *ByteSink) Consume(pktLen uint32, flag codec.Flag, r io.Reader) error {
 		return io.EOF
 	}
 
-	n, err := io.Copy(bs.writer, io.LimitReader(r, int64(pktLen)))
-	if err != nil {
-		return err
-	}
-	if uint32(n) != pktLen {
-		return errors.New("ByteSink: failed to consume full body")
-	}
-
+	bs.writer.Write(p.Body)
 	return nil
 }
 
@@ -335,6 +345,26 @@ type frameBuffer struct {
 
 func (fb *frameBuffer) Frames() uint32 {
 	return atomic.LoadUint32(&fb.frames)
+}
+
+func (fb *frameBuffer) writeBody(body []byte) error {
+	fb.mu.Lock()
+	defer fb.mu.Unlock()
+
+	pktLen := len(body)
+	binary.LittleEndian.PutUint32(fb.lenBuf[:], uint32(pktLen))
+	fb.store.Write(fb.lenBuf[:])
+	fb.store.Write(body)
+
+	atomic.AddUint32(&fb.frames, 1)
+
+	if n := len(fb.waiting); n > 0 {
+		for _, ch := range fb.waiting {
+			close(ch)
+		}
+		fb.waiting = make([]chan<- struct{}, 0)
+	}
+	return nil
 }
 
 func (fb *frameBuffer) copyBody(pktLen uint32, rd io.Reader) error {
