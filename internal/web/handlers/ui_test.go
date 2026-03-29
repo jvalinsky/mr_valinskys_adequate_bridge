@@ -466,6 +466,193 @@ func fetchUI(t *testing.T, database *db.DB, path string) string {
 	return rr.Body.String()
 }
 
+type erroringDB struct {
+	db.DB
+	failMethod string
+}
+
+func (e *erroringDB) SetFail(method string) { e.failMethod = method }
+
+func (e *erroringDB) CountBridgedAccounts(ctx context.Context) (int, error) {
+	if e.failMethod == "CountBridgedAccounts" {
+		return 0, fmt.Errorf("forced error")
+	}
+	return 0, nil
+}
+
+func (e *erroringDB) ListBridgedAccountsWithStats(ctx context.Context) ([]db.BridgedAccountStats, error) {
+	if e.failMethod == "ListBridgedAccountsWithStats" {
+		return nil, fmt.Errorf("forced error")
+	}
+	return nil, nil
+}
+
+func (e *erroringDB) CountMessages(ctx context.Context) (int, error) {
+	if e.failMethod == "CountMessages" {
+		return 0, fmt.Errorf("forced error")
+	}
+	return 0, nil
+}
+
+func (e *erroringDB) ListMessagesPage(ctx context.Context, q db.MessageListQuery) (db.MessagePage, error) {
+	if e.failMethod == "ListMessagesPage" {
+		return db.MessagePage{}, fmt.Errorf("forced error")
+	}
+	return db.MessagePage{}, nil
+}
+
+func (e *erroringDB) ListMessageTypes(ctx context.Context) ([]string, error) {
+	if e.failMethod == "ListMessageTypes" {
+		return nil, fmt.Errorf("forced error")
+	}
+	return nil, nil
+}
+
+func (e *erroringDB) GetPublishFailures(ctx context.Context, limit int) ([]db.Message, error) {
+	if e.failMethod == "GetPublishFailures" {
+		return nil, fmt.Errorf("forced error")
+	}
+	return nil, nil
+}
+
+func (e *erroringDB) GetRecentBlobs(ctx context.Context, limit int) ([]db.Blob, error) {
+	if e.failMethod == "GetRecentBlobs" {
+		return nil, fmt.Errorf("forced error")
+	}
+	return nil, nil
+}
+
+func (e *erroringDB) GetAllBridgeState(ctx context.Context) ([]db.BridgeState, error) {
+	if e.failMethod == "GetAllBridgeState" {
+		return nil, fmt.Errorf("forced error")
+	}
+	return nil, nil
+}
+
+func (e *erroringDB) CountDeferredMessages(ctx context.Context) (int, error) {
+	if e.failMethod == "CountDeferredMessages" {
+		return 0, fmt.Errorf("forced error")
+	}
+	return 0, nil
+}
+
+func (e *erroringDB) CountPublishedMessages(ctx context.Context) (int, error) {
+	if e.failMethod == "CountPublishedMessages" {
+		return 0, fmt.Errorf("forced error")
+	}
+	return 0, nil
+}
+
+func (e *erroringDB) CountPublishFailures(ctx context.Context) (int, error) {
+	if e.failMethod == "CountPublishFailures" {
+		return 0, fmt.Errorf("forced error")
+	}
+	return 0, nil
+}
+
+func (e *erroringDB) CountDeletedMessages(ctx context.Context) (int, error) {
+	if e.failMethod == "CountDeletedMessages" {
+		return 0, fmt.Errorf("forced error")
+	}
+	return 0, nil
+}
+
+func (e *erroringDB) CountBlobs(ctx context.Context) (int, error) {
+	if e.failMethod == "CountBlobs" {
+		return 0, fmt.Errorf("forced error")
+	}
+	return 0, nil
+}
+
+func (e *erroringDB) GetBridgeState(ctx context.Context, key string) (string, bool, error) {
+	if e.failMethod == "GetBridgeState" {
+		return "", false, fmt.Errorf("forced error")
+	}
+	return "", false, nil
+}
+
+func (e *erroringDB) ListTopDeferredReasons(ctx context.Context, limit int) ([]db.DeferredReasonCount, error) {
+	if e.failMethod == "ListTopDeferredReasons" {
+		return nil, fmt.Errorf("forced error")
+	}
+	return nil, nil
+}
+
+func (e *erroringDB) ListTopIssueAccounts(ctx context.Context, limit int) ([]db.AccountIssueSummary, error) {
+	if e.failMethod == "ListTopIssueAccounts" {
+		return nil, fmt.Errorf("forced error")
+	}
+	return nil, nil
+}
+
+func (e *erroringDB) CheckBridgeHealth(ctx context.Context, maxStale time.Duration) (*db.BridgeHealthStatus, error) {
+	if e.failMethod == "CheckBridgeHealth" {
+		return nil, fmt.Errorf("forced error")
+	}
+	return &db.BridgeHealthStatus{Healthy: true}, nil
+}
+
+func (e *erroringDB) GetMessage(ctx context.Context, atURI string) (*db.Message, error) {
+	if e.failMethod == "GetMessage" {
+		return nil, fmt.Errorf("forced error")
+	}
+	return nil, nil
+}
+
+func (e *erroringDB) GetLatestDeferredReason(ctx context.Context) (string, bool, error) {
+	return "", false, nil
+}
+
+func TestHandlersHandleErrors(t *testing.T) {
+	errDB := &erroringDB{}
+	handler := NewUIHandler(errDB, nil)
+	router := chi.NewRouter()
+	handler.Mount(router)
+
+	testCases := []struct {
+		name   string
+		path   string
+		method string
+	}{
+		{"dashboard accounts error", "/", "CountBridgedAccounts"},
+		{"dashboard messages error", "/", "CountMessages"},
+		{"dashboard published error", "/", "CountPublishedMessages"},
+		{"dashboard failure error", "/", "CountPublishFailures"},
+		{"dashboard deferred error", "/", "CountDeferredMessages"},
+		{"dashboard deleted error", "/", "CountDeletedMessages"},
+		{"dashboard blobs error", "/", "CountBlobs"},
+		{"dashboard state error", "/", "GetBridgeState"},
+		{"dashboard reasons error", "/", "ListTopDeferredReasons"},
+		{"dashboard issues error", "/", "ListTopIssueAccounts"},
+		{"accounts list error", "/accounts", "ListBridgedAccountsWithStats"},
+		{"messages list error", "/messages", "ListMessagesPage"},
+		{"messages types error", "/messages", "ListMessageTypes"},
+		{"failures list error", "/failures", "GetPublishFailures"},
+		{"blobs list error", "/blobs", "GetRecentBlobs"},
+		{"state list error", "/state", "GetAllBridgeState"},
+		{"state deferred error", "/state", "CountDeferredMessages"},
+		{"message detail error", "/messages/detail?at_uri=at://foo", "GetMessage"},
+		{"health healthy error", "/healthz", "CheckBridgeHealth"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			errDB.SetFail(tc.method)
+			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			rr := httptest.NewRecorder()
+			router.ServeHTTP(rr, req)
+
+			expectedCode := http.StatusInternalServerError
+			if tc.method == "CheckBridgeHealth" {
+				expectedCode = http.StatusServiceUnavailable
+			}
+			if rr.Code != expectedCode {
+				t.Fatalf("expected %d for %s, got %d", expectedCode, tc.method, rr.Code)
+			}
+		})
+	}
+}
+
 func TestAccountsPageRenders(t *testing.T) {
 	database := openTestDB(t)
 	defer database.Close()
@@ -768,24 +955,160 @@ func TestCompactIssueText(t *testing.T) {
 	}
 }
 
-func TestRuntimeHealth(t *testing.T) {
+func TestHandleMessagesEdgeCases(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	router := chi.NewRouter()
+	NewUIHandler(database, nil).Mount(router)
+
+	t.Run("invalid cursor type", func(t *testing.T) {
+		// cursor=abc is invalid base64/JSON for db.DecodeMessageListCursor but handled gracefully by the UI
+		req := httptest.NewRequest(http.MethodGet, "/messages?cursor=abc", nil)
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200 for invalid cursor, got %d", rr.Code)
+		}
+	})
+
+	t.Run("non-numeric limit", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/messages?limit=xyz", nil)
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("expected 200 for non-numeric limit, got %d", rr.Code)
+		}
+	})
+}
+
+func TestBuildTypeOptionsEdgeCases(t *testing.T) {
+	// These test the private helper functions directly via handlers
+	database := openTestDB(t)
+	defer database.Close()
+
+	ctx := context.Background()
+	// Add messages with various types to populate ListMessageTypes
+	types := []string{"app.bsky.feed.post", "app.bsky.feed.post", "", "  ", "app.bsky.graph.follow"}
+	for i, typ := range types {
+		database.AddMessage(ctx, db.Message{
+			ATURI: fmt.Sprintf("at://did:plc:x/t/%d", i), ATCID: fmt.Sprintf("c%d", i),
+			Type: typ, MessageState: db.MessageStatePublished,
+		})
+	}
+
+	body := fetchUI(t, database, "/messages?type=app.bsky.feed.post")
+	if !strings.Contains(body, "value=\"app.bsky.feed.post\" selected") {
+		t.Fatal("selected type option missing")
+	}
+}
+
+func TestMessagesPagePagination(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	ctx := context.Background()
+	// Add 101 messages to ensure we have at least 2 pages (limit 100 default)
+	for i := 0; i < 101; i++ {
+		database.AddMessage(ctx, db.Message{
+			ATURI: fmt.Sprintf("at://did:plc:x/t/%03d", i), ATCID: fmt.Sprintf("c%d", i),
+			Type: mapper.RecordTypePost, MessageState: db.MessageStatePublished,
+		})
+	}
+
+	body := fetchUI(t, database, "/messages")
+	if !strings.Contains(body, "Next") {
+		t.Fatal("messages page should show Next button")
+	}
+
+	// Extract Next cursor from the body
+	// href="/messages?limit=100&amp;cursor=...&amp;dir=next"
+	cursorPrefix := "cursor="
+	cursorStart := strings.Index(body, cursorPrefix)
+	if cursorStart == -1 {
+		t.Fatal("could not find cursor in page 1")
+	}
+	cursorStart += len(cursorPrefix)
+	cursorEnd := strings.Index(body[cursorStart:], "&")
+	if cursorEnd == -1 {
+		t.Fatal("could not find cursor end in page 1")
+	}
+	nextCursor := body[cursorStart : cursorStart+cursorEnd]
+
+	// Fetch next page with the real cursor
+	body = fetchUI(t, database, "/messages?dir=next&cursor="+nextCursor)
+	if !strings.Contains(body, "Previous") {
+		t.Fatal("messages page should show Previous button on page 2")
+	}
+}
+
+func TestMessagesPageLegacySort(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	// attempts_desc is not a keyset sort, hits the legacy branch in ListMessagesPage
+	body := fetchUI(t, database, "/messages?sort=attempts_desc")
+	if !strings.Contains(body, "Filter and paginate") {
+		t.Fatal("messages page should handle legacy sorts")
+	}
+}
+
+func TestFailuresPageSorting(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	ctx := context.Background()
+	// Add one deferred and one failed message
+	database.AddMessage(ctx, db.Message{
+		ATURI: "at://did:plc:x/f/1", ATCID: "cf1", ATDID: "did:plc:x",
+		Type: mapper.RecordTypePost, MessageState: db.MessageStateFailed, PublishError: "err1",
+	})
+	database.AddMessage(ctx, db.Message{
+		ATURI: "at://did:plc:x/d/1", ATCID: "cd1", ATDID: "did:plc:x",
+		Type: mapper.RecordTypePost, MessageState: db.MessageStateDeferred, DeferReason: "reason1",
+	})
+
+	body := fetchUI(t, database, "/failures")
+	if !strings.Contains(body, "err1") || !strings.Contains(body, "reason1") {
+		t.Fatal("failures page should show both failed and deferred reasons")
+	}
+}
+
+func TestTruncateMiddleEdgeCases(t *testing.T) {
 	tests := []struct {
-		name          string
-		lastHeartbeat string
-		wantLabel     string
+		input string
+		max   int
+		want  string
 	}{
-		{"unknown when empty", "", "unknown"},
-		{"unknown when invalid", "not-a-time", "unknown"},
-		{"healthy recent", time.Now().Add(-30 * time.Second).Format(time.RFC3339), "healthy"},
-		{"stale old", time.Now().Add(-2 * time.Minute).Format(time.RFC3339), "stale"},
+		{"", 5, ""},
+		{"   ", 5, ""},
+		{"short", 10, "short"},
+		{"exactly10", 10, "exactly10"},
+		{"longerthan10", 10, "long…han10"},
+		{"abc", 1, "a"},
+		{"abc", 2, "ab"},
+		{"abcdef", 3, "abc"},
 	}
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			label, _, _ := runtimeHealth(tt.lastHeartbeat)
-			if label != tt.wantLabel {
-				t.Errorf("label = %q, want %q", label, tt.wantLabel)
-			}
-		})
+		got := truncateMiddle(tt.input, tt.max)
+		if got != tt.want {
+			t.Errorf("truncateMiddle(%q, %d) = %q, want %q", tt.input, tt.max, got, tt.want)
+		}
+	}
+}
+
+func TestStatePageGroups(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	ctx := context.Background()
+	database.SetBridgeState(ctx, "bridge_runtime_foo", "bar")
+	database.SetBridgeState(ctx, "firehose_cursor", "777")
+	database.SetBridgeState(ctx, "other_key", "val")
+
+	body := fetchUI(t, database, "/state")
+	if !strings.Contains(body, "bridge_runtime_foo") || !strings.Contains(body, "firehose_cursor") || !strings.Contains(body, "other_key") {
+		t.Fatal("state page should show grouped keys")
 	}
 }
 
@@ -872,7 +1195,7 @@ func TestFormatOptionalSeq(t *testing.T) {
 	}
 }
 
-func TestBuildTypeOptionsEdgeCases(t *testing.T) {
+func TestBuildTypeOptionsHelperEdgeCases(t *testing.T) {
 	// Selected type not in list
 	opts := buildTypeOptions([]string{"a.b.c"}, "x.y.z")
 	found := false

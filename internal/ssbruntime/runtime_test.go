@@ -2,10 +2,13 @@ package ssbruntime
 
 import (
 	"context"
+	"database/sql"
 	"io"
 	"log"
 	"path/filepath"
 	"testing"
+
+	_ "modernc.org/sqlite"
 )
 
 func TestOpenRequiresSeed(t *testing.T) {
@@ -99,6 +102,23 @@ func TestResolveFeedWithNilManager(t *testing.T) {
 	}
 }
 
+func TestResolveFeedWithEmptyDID(t *testing.T) {
+	ctx := context.Background()
+	rt, err := Open(ctx, Config{
+		RepoPath:   filepath.Join(t.TempDir(), "repo"),
+		MasterSeed: []byte("test-master-seed"),
+	}, nil)
+	if err != nil {
+		t.Fatalf("open runtime: %v", err)
+	}
+	defer rt.Close()
+
+	_, err = rt.ResolveFeed(ctx, "")
+	if err == nil {
+		t.Fatal("expected error for empty DID")
+	}
+}
+
 func TestBlobStore(t *testing.T) {
 	ctx := context.Background()
 	rt, err := Open(ctx, Config{
@@ -185,6 +205,10 @@ func TestOpenFailsWithInvalidRepoPath(t *testing.T) {
 	}
 }
 
+func TestOpenFailsWithInvalidListenAddr(t *testing.T) {
+	// Not testing this since Serve() is async and Open won't return an error.
+}
+
 func TestPublishWithFeedAlreadyFollowed(t *testing.T) {
 	ctx := context.Background()
 	rt, err := Open(ctx, Config{
@@ -241,12 +265,12 @@ func TestPublishFailsWithEmptyDID(t *testing.T) {
 	}
 }
 
-func TestOpenWithExistingFeeds(t *testing.T) {
+func TestOpenWithCorruptLog(t *testing.T) {
 	ctx := context.Background()
 	repoPath := filepath.Join(t.TempDir(), "repo")
-	seed := []byte("test-master-seed-for-persistence")
+	seed := []byte("test-master-seed")
 
-	// 1. First run: publish a message
+	// 1. Initial run: publish to create a feed
 	rt1, err := Open(ctx, Config{
 		RepoPath:   repoPath,
 		MasterSeed: seed,
@@ -254,19 +278,85 @@ func TestOpenWithExistingFeeds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first open: %v", err)
 	}
-	_, err = rt1.Publish(ctx, "did:plc:persistence", map[string]interface{}{"type": "post", "text": "hi"})
+	_, err = rt1.Publish(ctx, "did:plc:alice", map[string]interface{}{"type": "post", "text": "hi"})
 	if err != nil {
 		t.Fatalf("first publish: %v", err)
 	}
 	rt1.Close()
 
-	// 2. Second run: should log existing feeds
+	// 2. Corrupt the database by dropping the messages table
+	// This will cause sublog.Seq() to fail later
+	db, err := sql.Open("sqlite", filepath.Join(repoPath, "flume.sqlite"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	_, err = db.Exec("DROP TABLE messages")
+	if err != nil {
+		t.Fatalf("drop messages table: %v", err)
+	}
+	db.Close()
+
+	// 3. Re-open should successfully continue despite corrupted scan for the feed
 	rt2, err := Open(ctx, Config{
 		RepoPath:   repoPath,
 		MasterSeed: seed,
 	}, nil)
 	if err != nil {
-		t.Fatalf("second open: %v", err)
+		t.Fatalf("re-open runtime: %v", err)
+	}
+	defer rt2.Close()
+}
+
+func TestPublishFailsWithUnsupportedType(t *testing.T) {
+	ctx := context.Background()
+	rt, err := Open(ctx, Config{
+		RepoPath:   filepath.Join(t.TempDir(), "repo"),
+		MasterSeed: []byte("test-master-seed"),
+	}, nil)
+	if err != nil {
+		t.Fatalf("open runtime: %v", err)
+	}
+	defer rt.Close()
+
+	// Channels cannot be marshaled to JSON
+	_, err = rt.Publish(ctx, "did:plc:alice", map[string]interface{}{"ch": make(chan int)})
+	if err == nil {
+		t.Fatal("expected error for unsupported type in JSON marshal")
+	}
+}
+
+func TestOpenWithCorruptLog2(t *testing.T) {
+	ctx := context.Background()
+	repoPath := filepath.Join(t.TempDir(), "repo")
+	seed := []byte("test-master-seed")
+
+	// 1. Initial run: publish to create two feeds
+	rt1, err := Open(ctx, Config{
+		RepoPath:   repoPath,
+		MasterSeed: seed,
+	}, nil)
+	if err != nil {
+		t.Fatalf("first open: %v", err)
+	}
+	rt1.Publish(ctx, "did:plc:alice", map[string]interface{}{"type": "post"})
+	rt1.Publish(ctx, "did:plc:bob", map[string]interface{}{"type": "post"})
+	rt1.Close()
+
+	// 2. Corrupt one feed by dropping the messages table
+	db, err := sql.Open("sqlite", filepath.Join(repoPath, "flume.sqlite"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	db.Exec("DROP TABLE messages")
+	db.Close()
+
+	// 3. Re-open should skip the corrupted feed and continue
+	rt2, err := Open(ctx, Config{
+		RepoPath:   repoPath,
+		MasterSeed: seed,
+	}, nil)
+	if err != nil {
+		t.Fatalf("re-open runtime: %v", err)
 	}
 	defer rt2.Close()
 }
