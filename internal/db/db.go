@@ -457,13 +457,18 @@ func (db *DB) AddMessage(ctx context.Context, msg Message) error {
 	if strings.TrimSpace(msg.MessageState) == "" {
 		msg.MessageState = MessageStatePending
 	}
+	if msg.CreatedAt.IsZero() {
+		msg.CreatedAt = time.Now().Truncate(time.Millisecond).UTC()
+	} else {
+		msg.CreatedAt = msg.CreatedAt.Truncate(time.Millisecond).UTC()
+	}
 
 	_, err := db.conn.ExecContext(
 		ctx,
 		`INSERT INTO messages (
-			at_uri, at_cid, ssb_msg_ref, at_did, type, message_state, raw_at_json, raw_ssb_json, published_at, publish_error, publish_attempts, last_publish_attempt_at, defer_reason, defer_attempts, last_defer_attempt_at, deleted_at, deleted_seq, deleted_reason
+			at_uri, at_cid, ssb_msg_ref, at_did, type, message_state, raw_at_json, raw_ssb_json, published_at, publish_error, publish_attempts, last_publish_attempt_at, defer_reason, defer_attempts, last_defer_attempt_at, deleted_at, deleted_seq, deleted_reason, created_at
 		)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(at_uri) DO UPDATE SET
 		 	at_cid=excluded.at_cid,
 		 	ssb_msg_ref=excluded.ssb_msg_ref,
@@ -500,6 +505,7 @@ func (db *DB) AddMessage(ctx context.Context, msg Message) error {
 		msg.DeletedAt,
 		msg.DeletedSeq,
 		msg.DeletedReason,
+		msg.CreatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("add message %s: %w", msg.ATURI, err)
@@ -547,6 +553,7 @@ func (db *DB) GetMessage(ctx context.Context, atURI string) (*Message, error) {
 		}
 		return nil, fmt.Errorf("get message %s: %w", atURI, err)
 	}
+	msg.CreatedAt = msg.CreatedAt.UTC()
 	msg.SSBMsgRef = ssbMsgRef.String
 	msg.MessageState = messageState.String
 	msg.RawATJson = rawATJson.String
@@ -755,6 +762,7 @@ func (db *DB) ListMessagesPage(ctx context.Context, query MessageListQuery) (Mes
 	if err != nil {
 		return page, err
 	}
+
 	hasMore := len(messages) > query.Limit
 	if hasMore {
 		messages = messages[:query.Limit]
@@ -1407,6 +1415,7 @@ func scanMessageRow(scanner interface {
 	); err != nil {
 		return Message{}, err
 	}
+	msg.CreatedAt = msg.CreatedAt.UTC()
 	msg.SSBMsgRef = ssbMsgRef.String
 	msg.MessageState = messageState.String
 	msg.RawATJson = rawATJSON.String

@@ -1,6 +1,7 @@
 package presentation
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
@@ -300,6 +301,99 @@ func TestStringAt(t *testing.T) {
 	}
 	if s := stringAt(m, "notfound"); s != "" {
 		t.Errorf("Expected empty string, got: %s", s)
+	}
+}
+
+func TestStringAtNilMap(t *testing.T) {
+	if s := stringAt(nil, "key"); s != "" {
+		t.Errorf("Expected empty string for nil map, got: %s", s)
+	}
+}
+
+func TestJsonScalarNumber(t *testing.T) {
+	var n json.Number = "42"
+	if s := jsonScalar(n); s != "42" {
+		t.Errorf("Expected '42' for json.Number, got: %s", s)
+	}
+}
+
+func TestJsonScalarUnsupported(t *testing.T) {
+	if s := jsonScalar([]int{1, 2}); s != "" {
+		t.Errorf("Expected empty string for unsupported type, got: %s", s)
+	}
+}
+
+func TestSummarizeATProtoMessageWithSubjectString(t *testing.T) {
+	// "subject" as a plain string (not nested object) — tests the second Subject URI path
+	msg := db.Message{
+		Type:      "app.bsky.graph.follow",
+		RawATJson: `{"subject":"did:plc:bob","createdAt":"2026-01-01T00:00:00Z"}`,
+	}
+	fields := SummarizeATProtoMessage(msg)
+	found := false
+	for _, f := range fields {
+		if f.Label == "Subject URI" && f.Value == "did:plc:bob" {
+			found = true
+		}
+	}
+	if !found {
+		labels := make([]string, len(fields))
+		for i, f := range fields {
+			labels[i] = f.Label + "=" + f.Value
+		}
+		t.Errorf("Expected Subject URI field with did:plc:bob, got: %v", labels)
+	}
+}
+
+func TestSummarizeATProtoMessageWithSeq(t *testing.T) {
+	msg := db.Message{
+		Type:      "test",
+		RawATJson: `{"seq": 42, "op": "create"}`,
+	}
+	fields := SummarizeATProtoMessage(msg)
+	foundSeq := false
+	foundOp := false
+	for _, f := range fields {
+		if f.Label == "Sequence" && f.Value == "42" {
+			foundSeq = true
+		}
+		if f.Label == "Operation" && f.Value == "create" {
+			foundOp = true
+		}
+	}
+	if !foundSeq {
+		t.Error("Expected Sequence field")
+	}
+	if !foundOp {
+		t.Error("Expected Operation field")
+	}
+}
+
+func TestSummarizeATProtoMessageEmptyPayloadNoFields(t *testing.T) {
+	// Valid JSON but no recognized fields produces fallback
+	msg := db.Message{
+		Type:      "",
+		RawATJson: `{"unrecognized": 123}`,
+	}
+	fields := SummarizeATProtoMessage(msg)
+	if len(fields) != 1 || fields[0].Label != "ATProto Payload" {
+		t.Errorf("Expected fallback for empty type + unrecognized fields, got %v", fields)
+	}
+}
+
+func TestSummarizeSSBMessageWithSubject(t *testing.T) {
+	msg := db.Message{
+		RawSSBJson: `{"type":"vote","_atproto_subject":"at://did:plc:bob/app.bsky.feed.post/1","_atproto_reply_root":"at://root","_atproto_reply_parent":"at://parent"}`,
+	}
+	fields := SummarizeSSBMessage(msg)
+	labels := make(map[string]bool)
+	for _, f := range fields {
+		labels[f.Label] = true
+	}
+	for _, want := range []string{"Subject", "Reply Root", "Reply Parent"} {
+		if !labels[want] {
+			t.Errorf("Expected %s label in SSB summary", want)
+		}
 	}
 }
 

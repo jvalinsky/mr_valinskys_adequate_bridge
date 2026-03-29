@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -197,6 +198,12 @@ type recordingProcessor struct {
 func (p *recordingProcessor) ProcessRecord(_ context.Context, _ string, atURI, _, _ string, _ []byte) error {
 	p.atURIs = append(p.atURIs, atURI)
 	return nil
+}
+
+type errorProcessor struct{}
+
+func (p *errorProcessor) ProcessRecord(_ context.Context, _, _, _, _ string, _ []byte) error {
+	return fmt.Errorf("process error")
 }
 
 type mapBlockstore struct {
@@ -505,5 +512,208 @@ func TestExtractPDSEndpointNilDoc(t *testing.T) {
 	_, err := extractPDSEndpoint(nil)
 	if !errors.Is(err, ErrMissingPDSEndpoint) {
 		t.Fatalf("expected ErrMissingPDSEndpoint for nil doc, got %v", err)
+	}
+}
+
+func TestExtractPDSEndpointEmptyEndpoint(t *testing.T) {
+	// The doc structure needs to match identity.DIDDocument
+	// We'll test this via DIDPDSResolver instead since it creates the document
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Valid DID document but with empty service endpoint
+		w.Write([]byte(`{
+			"id": "did:plc:test",
+			"service": [
+				{
+					"id": "#atproto_pds",
+					"type": "AtprotoPersonalDataServer",
+					"serviceEndpoint": "   "
+				}
+			]
+		}`))
+	}))
+	defer server.Close()
+
+	resolver := DIDPDSResolver{
+		PLCURL:     server.URL,
+		HTTPClient: server.Client(),
+	}
+	_, err := resolver.ResolvePDSEndpoint(context.Background(), "did:plc:test")
+	if !errors.Is(err, ErrMissingPDSEndpoint) {
+		t.Fatalf("expected ErrMissingPDSEndpoint for empty endpoint, got %v", err)
+	}
+}
+
+func TestNormalizeServiceEndpointErrors(t *testing.T) {
+	_, err := NormalizeServiceEndpoint("   ")
+	if !errors.Is(err, ErrInvalidPDSEndpoint) {
+		t.Errorf("expected ErrInvalidPDSEndpoint for empty")
+	}
+
+	_, err = NormalizeServiceEndpoint("ftp://example.com")
+	if !errors.Is(err, ErrInvalidPDSEndpoint) {
+		t.Errorf("expected ErrInvalidPDSEndpoint for ftp")
+	}
+
+	_, err = NormalizeServiceEndpoint("http://")
+	if !errors.Is(err, ErrInvalidPDSEndpoint) {
+		t.Errorf("expected ErrInvalidPDSEndpoint for no host")
+	}
+
+	// Test NormalizeServiceEndpoint with spaces and trailing slash
+	got, err := NormalizeServiceEndpoint("  https://example.com/  ")
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	if got != "https://example.com" {
+		t.Errorf("expected https://example.com, got %q", got)
+	}
+}
+
+func TestRunForDIDWithSequenceNotice(t *testing.T) {
+	since, err := ParseSince("42")
+	if err != nil {
+		t.Fatalf("parse since: %v", err)
+	}
+	result := RunForDID(
+		context.Background(),
+		"did:plc:seq",
+		since,
+		&recordingProcessor{},
+		nil,
+		&stubHostResolver{hosts: map[string]string{"did:plc:seq": "https://pds.example.com"}},
+		&stubRepoFetcher{payloads: map[string][]byte{"did:plc:seq": mustCreateRepoCAR(t, "did:plc:seq")}},
+	)
+	if result.Status != StatusSuccess {
+		t.Fatalf("expected success, got %s err=%v", result.Status, result.Err)
+	}
+	if result.Stats.Processed == 0 {
+		t.Fatalf("expected processed records")
+	}
+}
+
+func TestRunForDIDWithInvalidCARBytes(t *testing.T) {
+	result := RunForDID(
+		context.Background(),
+		"did:plc:badcar",
+		SinceFilter{},
+		&recordingProcessor{},
+		nil,
+		&stubHostResolver{hosts: map[string]string{"did:plc:badcar": "https://pds.example.com"}},
+		&stubRepoFetcher{payloads: map[string][]byte{"did:plc:badcar": []byte("not a valid car")}},
+	)
+	if result.Status != StatusTransportError {
+		t.Fatalf("expected transport_error for invalid CAR, got %s", result.Status)
+	}
+	if result.Err == nil {
+		t.Fatalf("expected error for invalid CAR bytes")
+	}
+}
+
+func TestRunForDIDWithProcessorError(t *testing.T) {
+	result := RunForDID(
+		context.Background(),
+		"did:plc:procerr",
+		SinceFilter{},
+		&errorProcessor{},
+		nil,
+		&stubHostResolver{hosts: map[string]string{"did:plc:procerr": "https://pds.example.com"}},
+		&stubRepoFetcher{payloads: map[string][]byte{"did:plc:procerr": mustCreateRepoCAR(t, "did:plc:procerr")}},
+	)
+	if result.Status != StatusSuccess {
+		t.Fatalf("expected success (errors are logged not fatal), got %s err=%v", result.Status, result.Err)
+	}
+	if result.Stats.Errors == 0 {
+		t.Fatalf("expected error count > 0")
+	}
+}
+
+func TestRunForDIDWithSinceFilterExclusion(t *testing.T) {
+	// mustCreateRepoCAR creates a post with CreatedAt "2026-01-01T00:00:00Z"
+	// Set since to a future date so the record is excluded
+	since, err := ParseSince("2027-01-01T00:00:00Z")
+	if err != nil {
+		t.Fatalf("parse since: %v", err)
+	}
+	result := RunForDID(
+		context.Background(),
+		"did:plc:filtered",
+		since,
+		&recordingProcessor{},
+		nil,
+		&stubHostResolver{hosts: map[string]string{"did:plc:filtered": "https://pds.example.com"}},
+		&stubRepoFetcher{payloads: map[string][]byte{"did:plc:filtered": mustCreateRepoCAR(t, "did:plc:filtered")}},
+	)
+	if result.Status != StatusSuccess {
+		t.Fatalf("expected success, got %s err=%v", result.Status, result.Err)
+	}
+	if result.Stats.Skipped == 0 {
+		t.Fatalf("expected skipped records from since filter")
+	}
+	if result.Stats.Processed != 0 {
+		t.Fatalf("expected no processed records, got %d", result.Stats.Processed)
+	}
+}
+
+func TestExtractPDSEndpointNonMatchingService(t *testing.T) {
+	doc := &identity.DIDDocument{
+		Service: []identity.DocService{
+			{
+				ID:              "#other_service",
+				Type:            "SomeOtherService",
+				ServiceEndpoint: "https://other.example.com",
+			},
+		},
+	}
+	_, err := extractPDSEndpoint(doc)
+	if !errors.Is(err, ErrMissingPDSEndpoint) {
+		t.Fatalf("expected ErrMissingPDSEndpoint for non-matching service, got %v", err)
+	}
+}
+
+func TestExtractPDSEndpointServiceWithoutHash(t *testing.T) {
+	doc := &identity.DIDDocument{
+		Service: []identity.DocService{
+			{
+				ID:              "atproto_pds",
+				Type:            "AtprotoPersonalDataServer",
+				ServiceEndpoint: "https://pds.example.com",
+			},
+		},
+	}
+	_, err := extractPDSEndpoint(doc)
+	if !errors.Is(err, ErrMissingPDSEndpoint) {
+		t.Fatalf("expected ErrMissingPDSEndpoint for service ID without #, got %v", err)
+	}
+}
+
+func TestExtractPDSEndpointMixedServices(t *testing.T) {
+	doc := &identity.DIDDocument{
+		Service: []identity.DocService{
+			{
+				ID:              "#other",
+				Type:            "SomeOtherService",
+				ServiceEndpoint: "https://other.example.com",
+			},
+			{
+				ID:              "#atproto_pds",
+				Type:            "AtprotoPersonalDataServer",
+				ServiceEndpoint: "https://pds.example.com",
+			},
+		},
+	}
+	endpoint, err := extractPDSEndpoint(doc)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if endpoint != "https://pds.example.com" {
+		t.Fatalf("expected https://pds.example.com, got %q", endpoint)
+	}
+}
+
+func TestClassifyDIDResultResolutionFailed(t *testing.T) {
+	got := classifyDIDResult(identity.ErrDIDResolutionFailed)
+	if got != StatusMalformedDIDDoc {
+		t.Errorf("classifyDIDResult(ErrDIDResolutionFailed) = %s, want StatusMalformedDIDDoc", got)
 	}
 }

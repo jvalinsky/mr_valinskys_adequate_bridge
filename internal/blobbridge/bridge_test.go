@@ -3,11 +3,14 @@ package blobbridge
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	appbsky "github.com/bluesky-social/indigo/api/bsky"
 	lexutil "github.com/bluesky-social/indigo/lex/util"
@@ -420,5 +423,488 @@ func TestAsString(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("asString(%v) = %q, want %q", tt.input, got, tt.want)
 		}
+	}
+}
+
+func TestBridgeRecordBlobsUnsupportedType(t *testing.T) {
+	b := New(nil, nil, nil, nil)
+	err := b.BridgeRecordBlobs(context.Background(), "did:plc:alice", "app.bsky.feed.like", map[string]interface{}{}, nil)
+	if err != nil {
+		t.Errorf("Expected nil error for unsupported type, got %v", err)
+	}
+}
+
+func TestConfiguredHTTPClient(t *testing.T) {
+	c := configuredHTTPClient(nil)
+	if c == nil {
+		t.Errorf("Expected non-nil fallback client")
+	}
+
+	existing := &http.Client{Timeout: 5 * time.Second}
+	c2 := configuredHTTPClient(existing)
+	if c2 != existing {
+		t.Errorf("Expected existing client to be returned")
+	}
+}
+
+// --- Additional tests for 100% coverage ---
+
+func TestBridgePostBlobsUnmarshalError(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer database.Close()
+
+	bridge := New(database, newTestBlobStore(), &fakeLexClient{}, log.New(io.Discard, "", 0))
+	mapped := map[string]interface{}{"text": "hello"}
+	err = bridge.BridgeRecordBlobs(context.Background(), "did:plc:alice", mapper.RecordTypePost, mapped, []byte(`{invalid`))
+	if err == nil {
+		t.Fatal("expected unmarshal error for invalid post JSON")
+	}
+}
+
+func TestBridgeProfileBlobsUnmarshalError(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer database.Close()
+
+	bridge := New(database, newTestBlobStore(), &fakeLexClient{}, log.New(io.Discard, "", 0))
+	mapped := map[string]interface{}{}
+	err = bridge.BridgeRecordBlobs(context.Background(), "did:plc:alice", mapper.RecordTypeProfile, mapped, []byte(`{invalid`))
+	if err == nil {
+		t.Fatal("expected unmarshal error for invalid profile JSON")
+	}
+}
+
+func TestBridgeProfileBlobsNoAvatar(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer database.Close()
+
+	bridge := New(database, newTestBlobStore(), &fakeLexClient{}, log.New(io.Discard, "", 0))
+	mapped := map[string]interface{}{}
+	raw := []byte(`{"displayName":"Alice"}`)
+	err = bridge.BridgeRecordBlobs(context.Background(), "did:plc:alice", mapper.RecordTypeProfile, mapped, raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, ok := mapped["image"]; ok {
+		t.Fatal("expected no image for profile without avatar")
+	}
+}
+
+func TestBridgeProfileBlobsZeroSizeEmptyMime(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer database.Close()
+
+	bridge := New(database, newTestBlobStore(), &fakeLexClient{payload: []byte("avatar-bytes")}, log.New(io.Discard, "", 0))
+	mapped := map[string]interface{}{}
+	raw := []byte(`{
+		"displayName":"Alice",
+		"avatar":{"$type":"blob","ref":{"$link":"bafyreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"},"mimeType":"","size":0}
+	}`)
+	err = bridge.BridgeRecordBlobs(context.Background(), "did:plc:alice", mapper.RecordTypeProfile, mapped, raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	image, ok := mapped["image"].(map[string]interface{})
+	if !ok {
+		t.Fatal("expected image metadata")
+	}
+	// With empty mime and zero size, those fields should be omitted
+	if _, hasType := image["type"]; hasType {
+		t.Error("expected no type for empty mimetype")
+	}
+	if _, hasSize := image["size"]; hasSize {
+		t.Error("expected no size for zero size")
+	}
+}
+
+func TestPostBlobCandidatesRecordWithMediaVideo(t *testing.T) {
+	alt := "Embedded video"
+	post := &appbsky.FeedPost{
+		Embed: &appbsky.FeedPost_Embed{
+			EmbedRecordWithMedia: &appbsky.EmbedRecordWithMedia{
+				Media: &appbsky.EmbedRecordWithMedia_Media{
+					EmbedVideo: &appbsky.EmbedVideo{
+						Alt:   &alt,
+						Video: &lexutil.LexBlob{MimeType: "video/mp4", Size: 5000},
+					},
+				},
+			},
+		},
+	}
+	candidates := postBlobCandidates(post)
+	if len(candidates) != 1 {
+		t.Fatalf("expected 1 candidate, got %d", len(candidates))
+	}
+	if candidates[0].MimeType != "video/mp4" {
+		t.Errorf("expected video/mp4, got %s", candidates[0].MimeType)
+	}
+}
+
+func TestPostBlobCandidatesRecordWithMediaNilSubMedia(t *testing.T) {
+	// Media exists but neither EmbedImages nor EmbedVideo is set
+	post := &appbsky.FeedPost{
+		Embed: &appbsky.FeedPost_Embed{
+			EmbedRecordWithMedia: &appbsky.EmbedRecordWithMedia{
+				Media: &appbsky.EmbedRecordWithMedia_Media{},
+			},
+		},
+	}
+	candidates := postBlobCandidates(post)
+	if candidates != nil {
+		t.Errorf("expected nil candidates, got %v", candidates)
+	}
+}
+
+func TestPostBlobCandidatesRecordWithMediaNilMedia(t *testing.T) {
+	post := &appbsky.FeedPost{
+		Embed: &appbsky.FeedPost_Embed{
+			EmbedRecordWithMedia: &appbsky.EmbedRecordWithMedia{
+				Media: nil,
+			},
+		},
+	}
+	candidates := postBlobCandidates(post)
+	if candidates != nil {
+		t.Errorf("expected nil candidates for nil media, got %v", candidates)
+	}
+}
+
+func TestVideoCandidateNilVideo(t *testing.T) {
+	c := videoCandidate(nil, 0)
+	if c.CID != "" {
+		t.Errorf("expected empty CID for nil video, got %s", c.CID)
+	}
+	if c.Label != "bridged attachment 1" {
+		t.Errorf("expected fallback label, got %s", c.Label)
+	}
+}
+
+func TestVideoCandidateNilAlt(t *testing.T) {
+	c := videoCandidate(&appbsky.EmbedVideo{
+		Alt:   nil,
+		Video: &lexutil.LexBlob{MimeType: "video/mp4", Size: 100},
+	}, 2)
+	if c.Label != "bridged attachment 3" {
+		t.Errorf("expected fallback label for nil alt, got %s", c.Label)
+	}
+}
+
+func TestVideoCandidateWithAspectRatio(t *testing.T) {
+	alt := "clip"
+	c := videoCandidate(&appbsky.EmbedVideo{
+		Alt:         &alt,
+		Video:       &lexutil.LexBlob{MimeType: "video/mp4", Size: 999},
+		AspectRatio: &appbsky.EmbedDefs_AspectRatio{Width: 1280, Height: 720},
+	}, 0)
+	if c.Width != 1280 || c.Height != 720 {
+		t.Errorf("expected 1280x720, got %dx%d", c.Width, c.Height)
+	}
+}
+
+func TestVideoCandidateNilVideoBlob(t *testing.T) {
+	alt := "no blob"
+	c := videoCandidate(&appbsky.EmbedVideo{
+		Alt:   &alt,
+		Video: nil,
+	}, 0)
+	if c.CID != "" {
+		t.Errorf("expected empty CID for nil video blob, got %s", c.CID)
+	}
+	if c.Label != "no blob" {
+		t.Errorf("expected label 'no blob', got %s", c.Label)
+	}
+}
+
+func TestAppendMentionWithExistingSliceMapInterface(t *testing.T) {
+	// Test the []map[string]interface{} branch
+	mapped := map[string]interface{}{
+		"mentions": []map[string]interface{}{
+			{"link": "existing-ref", "name": "old"},
+		},
+	}
+	appendMention(mapped, map[string]interface{}{"link": "new-ref", "name": "New Item", "size": int64(100), "width": 800, "height": 600, "type": "image/png"})
+	mentions := mapped["mentions"].([]map[string]interface{})
+	if len(mentions) != 2 {
+		t.Fatalf("expected 2 mentions, got %d", len(mentions))
+	}
+	if mentions[1]["width"] != 800 || mentions[1]["height"] != 600 {
+		t.Error("expected width/height to be set")
+	}
+	if mentions[1]["size"] != int64(100) {
+		t.Error("expected size to be set")
+	}
+}
+
+func TestAppendMentionWithExistingSliceInterface(t *testing.T) {
+	// Test the []interface{} branch
+	mapped := map[string]interface{}{
+		"mentions": []interface{}{
+			map[string]interface{}{"link": "existing-ref"},
+		},
+	}
+	appendMention(mapped, map[string]interface{}{"link": "another-ref"})
+	mentions := mapped["mentions"].([]map[string]interface{})
+	if len(mentions) != 2 {
+		t.Fatalf("expected 2 mentions, got %d", len(mentions))
+	}
+}
+
+func TestAppendMentionDuplicateLinkSkipped(t *testing.T) {
+	mapped := map[string]interface{}{
+		"mentions": []map[string]interface{}{
+			{"link": "dup-ref"},
+		},
+	}
+	appendMention(mapped, map[string]interface{}{"link": "dup-ref"})
+	mentions := mapped["mentions"].([]map[string]interface{})
+	if len(mentions) != 1 {
+		t.Fatalf("expected duplicate to be skipped, got %d mentions", len(mentions))
+	}
+}
+
+func TestAppendMentionSliceInterfaceNonMap(t *testing.T) {
+	// []interface{} with non-map items should be skipped
+	mapped := map[string]interface{}{
+		"mentions": []interface{}{"not-a-map"},
+	}
+	appendMention(mapped, map[string]interface{}{"link": "ref"})
+	mentions := mapped["mentions"].([]map[string]interface{})
+	if len(mentions) != 1 {
+		t.Fatalf("expected 1 mention, got %d", len(mentions))
+	}
+}
+
+func TestAppendMentionZeroSizeAndDimensions(t *testing.T) {
+	mapped := map[string]interface{}{}
+	appendMention(mapped, map[string]interface{}{
+		"link":   "ref",
+		"name":   "",
+		"size":   int64(0),
+		"width":  0,
+		"height": 0,
+		"type":   "",
+	})
+	mentions := mapped["mentions"].([]map[string]interface{})
+	if len(mentions) != 1 {
+		t.Fatalf("expected 1 mention, got %d", len(mentions))
+	}
+	// Zero/empty values should be omitted from the normalized mention
+	if _, ok := mentions[0]["name"]; ok {
+		t.Error("expected empty name to be omitted")
+	}
+	if _, ok := mentions[0]["size"]; ok {
+		t.Error("expected zero size to be omitted")
+	}
+	if _, ok := mentions[0]["width"]; ok {
+		t.Error("expected zero width to be omitted")
+	}
+	if _, ok := mentions[0]["height"]; ok {
+		t.Error("expected zero height to be omitted")
+	}
+	if _, ok := mentions[0]["type"]; ok {
+		t.Error("expected empty type to be omitted")
+	}
+}
+
+func TestEnsureBlobNoClientOrResolver(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer database.Close()
+
+	// Bridge with no xrpc and no resolver
+	bridge := &Bridge{
+		db:        database,
+		blobStore: newTestBlobStore(),
+		logger:    log.New(io.Discard, "", 0),
+	}
+	mapped := map[string]interface{}{"text": "hello"}
+	raw := []byte(`{
+		"text":"hello",
+		"embed":{
+			"$type":"app.bsky.embed.images",
+			"images":[
+				{
+					"alt":"Test",
+					"image":{"$type":"blob","ref":{"$link":"bafyreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"},"mimeType":"image/png","size":10}
+				}
+			]
+		}
+	}`)
+	err = bridge.BridgeRecordBlobs(context.Background(), "did:plc:alice", mapper.RecordTypePost, mapped, raw)
+	if err == nil {
+		t.Fatal("expected error when no xrpc or resolver configured")
+	}
+	if !strings.Contains(err.Error(), "blob fetch unavailable") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestEnsureBlobResolverError(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer database.Close()
+
+	resolver := &fakeHostResolver{err: fmt.Errorf("resolve failure")}
+	bridge := NewWithResolver(database, newTestBlobStore(), resolver, nil, log.New(io.Discard, "", 0))
+
+	mapped := map[string]interface{}{"text": "hello"}
+	raw := []byte(`{
+		"text":"hello",
+		"embed":{
+			"$type":"app.bsky.embed.images",
+			"images":[
+				{
+					"alt":"Test",
+					"image":{"$type":"blob","ref":{"$link":"bafyreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"},"mimeType":"image/png","size":10}
+				}
+			]
+		}
+	}`)
+	err = bridge.BridgeRecordBlobs(context.Background(), "did:plc:alice", mapper.RecordTypePost, mapped, raw)
+	if err == nil {
+		t.Fatal("expected error from resolver failure")
+	}
+	if !strings.Contains(err.Error(), "resolve blob host") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestEnsureBlobFetchError(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer database.Close()
+
+	// Server that returns an error status
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"InternalServerError","message":"fail"}`))
+	}))
+	defer server.Close()
+
+	resolver := &fakeHostResolver{host: server.URL}
+	bridge := NewWithResolver(database, newTestBlobStore(), resolver, server.Client(), log.New(io.Discard, "", 0))
+
+	mapped := map[string]interface{}{"text": "hello"}
+	raw := []byte(`{
+		"text":"hello",
+		"embed":{
+			"$type":"app.bsky.embed.images",
+			"images":[
+				{
+					"alt":"Test",
+					"image":{"$type":"blob","ref":{"$link":"bafyreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"},"mimeType":"image/png","size":10}
+				}
+			]
+		}
+	}`)
+	err = bridge.BridgeRecordBlobs(context.Background(), "did:plc:alice", mapper.RecordTypePost, mapped, raw)
+	if err == nil {
+		t.Fatal("expected error from blob fetch failure")
+	}
+	if !strings.Contains(err.Error(), "fetch blob") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+type failPutBlobStore struct {
+	*testBlobStore
+}
+
+func (f *failPutBlobStore) Put(r io.Reader) ([]byte, error) {
+	return nil, fmt.Errorf("put failed")
+}
+
+func TestEnsureBlobStorePutError(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer database.Close()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("image-data"))
+	}))
+	defer server.Close()
+
+	resolver := &fakeHostResolver{host: server.URL}
+	bridge := NewWithResolver(database, &failPutBlobStore{newTestBlobStore()}, resolver, server.Client(), log.New(io.Discard, "", 0))
+
+	mapped := map[string]interface{}{"text": "hello"}
+	raw := []byte(`{
+		"text":"hello",
+		"embed":{
+			"$type":"app.bsky.embed.images",
+			"images":[
+				{
+					"alt":"Test",
+					"image":{"$type":"blob","ref":{"$link":"bafyreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"},"mimeType":"image/png","size":10}
+				}
+			]
+		}
+	}`)
+	err = bridge.BridgeRecordBlobs(context.Background(), "did:plc:alice", mapper.RecordTypePost, mapped, raw)
+	if err == nil {
+		t.Fatal("expected error from blob store put failure")
+	}
+	if !strings.Contains(err.Error(), "store blob") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestClientForDIDNoClientConfigured(t *testing.T) {
+	bridge := &Bridge{}
+	_, err := bridge.clientForDID(context.Background(), "did:plc:alice")
+	if err == nil {
+		t.Fatal("expected error when no client configured")
+	}
+	if !strings.Contains(err.Error(), "no blob fetch client configured") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestEscapeMarkdownLabel(t *testing.T) {
+	if got := escapeMarkdownLabel("hello]world]"); got != "hello\\]world\\]" {
+		t.Errorf("unexpected escaped label: %s", got)
+	}
+}
+
+func TestBridgeProfileBlobsEnsureBlobError(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer database.Close()
+
+	// Bridge with no xrpc/resolver -> ensureBlob will fail
+	bridge := &Bridge{
+		db:        database,
+		blobStore: newTestBlobStore(),
+		logger:    log.New(io.Discard, "", 0),
+	}
+	mapped := map[string]interface{}{}
+	raw := []byte(`{
+		"displayName":"Alice",
+		"avatar":{"$type":"blob","ref":{"$link":"bafyreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"},"mimeType":"image/png","size":42}
+	}`)
+	err = bridge.BridgeRecordBlobs(context.Background(), "did:plc:alice", mapper.RecordTypeProfile, mapped, raw)
+	if err == nil {
+		t.Fatal("expected error from profile ensureBlob failure")
 	}
 }

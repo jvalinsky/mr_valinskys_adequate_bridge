@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	stdlog "log"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -219,6 +220,223 @@ func TestRuntimeFailOpenWhenExporterInitFails(t *testing.T) {
 	}
 	if !strings.Contains(out, "event=runtime_started") {
 		t.Fatalf("expected local log line after init failure, got %q", out)
+	}
+}
+
+func TestEnsure(t *testing.T) {
+	if l := Ensure(nil); l == nil {
+		t.Fatal("expected non-nil logger for nil input")
+	}
+	custom := stdlog.New(io.Discard, "test: ", 0)
+	if l := Ensure(custom); l != custom {
+		t.Fatal("expected same logger returned")
+	}
+}
+
+func TestNewTextLogger(t *testing.T) {
+	l := NewTextLogger("")
+	if l == nil {
+		t.Fatal("expected non-nil logger")
+	}
+	l2 := NewTextLogger("mycomp")
+	if l2 == nil {
+		t.Fatal("expected non-nil logger for component")
+	}
+}
+
+func TestLoggerEmptyComponent(t *testing.T) {
+	var buf bytes.Buffer
+	rt, _ := NewRuntime(Config{ServiceName: "test", LocalOutput: "text", LocalWriter: &buf})
+	l := rt.Logger("")
+	l.Printf("event=test_msg")
+	if !strings.Contains(buf.String(), "app:") {
+		t.Fatalf("expected default 'app' component, got %q", buf.String())
+	}
+}
+
+func TestRuntimeNoEndpoint(t *testing.T) {
+	var buf bytes.Buffer
+	rt, err := NewRuntime(Config{ServiceName: "test", LocalOutput: "text", LocalWriter: &buf})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No OTLP endpoint — shutdown should be no-op
+	if err := rt.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestShutdownNilRuntime(t *testing.T) {
+	var rt *Runtime
+	if err := rt.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRuntimeWriterNilRuntime(t *testing.T) {
+	w := &runtimeWriter{rt: nil}
+	n, err := w.Write([]byte("test"))
+	if err != nil || n != 4 {
+		t.Fatalf("expected (4, nil), got (%d, %v)", n, err)
+	}
+}
+
+func TestRuntimeLocalOutputNone(t *testing.T) {
+	var buf bytes.Buffer
+	rt, err := NewRuntime(Config{ServiceName: "test", LocalOutput: "none", LocalWriter: &buf})
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := rt.Logger("test")
+	l.Printf("event=should_not_appear")
+	if buf.String() != "" {
+		t.Fatalf("expected no local output with 'none', got %q", buf.String())
+	}
+}
+
+func TestWarnfSilentWhenNone(t *testing.T) {
+	var buf bytes.Buffer
+	rt := &Runtime{localOutput: "none", localWriter: &buf}
+	rt.warnf("test %s", "warning")
+	if buf.String() != "" {
+		t.Fatal("expected no output from warnf when localOutput=none")
+	}
+}
+
+func TestWarnfSilentWhenNilWriter(t *testing.T) {
+	rt := &Runtime{localOutput: "text", localWriter: nil}
+	rt.warnf("test %s", "warning") // should not panic
+}
+
+func TestStripStdPrefixEmptyLine(t *testing.T) {
+	ts, body := stripStdPrefix("", "prefix: ")
+	if !ts.IsZero() || body != "" {
+		t.Fatalf("expected zero time and empty body, got %v, %q", ts, body)
+	}
+}
+
+func TestStripStdPrefixWithTimestampAndPrefix(t *testing.T) {
+	// Timestamp present, prefix after timestamp
+	line := "2025/03/28 12:00:00 bridge: event=test"
+	ts, body := stripStdPrefix(line, "bridge: ")
+	if ts.IsZero() {
+		t.Fatal("expected non-zero timestamp")
+	}
+	if body != "event=test" {
+		t.Fatalf("expected body after prefix strip, got %q", body)
+	}
+}
+
+func TestStripTimestampPrefixShortLine(t *testing.T) {
+	ts, rest, ok := stripTimestampPrefix("short")
+	if ok || !ts.IsZero() || rest != "short" {
+		t.Fatal("expected no match for short line")
+	}
+}
+
+func TestStripTimestampPrefixInvalid(t *testing.T) {
+	ts, rest, ok := stripTimestampPrefix("not-a-timestamp-at-all!!")
+	if ok || !ts.IsZero() || rest != "not-a-timestamp-at-all!!" {
+		t.Fatal("expected no match for invalid timestamp")
+	}
+}
+
+func TestParsePairsEdgeCases(t *testing.T) {
+	// Empty string
+	if pairs := parsePairs(""); len(pairs) != 0 {
+		t.Fatalf("expected 0 pairs for empty, got %d", len(pairs))
+	}
+
+	// Key without equals
+	if pairs := parsePairs("justkey"); len(pairs) != 0 {
+		t.Fatalf("expected 0 pairs for bare key, got %d", len(pairs))
+	}
+
+	// Key with space before equals (space terminates key)
+	if pairs := parsePairs("key =value"); len(pairs) != 0 {
+		t.Fatalf("expected 0 pairs when space before =, got %d", len(pairs))
+	}
+
+	// Empty key (=value)
+	if pairs := parsePairs("=value"); len(pairs) != 0 {
+		t.Fatalf("expected 0 pairs for empty key, got %d", len(pairs))
+	}
+
+	// Quoted value with escape
+	pairs := parsePairs(`msg="hello \"world\""`)
+	if len(pairs) != 1 || pairs[0].value != `hello "world"` {
+		t.Fatalf("expected unescaped quoted value, got %v", pairs)
+	}
+
+	// Unterminated quote
+	if pairs := parsePairs(`msg="unterminated`); len(pairs) != 0 {
+		t.Fatalf("expected 0 pairs for unterminated quote, got %d", len(pairs))
+	}
+
+	// Invalid unquote (edge case)
+	pairs = parsePairs(`msg="bad\qescape"`)
+	if len(pairs) != 1 {
+		t.Fatalf("expected 1 pair with fallback decode, got %d", len(pairs))
+	}
+}
+
+func TestInferSeverityErrorEvent(t *testing.T) {
+	if sev := inferSeverity("event=db_error", map[string]string{"event": "db_error"}); sev != 17 {
+		t.Fatalf("expected error severity for _error event suffix, got %v", sev)
+	}
+}
+
+func TestToLogKeyValue(t *testing.T) {
+	// Bool
+	kv := toLogKeyValue("flag", "true")
+	if kv.Key != "flag" {
+		t.Fatal("expected key=flag")
+	}
+
+	// Int
+	kv = toLogKeyValue("count", "42")
+	if kv.Key != "count" {
+		t.Fatal("expected key=count")
+	}
+
+	// Float
+	kv = toLogKeyValue("rate", "3.14")
+	if kv.Key != "rate" {
+		t.Fatal("expected key=rate")
+	}
+
+	// String
+	kv = toLogKeyValue("name", "hello")
+	if kv.Key != "name" {
+		t.Fatal("expected key=name")
+	}
+}
+
+func TestEmitEmptyBody(t *testing.T) {
+	var buf bytes.Buffer
+	rt, _ := NewRuntime(Config{
+		Endpoint:    "127.0.0.1:1",
+		Protocol:    "http",
+		Insecure:    true,
+		ServiceName: "test",
+		LocalOutput: "text",
+		LocalWriter: &buf,
+	})
+	// emit with empty body should be a no-op (after stripping)
+	rt.emit("comp", "comp: ", []byte("comp: \n"))
+}
+
+func TestNewOTLPExporterGRPCInsecure(t *testing.T) {
+	_, err := newOTLPExporter(Config{Protocol: "grpc", Endpoint: "127.0.0.1:4317", Insecure: true})
+	if err != nil {
+		t.Fatalf("expected no error for grpc insecure, got %v", err)
+	}
+}
+
+func TestNewOTLPExporterHTTPSecure(t *testing.T) {
+	_, err := newOTLPExporter(Config{Protocol: "http", Endpoint: "127.0.0.1:4318"})
+	if err != nil {
+		t.Fatalf("expected no error for http secure, got %v", err)
 	}
 }
 

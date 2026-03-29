@@ -79,3 +79,81 @@ func TestWorkerPublisherPreservesPerDIDOrder(t *testing.T) {
 	assertSequence("did:plc:alice")
 	assertSequence("did:plc:bob")
 }
+
+func TestPublisherWhenNil(t *testing.T) {
+	var p *WorkerPublisher = nil
+	_, err := p.Publish(context.Background(), "did:plc:alice", map[string]interface{}{})
+	if err == nil {
+		t.Errorf("Expected error for nil publisher")
+	}
+	
+	err = p.Close()
+	if err != nil {
+		t.Errorf("Expected nil error for closing nil publisher")
+	}
+}
+
+func TestPublisherWhenDelegateNil(t *testing.T) {
+	p := &WorkerPublisher{}
+	_, err := p.Publish(context.Background(), "did:plc:alice", map[string]interface{}{})
+	if err == nil {
+		t.Errorf("Expected error for nil delegate")
+	}
+}
+
+func TestNewWithZeroWorkers(t *testing.T) {
+	mock := &recordingPublisher{}
+	p := New(mock, 0, log.New(io.Discard, "", 0))
+	defer p.Close()
+
+	ref, err := p.Publish(context.Background(), "did:plc:alice", map[string]interface{}{"seq": 0})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ref == "" {
+		t.Fatal("expected non-empty ref")
+	}
+}
+
+func TestPublishContextCancellationWaitingResponse(t *testing.T) {
+	// Delegate that blocks forever
+	blocker := make(chan struct{})
+	delegate := publisherFunc(func(ctx context.Context, atDID string, content map[string]interface{}) (string, error) {
+		<-blocker
+		return "", nil
+	})
+	p := New(delegate, 1, log.New(io.Discard, "", 0))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		// Cancel while waiting for response
+		cancel()
+	}()
+	_, err := p.Publish(ctx, "did:plc:alice", map[string]interface{}{})
+	if err != context.Canceled {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+	close(blocker)
+	p.Close()
+}
+
+type publisherFunc func(ctx context.Context, atDID string, content map[string]interface{}) (string, error)
+
+func (f publisherFunc) Publish(ctx context.Context, atDID string, content map[string]interface{}) (string, error) {
+	return f(ctx, atDID, content)
+}
+
+func TestPublishContextCancellationEnqueuing(t *testing.T) {
+	mock := &recordingPublisher{}
+	p := New(mock, 1, log.New(io.Discard, "", 0))
+	
+	// Create context that is already canceled
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	
+	_, err := p.Publish(ctx, "did:plc:alice", map[string]interface{}{})
+	if err == nil || err != context.Canceled {
+		t.Errorf("Expected context.Canceled error, got %v", err)
+	}
+	p.Close()
+}

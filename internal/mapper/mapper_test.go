@@ -657,6 +657,243 @@ func TestAppendFacetMentionsWithLink(t *testing.T) {
 	}
 }
 
+func TestMapPostReplyWithNilRoot(t *testing.T) {
+	// Reply present but root is nil — only parent should appear
+	rawJSON := []byte(`{
+		"text": "reply",
+		"reply": {"parent": {"uri":"at://did:plc:a/app.bsky.feed.post/1","cid":"bafy"}},
+		"createdAt": "2023-01-01T00:00:00Z"
+	}`)
+	res, err := MapRecord(RecordTypePost, "did:plc:alice", rawJSON)
+	if err != nil {
+		t.Fatalf("MapRecord failed: %v", err)
+	}
+	if _, ok := res["_atproto_reply_root"]; ok {
+		t.Fatal("expected no root when reply.root is nil")
+	}
+	if res["_atproto_reply_parent"] != "at://did:plc:a/app.bsky.feed.post/1" {
+		t.Fatalf("expected parent URI, got %v", res["_atproto_reply_parent"])
+	}
+}
+
+func TestMapPostReplyWithNilParent(t *testing.T) {
+	rawJSON := []byte(`{
+		"text": "reply",
+		"reply": {"root": {"uri":"at://did:plc:a/app.bsky.feed.post/1","cid":"bafy"}},
+		"createdAt": "2023-01-01T00:00:00Z"
+	}`)
+	res, err := MapRecord(RecordTypePost, "did:plc:alice", rawJSON)
+	if err != nil {
+		t.Fatalf("MapRecord failed: %v", err)
+	}
+	if _, ok := res["_atproto_reply_parent"]; ok {
+		t.Fatal("expected no parent when reply.parent is nil")
+	}
+	if res["_atproto_reply_root"] != "at://did:plc:a/app.bsky.feed.post/1" {
+		t.Fatalf("expected root URI, got %v", res["_atproto_reply_root"])
+	}
+}
+
+func TestMapPostInvalidJSON(t *testing.T) {
+	_, err := MapRecord(RecordTypePost, "did:plc:alice", []byte(`{invalid`))
+	if err == nil {
+		t.Fatal("expected error for invalid JSON")
+	}
+}
+
+func TestQuoteSubjectURINonRecordEmbed(t *testing.T) {
+	// Embed exists but is not a record or recordWithMedia — should return empty
+	rawJSON := []byte(`{
+		"text": "image post",
+		"embed": {"$type": "app.bsky.embed.images", "images": []},
+		"createdAt": "2023-01-01T00:00:00Z"
+	}`)
+	res, err := MapRecord(RecordTypePost, "did:plc:alice", rawJSON)
+	if err != nil {
+		t.Fatalf("MapRecord failed: %v", err)
+	}
+	if _, ok := res["_atproto_quote_subject"]; ok {
+		t.Fatal("expected no quote subject for image-only embed")
+	}
+}
+
+func TestAppendFacetMentionsNilFeature(t *testing.T) {
+	mentions := appendFacetMentions(nil, make(map[string]struct{}), "text", &appbsky.RichtextFacet{
+		Features: []*appbsky.RichtextFacet_Features_Elem{nil},
+	})
+	if len(mentions) != 0 {
+		t.Fatalf("expected 0 mentions for nil feature, got %d", len(mentions))
+	}
+}
+
+func TestAppendFacetMentionsTagWithWhitespaceSegment(t *testing.T) {
+	seen := make(map[string]struct{})
+	mentions := appendFacetMentions(nil, seen, "   ", &appbsky.RichtextFacet{
+		Features: []*appbsky.RichtextFacet_Features_Elem{
+			{RichtextFacet_Tag: &appbsky.RichtextFacet_Tag{Tag: "mytag"}},
+		},
+	})
+	if len(mentions) != 1 {
+		t.Fatalf("expected 1 mention, got %d", len(mentions))
+	}
+	if mentions[0]["name"] != "#mytag" {
+		t.Fatalf("expected fallback name #mytag, got %v", mentions[0]["name"])
+	}
+}
+
+func TestAppendFacetMentionsTagEmpty(t *testing.T) {
+	seen := make(map[string]struct{})
+	mentions := appendFacetMentions(nil, seen, "text", &appbsky.RichtextFacet{
+		Features: []*appbsky.RichtextFacet_Features_Elem{
+			{RichtextFacet_Tag: &appbsky.RichtextFacet_Tag{Tag: "  "}},
+		},
+	})
+	if len(mentions) != 0 {
+		t.Fatalf("expected 0 mentions for empty tag, got %d", len(mentions))
+	}
+}
+
+func TestRewriteFacetSegmentMatchingLinkText(t *testing.T) {
+	// When segment text matches the URI, no markdown rewrite should occur
+	segment := "https://example.com"
+	facet := &appbsky.RichtextFacet{
+		Features: []*appbsky.RichtextFacet_Features_Elem{
+			{RichtextFacet_Link: &appbsky.RichtextFacet_Link{Uri: "https://example.com"}},
+		},
+	}
+	result := rewriteFacetSegment(segment, facet)
+	if result != segment {
+		t.Fatalf("expected unchanged segment when text matches URI, got %s", result)
+	}
+}
+
+func TestRewriteFacetSegmentNilFeatures(t *testing.T) {
+	facet := &appbsky.RichtextFacet{
+		Features: []*appbsky.RichtextFacet_Features_Elem{
+			{RichtextFacet_Link: nil}, // feature exists but link is nil
+		},
+	}
+	result := rewriteFacetSegment("text", facet)
+	if result != "text" {
+		t.Fatalf("expected unchanged text for nil link feature, got %s", result)
+	}
+}
+
+func TestRewriteRichTextSortTiebreaker(t *testing.T) {
+	// Two facets starting at the same byte offset — shorter one first
+	text := "Hello world"
+	facets := []*appbsky.RichtextFacet{
+		{
+			Index:    &appbsky.RichtextFacet_ByteSlice{ByteStart: 0, ByteEnd: 5},
+			Features: []*appbsky.RichtextFacet_Features_Elem{{RichtextFacet_Tag: &appbsky.RichtextFacet_Tag{Tag: "a"}}},
+		},
+		{
+			Index:    &appbsky.RichtextFacet_ByteSlice{ByteStart: 0, ByteEnd: 3},
+			Features: []*appbsky.RichtextFacet_Features_Elem{{RichtextFacet_Tag: &appbsky.RichtextFacet_Tag{Tag: "b"}}},
+		},
+	}
+	_, mentions := rewriteRichText(text, facets, nil)
+	// The shorter facet (0-3) should sort first, the longer (0-5) is skipped since it overlaps
+	if len(mentions) != 1 {
+		t.Fatalf("expected 1 mention (shorter wins), got %d: %v", len(mentions), mentions)
+	}
+}
+
+func TestAppendFacetMentionsNilFacet(t *testing.T) {
+	mentions := appendFacetMentions(nil, make(map[string]struct{}), "text", nil)
+	if len(mentions) != 0 {
+		t.Fatalf("expected 0 mentions for nil facet, got %d", len(mentions))
+	}
+}
+
+func TestReplaceATProtoRefsResolvesRootAndParent(t *testing.T) {
+	msg := map[string]interface{}{
+		"type":                  "post",
+		"_atproto_reply_root":   "at://did:plc:a/app.bsky.feed.post/root",
+		"_atproto_reply_parent": "at://did:plc:a/app.bsky.feed.post/parent",
+	}
+	ReplaceATProtoRefs(msg,
+		func(uri string) string { return "%resolved.sha256" },
+		func(did string) string { return "" },
+	)
+	if msg["root"] != "%resolved.sha256" {
+		t.Fatalf("expected root resolved, got %v", msg["root"])
+	}
+	if msg["branch"] != "%resolved.sha256" {
+		t.Fatalf("expected branch resolved, got %v", msg["branch"])
+	}
+	if _, ok := msg["_atproto_reply_root"]; ok {
+		t.Fatal("expected _atproto_reply_root removed")
+	}
+	if _, ok := msg["_atproto_reply_parent"]; ok {
+		t.Fatal("expected _atproto_reply_parent removed")
+	}
+}
+
+func TestReplaceATProtoRefsVoteWithMap(t *testing.T) {
+	msg := map[string]interface{}{
+		"type":             "vote",
+		"_atproto_subject": "at://did:plc:bob/app.bsky.feed.post/1",
+		"vote":             map[string]interface{}{"value": 1, "expression": "Like"},
+	}
+	ReplaceATProtoRefs(msg,
+		func(uri string) string { return "%msg.sha256" },
+		func(did string) string { return "" },
+	)
+	vote := msg["vote"].(map[string]interface{})
+	if vote["link"] != "%msg.sha256" {
+		t.Fatalf("expected vote.link to be resolved, got %v", vote["link"])
+	}
+}
+
+func TestReplaceATProtoRefsContactResolution(t *testing.T) {
+	msg := map[string]interface{}{
+		"type":             "contact",
+		"_atproto_contact": "did:plc:bob",
+	}
+	ReplaceATProtoRefs(msg,
+		func(uri string) string { return "" },
+		func(did string) string { return "@bob.ed25519" },
+	)
+	if msg["contact"] != "@bob.ed25519" {
+		t.Fatalf("expected contact resolved, got %v", msg["contact"])
+	}
+	if _, ok := msg["_atproto_contact"]; ok {
+		t.Fatal("expected _atproto_contact removed")
+	}
+}
+
+func TestReplaceATProtoRefsMentionDIDNonPrefix(t *testing.T) {
+	// Mentions with non-DID links should pass through unchanged
+	msg := map[string]interface{}{
+		"type":     "post",
+		"mentions": []map[string]interface{}{{"link": "#tag", "name": "#tag"}},
+	}
+	ReplaceATProtoRefs(msg,
+		func(uri string) string { return "" },
+		func(did string) string { return "" },
+	)
+	mentions := msg["mentions"].([]map[string]interface{})
+	if len(mentions) != 1 || mentions[0]["link"] != "#tag" {
+		t.Fatalf("expected non-DID mention to pass through, got %v", mentions)
+	}
+}
+
+func TestReplaceATProtoRefsEmptyMentionsRemoved(t *testing.T) {
+	// All DID mentions unresolved → mentions key deleted
+	msg := map[string]interface{}{
+		"type":     "post",
+		"mentions": []map[string]interface{}{{"link": "did:plc:unknown", "name": "@unknown"}},
+	}
+	ReplaceATProtoRefs(msg,
+		func(uri string) string { return "" },
+		func(did string) string { return "" },
+	)
+	if _, ok := msg["mentions"]; ok {
+		t.Fatal("expected mentions key deleted when all DID mentions unresolved")
+	}
+}
+
 func TestAppendFacetMentionsWithTag(t *testing.T) {
 	rawJSON := []byte(`{
 		"$type": "app.bsky.feed.post",

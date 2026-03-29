@@ -73,6 +73,10 @@ func (m *Manager) GetFeedID(atDID string) (refs.FeedRef, error) {
 }
 
 func (m *Manager) deriveKeyPair(atDID string) (*keys.KeyPair, error) {
+	if atDID == "" {
+		return nil, fmt.Errorf("bots: DID must not be empty")
+	}
+
 	if kp, ok := m.keyPairs[atDID]; ok {
 		return kp, nil
 	}
