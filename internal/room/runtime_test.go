@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -388,4 +389,83 @@ func mustRuntimeTestFeedRef(t *testing.T, fill byte) *refs.FeedRef {
 		t.Fatalf("create test feed ref: %v", err)
 	}
 	return ref
+}
+
+func TestRuntimeLoginPage(t *testing.T) {
+	rt := startTestRuntime(t, "open", nil)
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	resp, err := client.Get("http://" + rt.HTTPAddr() + "/login")
+	if err != nil {
+		t.Fatalf("login page request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "Sign In") {
+		t.Fatalf("login page missing Sign In text\nbody:\n%s", string(body))
+	}
+	if !strings.Contains(string(body), "/fallback/login") {
+		t.Fatalf("login page missing fallback link\nbody:\n%s", string(body))
+	}
+}
+
+func TestRuntimeLoginPostWithInvalidCredentials(t *testing.T) {
+	rt := startTestRuntime(t, "open", nil)
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	resp, err := client.PostForm("http://"+rt.HTTPAddr()+"/login", url.Values{
+		"username": {"nonexistent"},
+		"password": {"wrongpassword"},
+	})
+	if err != nil {
+		t.Fatalf("login request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for invalid credentials, got %d", resp.StatusCode)
+	}
+}
+
+func TestRuntimeResetPasswordPage(t *testing.T) {
+	rt := startTestRuntime(t, "open", nil)
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	resp, err := client.Get("http://" + rt.HTTPAddr() + "/reset-password")
+	if err != nil {
+		t.Fatalf("reset password page request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "Reset Password") {
+		t.Fatalf("reset password page missing title\nbody:\n%s", string(body))
+	}
+}
+
+func TestRuntimeResetPasswordPostWithInvalidToken(t *testing.T) {
+	rt := startTestRuntime(t, "open", nil)
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	resp, err := client.PostForm("http://"+rt.HTTPAddr()+"/reset-password", url.Values{
+		"token":    {"invalid-token"},
+		"password": {"newpassword123"},
+	})
+	if err != nil {
+		t.Fatalf("reset password request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid token, got %d", resp.StatusCode)
+	}
 }
