@@ -6,7 +6,7 @@ RUN apt-get update && \
 
 WORKDIR /src
 COPY go.mod go.sum ./
-COPY reference/go-ssb-room reference/go-ssb-room
+COPY internal/ssb internal/ssb
 RUN go mod download
 
 COPY . .
