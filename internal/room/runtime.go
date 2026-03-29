@@ -16,10 +16,12 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/keys"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc"
+	roomhandlers "github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc/handlers/room"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomdb"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomdb/sqlite"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomstate"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/secretstream"
 )
 
 const (
@@ -61,6 +63,9 @@ type Runtime struct {
 	closeOnce  sync.Once
 	closeErr   error
 	shutdownCh chan struct{}
+
+	handler  muxrpc.Handler
+	manifest *muxrpc.Manifest
 }
 
 func Start(parentCtx context.Context, cfg Config, logger *log.Logger) (*Runtime, error) {
@@ -103,10 +108,20 @@ func Start(parentCtx context.Context, cfg Config, logger *log.Logger) (*Runtime,
 	state := roomstate.NewManager()
 
 	feedRef := cfg.KeyPair.FeedRef()
-	roomSrv := newRoomServer(&feedRef, roomDB, state)
+	roomSrv := roomhandlers.NewRoomServer(
+		&feedRef,
+		roomDB.Members(),
+		roomDB.Aliases(),
+		roomDB.Invites(),
+		roomDB.DeniedKeys(),
+		roomDB.RoomConfig(),
+		state,
+	)
 
-	handlerMux := &muxrpc.Manifest{}
+	handlerMux := &muxrpc.HandlerMux{}
 	registerRoomHandlers(handlerMux, roomSrv)
+
+	manifest := &muxrpc.Manifest{} // Room currently doesn't use a formal manifest for discovery
 
 	httpListener, err := net.Listen("tcp", cfg.HTTPListenAddr)
 	if err != nil {
@@ -145,6 +160,8 @@ func Start(parentCtx context.Context, cfg Config, logger *log.Logger) (*Runtime,
 		muxrpcAddr:     muxrpcListener.Addr().String(),
 		httpAddr:       httpListener.Addr().String(),
 		shutdownCh:     make(chan struct{}),
+		handler:        handlerMux,
+		manifest:       manifest,
 	}
 
 	rt.wg.Add(2)
@@ -274,8 +291,23 @@ func (r *Runtime) serveMUXRPC(ctx context.Context, shutdownCh <-chan struct{}, l
 func (r *Runtime) handleMUXRPCConn(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
 
-	var secretConn muxrpc.Conn = &connWrapper{conn}
-	muxrpc.NewServer(ctx, secretConn, nil, nil)
+	if r == nil || r.keyPair == nil {
+		return
+	}
+
+	appKey := secretstream.NewAppKey("boxstream") // Default SSB network identifier
+	shs, err := secretstream.NewServer(conn, appKey, r.keyPair.Private())
+	if err != nil {
+		r.logger.Printf("room: shs server init failed: %v", err)
+		return
+	}
+
+	if err := shs.Handshake(); err != nil {
+		r.logger.Printf("room: shs server handshake failed: %v", err)
+		return
+	}
+
+	muxrpc.NewServer(ctx, shs, r.handler, r.manifest)
 
 	<-ctx.Done()
 }
@@ -332,8 +364,32 @@ func newServeMux(ctx context.Context, db *sqlite.DB, state *roomstate.Manager, k
 	return mux
 }
 
-func registerRoomHandlers(mux *muxrpc.Manifest, srv *roomServer) {
+func registerRoomHandlers(mux *muxrpc.HandlerMux, srv *roomhandlers.RoomServer) {
+	mux.Register(muxrpc.Method{"whoami"}, &whoamiHandler{srv})
+	mux.Register(muxrpc.Method{"room"}, roomhandlers.NewAliasHandler(srv))
 }
+
+type whoamiHandler struct {
+	srv *roomhandlers.RoomServer
+}
+
+func (h *whoamiHandler) Handled(m muxrpc.Method) bool {
+	return len(m) == 1 && m[0] == "whoami"
+}
+
+func (h *whoamiHandler) HandleCall(ctx context.Context, req *muxrpc.Request) {
+	if req.Type != "async" {
+		req.CloseWithError(fmt.Errorf("whoami is async"))
+		return
+	}
+
+	res := map[string]string{
+		"id": h.srv.KeyPair().String(),
+	}
+	req.Return(ctx, res)
+}
+
+func (h *whoamiHandler) HandleConnect(ctx context.Context, edp muxrpc.Endpoint) {}
 
 func (cfg Config) withDefaults() Config {
 	if strings.TrimSpace(cfg.ListenAddr) == "" {

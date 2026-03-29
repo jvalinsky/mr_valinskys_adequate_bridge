@@ -18,8 +18,12 @@ import (
 	"time"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/keys"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc"
+	roomhandlers "github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc/handlers/room"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomdb"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/secretstream"
 )
 
 func TestRuntimeConfigValidationRejectsInvalidMode(t *testing.T) {
@@ -867,5 +871,564 @@ func TestStartListenErrors(t *testing.T) {
 	}, nil)
 	if err == nil || !strings.Contains(err.Error(), "listen muxrpc") {
 		t.Errorf("expected listen error for occupied muxrpc port, got %v", err)
+	}
+}
+
+func TestRoomMuxRPCConnWithSHS(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	rt, err := Start(ctx, Config{
+		ListenAddr:     "127.0.0.1:0",
+		HTTPListenAddr: "127.0.0.1:0",
+		RepoPath:       t.TempDir(),
+		Mode:           "community",
+	}, log.New(io.Discard, "", 0))
+	if err != nil {
+		if strings.Contains(err.Error(), "operation not permitted") {
+			t.Skipf("sandbox does not allow local listen sockets: %v", err)
+		}
+		t.Fatalf("start runtime: %v", err)
+	}
+	defer rt.Close()
+
+	// Client keypair
+	clientKey, err := keys.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Dial the muxrpc listener
+	conn, err := net.Dial("tcp", rt.Addr())
+	if err != nil {
+		t.Fatalf("dial muxrpc: %v", err)
+	}
+	defer conn.Close()
+
+	// SHS Client
+	appKey := secretstream.NewAppKey("boxstream")
+	client, err := secretstream.NewClient(conn, appKey, clientKey.Private(), rt.RoomFeed().PubKey())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := client.Handshake(); err != nil {
+		t.Fatalf("client handshake failed: %v", err)
+	}
+
+	// MuxRPC Client
+	rpc := muxrpc.NewServer(ctx, client, nil, nil)
+
+	var resp struct {
+		ID string `json:"id"`
+	}
+	err = rpc.Async(ctx, &resp, muxrpc.TypeJSON, muxrpc.Method{"whoami"})
+	if err != nil {
+		t.Fatalf("whoami call failed: %v", err)
+	}
+
+	if resp.ID != rt.RoomFeed().String() {
+		t.Errorf("expected room id %s, got %s", rt.RoomFeed().String(), resp.ID)
+	}
+}
+
+func TestConnWrapperMethods(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+
+	cw := &connWrapper{Conn: client}
+
+	// Write through wrapper, read from server side
+	go func() {
+		_, _ = cw.Write([]byte("hello"))
+	}()
+	buf := make([]byte, 5)
+	n, err := server.Read(buf)
+	if err != nil {
+		t.Fatalf("read from server: %v", err)
+	}
+	if string(buf[:n]) != "hello" {
+		t.Fatalf("expected hello, got %q", string(buf[:n]))
+	}
+
+	// Write from server, read through wrapper
+	go func() {
+		_, _ = server.Write([]byte("world"))
+	}()
+	buf2 := make([]byte, 5)
+	n, err = cw.Read(buf2)
+	if err != nil {
+		t.Fatalf("read from wrapper: %v", err)
+	}
+	if string(buf2[:n]) != "world" {
+		t.Fatalf("expected world, got %q", string(buf2[:n]))
+	}
+
+	// RemoteAddr
+	addr := cw.RemoteAddr()
+	if addr == nil {
+		t.Fatal("expected non-nil RemoteAddr")
+	}
+
+	// Close
+	if err := cw.Close(); err != nil {
+		t.Fatalf("close wrapper: %v", err)
+	}
+}
+
+func TestNewRoomServer(t *testing.T) {
+	feedRef := mustRuntimeTestFeedRef(t, 1)
+	rs := newRoomServer(feedRef, nil, nil)
+	if rs == nil {
+		t.Fatal("expected non-nil roomServer")
+	}
+	if rs.keyPair != feedRef {
+		t.Error("keyPair not set correctly")
+	}
+	if rs.db != nil {
+		t.Error("expected nil db")
+	}
+	if rs.state != nil {
+		t.Error("expected nil state")
+	}
+}
+
+func TestWhoamiHandlerHandled(t *testing.T) {
+	h := &whoamiHandler{}
+
+	if !h.Handled(muxrpc.Method{"whoami"}) {
+		t.Error("expected Handled to return true for whoami")
+	}
+	if h.Handled(muxrpc.Method{"notWhoami"}) {
+		t.Error("expected Handled to return false for notWhoami")
+	}
+	if h.Handled(muxrpc.Method{"whoami", "extra"}) {
+		t.Error("expected Handled to return false for multi-segment method")
+	}
+	if h.Handled(muxrpc.Method{}) {
+		t.Error("expected Handled to return false for empty method")
+	}
+}
+
+func TestWhoamiHandlerHandleCallNonAsync(t *testing.T) {
+	feedRef := mustRuntimeTestFeedRef(t, 5)
+	srv := roomhandlers.NewRoomServer(feedRef, nil, nil, nil, nil, nil, nil)
+	h := &whoamiHandler{srv: srv}
+
+	// Non-async request: should call CloseWithError.
+	// We only need to verify no panic; CloseWithError on a nil sink is safe enough
+	// to test by calling directly. The code path calls req.CloseWithError.
+	req := &muxrpc.Request{Type: "source"}
+	h.HandleCall(context.Background(), req)
+	// If we get here without panic, the non-async path was exercised.
+}
+
+func TestWhoamiHandlerHandleConnect(t *testing.T) {
+	h := &whoamiHandler{}
+	// HandleConnect is a no-op; just call it for coverage.
+	h.HandleConnect(context.Background(), nil)
+}
+
+func TestAddMemberSuccess(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	rt, err := Start(ctx, Config{
+		ListenAddr:     "127.0.0.1:0",
+		HTTPListenAddr: "127.0.0.1:0",
+		RepoPath:       t.TempDir(),
+		Mode:           "community",
+	}, log.New(io.Discard, "", 0))
+	if err != nil {
+		if strings.Contains(err.Error(), "operation not permitted") {
+			t.Skipf("sandbox does not allow local listen sockets: %v", err)
+		}
+		t.Fatalf("start runtime: %v", err)
+	}
+	defer rt.Close()
+
+	feed := mustRuntimeTestFeedRef(t, 7)
+	if err := rt.AddMember(ctx, *feed, roomdb.RoleMember); err != nil {
+		t.Fatalf("AddMember: %v", err)
+	}
+}
+
+func TestConfigWithDefaultsAllEmpty(t *testing.T) {
+	cfg := Config{}
+	out := cfg.withDefaults()
+
+	if out.ListenAddr != defaultMUXRPCListenAddr {
+		t.Errorf("expected default listen addr %q, got %q", defaultMUXRPCListenAddr, out.ListenAddr)
+	}
+	if out.HTTPListenAddr != defaultHTTPListenAddr {
+		t.Errorf("expected default HTTP listen addr %q, got %q", defaultHTTPListenAddr, out.HTTPListenAddr)
+	}
+	if out.RepoPath != defaultRoomRepoPath {
+		t.Errorf("expected default repo path %q, got %q", defaultRoomRepoPath, out.RepoPath)
+	}
+	if out.Mode != defaultRoomMode {
+		t.Errorf("expected default mode %q, got %q", defaultRoomMode, out.Mode)
+	}
+}
+
+func TestConfigWithDefaultsPreservesExplicitValues(t *testing.T) {
+	cfg := Config{
+		ListenAddr:     "  0.0.0.0:9999  ",
+		HTTPListenAddr: "  0.0.0.0:8888  ",
+		RepoPath:       "  /custom/path  ",
+		Mode:           "  OPEN  ",
+	}
+	out := cfg.withDefaults()
+
+	if out.ListenAddr != "  0.0.0.0:9999  " {
+		t.Errorf("expected preserved listen addr, got %q", out.ListenAddr)
+	}
+	if out.Mode != "open" {
+		t.Errorf("expected lowercased+trimmed mode 'open', got %q", out.Mode)
+	}
+}
+
+func TestModeStatusAllModes(t *testing.T) {
+	tests := []struct {
+		mode   roomdb.PrivacyMode
+		label  string
+		canInv bool
+	}{
+		{roomdb.ModeOpen, "Open", true},
+		{roomdb.ModeCommunity, "Community", false},
+		{roomdb.ModeRestricted, "Restricted", false},
+		{roomdb.ModeUnknown, "Unknown", false},
+	}
+
+	for _, tc := range tests {
+		h := bridgeRoomHandler{roomConfig: &mockRoomConfig{mode: tc.mode}}
+		status := h.modeStatus(context.Background())
+		if status.Label != tc.label {
+			t.Errorf("mode %v: expected label %q, got %q", tc.mode, tc.label, status.Label)
+		}
+		if status.CanSelfServeInvite != tc.canInv {
+			t.Errorf("mode %v: expected CanSelfServeInvite=%v, got %v", tc.mode, tc.canInv, status.CanSelfServeInvite)
+		}
+	}
+
+	// Test nil roomConfig
+	h2 := bridgeRoomHandler{roomConfig: nil}
+	status := h2.modeStatus(context.Background())
+	if status.Label != "Unknown" {
+		t.Errorf("nil config: expected Unknown label, got %q", status.Label)
+	}
+
+	// Test error reading config
+	h3 := bridgeRoomHandler{roomConfig: &mockRoomConfig{err: fmt.Errorf("db error")}}
+	status = h3.modeStatus(context.Background())
+	if status.Label != "Unknown" {
+		t.Errorf("error config: expected Unknown label, got %q", status.Label)
+	}
+}
+
+func TestFilterAndSortBotsWithSearch(t *testing.T) {
+	bots := []botCardData{
+		{ATDID: "did:plc:alpha", SSBFeedID: "feedAlpha", FeedURI: "uri1", TotalMessages: 10, PublishedMessages: 8},
+		{ATDID: "did:plc:beta", SSBFeedID: "feedBeta", FeedURI: "uri2", TotalMessages: 5, PublishedMessages: 3},
+		{ATDID: "did:plc:gamma", SSBFeedID: "feedGamma", FeedURI: "uri3", TotalMessages: 20, PublishedMessages: 15},
+	}
+
+	// Search filter
+	result := filterAndSortBots(bots, "alpha", "activity_desc")
+	if len(result) != 1 {
+		t.Fatalf("expected 1 result for alpha search, got %d", len(result))
+	}
+	if result[0].ATDID != "did:plc:alpha" {
+		t.Errorf("expected alpha, got %s", result[0].ATDID)
+	}
+
+	// No search, activity_desc sort
+	result = filterAndSortBots(bots, "", "activity_desc")
+	if len(result) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(result))
+	}
+	if result[0].TotalMessages != 20 {
+		t.Errorf("expected gamma (20 msgs) first, got %d", result[0].TotalMessages)
+	}
+
+	// newest sort
+	bots2 := []botCardData{
+		{ATDID: "a", CreatedUnix: 100},
+		{ATDID: "b", CreatedUnix: 300},
+		{ATDID: "c", CreatedUnix: 200},
+	}
+	result = filterAndSortBots(bots2, "", "newest")
+	if result[0].CreatedUnix != 300 {
+		t.Errorf("expected newest first (300), got %d", result[0].CreatedUnix)
+	}
+
+	// deferred_desc sort
+	bots3 := []botCardData{
+		{ATDID: "a", DeferredMessages: 5, FailedMessages: 2, TotalMessages: 10},
+		{ATDID: "b", DeferredMessages: 5, FailedMessages: 3, TotalMessages: 10},
+		{ATDID: "c", DeferredMessages: 10, FailedMessages: 0, TotalMessages: 5},
+		{ATDID: "d", DeferredMessages: 5, FailedMessages: 3, TotalMessages: 20},
+	}
+	result = filterAndSortBots(bots3, "", "deferred_desc")
+	if result[0].ATDID != "c" {
+		t.Errorf("expected c first (most deferred), got %s", result[0].ATDID)
+	}
+	// Same deferred, higher failed first
+	if result[1].FailedMessages != 3 || result[2].FailedMessages != 3 {
+		t.Errorf("expected failed=3 next")
+	}
+
+	// Case-insensitive search
+	result = filterAndSortBots(bots, "BETA", "activity_desc")
+	if len(result) != 1 || result[0].ATDID != "did:plc:beta" {
+		t.Errorf("case-insensitive search failed")
+	}
+}
+
+func TestDerefTime(t *testing.T) {
+	fallback := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	// nil value
+	result := derefTime(nil, fallback)
+	if !result.Equal(fallback) {
+		t.Errorf("expected fallback for nil, got %v", result)
+	}
+
+	// zero value
+	zero := time.Time{}
+	result = derefTime(&zero, fallback)
+	if !result.Equal(fallback) {
+		t.Errorf("expected fallback for zero time, got %v", result)
+	}
+
+	// valid value
+	valid := time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC)
+	result = derefTime(&valid, fallback)
+	if !result.Equal(valid) {
+		t.Errorf("expected valid time, got %v", result)
+	}
+}
+
+func TestFormatHumanTime(t *testing.T) {
+	// Zero time
+	if got := formatHumanTime(time.Time{}); got != "" {
+		t.Errorf("expected empty string for zero time, got %q", got)
+	}
+
+	// Non-zero time
+	ts := time.Date(2025, 3, 15, 14, 30, 0, 0, time.UTC)
+	got := formatHumanTime(ts)
+	if got != "15 Mar 2025, 14:30 UTC" {
+		t.Errorf("unexpected format: %q", got)
+	}
+}
+
+func TestAbbreviateFeed(t *testing.T) {
+	// Short feed (<=20 chars) returned as-is
+	short := "short"
+	if got := abbreviateFeed(short); got != short {
+		t.Errorf("expected %q, got %q", short, got)
+	}
+
+	// Exactly 20 chars
+	exact := "12345678901234567890"
+	if got := abbreviateFeed(exact); got != exact {
+		t.Errorf("expected %q, got %q", exact, got)
+	}
+
+	// Long feed gets abbreviated
+	long := "abcdefghijklmnopqrstuvwxyz1234567890"
+	got := abbreviateFeed(long)
+	if !strings.HasPrefix(got, "abcdefghijkl") {
+		t.Errorf("expected prefix abcdefghijkl, got %q", got)
+	}
+	if !strings.Contains(got, "\u2026") {
+		t.Errorf("expected ellipsis in abbreviated feed, got %q", got)
+	}
+}
+
+func TestAbbreviateDID(t *testing.T) {
+	// Short DID (<=24 chars) returned as-is
+	short := "did:plc:short"
+	if got := abbreviateDID(short); got != short {
+		t.Errorf("expected %q, got %q", short, got)
+	}
+
+	// Long DID gets abbreviated
+	long := "did:plc:abcdefghijklmnopqrstuvwxyz"
+	got := abbreviateDID(long)
+	if len(got) > len(long) {
+		t.Errorf("abbreviated should be shorter")
+	}
+	if !strings.Contains(got, "\u2026") {
+		t.Errorf("expected ellipsis in abbreviated DID, got %q", got)
+	}
+}
+
+func TestInviteCreationMethod(t *testing.T) {
+	if !inviteCreationMethod(http.MethodGet) {
+		t.Error("GET should be valid invite creation method")
+	}
+	if !inviteCreationMethod(http.MethodHead) {
+		t.Error("HEAD should be valid invite creation method")
+	}
+	if !inviteCreationMethod(http.MethodPost) {
+		t.Error("POST should be valid invite creation method")
+	}
+	if inviteCreationMethod(http.MethodPut) {
+		t.Error("PUT should not be valid invite creation method")
+	}
+	if inviteCreationMethod(http.MethodDelete) {
+		t.Error("DELETE should not be valid invite creation method")
+	}
+}
+
+func TestNewBridgeRoomHandlerNilStock(t *testing.T) {
+	h := newBridgeRoomHandler(nil, nil, nil, nil)
+	if h == nil {
+		t.Fatal("expected non-nil handler")
+	}
+
+	// Verify it serves requests (the nil stock gets replaced with NotFoundHandler)
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/some-unknown-route", nil)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for unknown route with nil stock, got %d", rr.Code)
+	}
+}
+
+type errorBotLister struct{}
+
+func (e *errorBotLister) ListActiveBridgedAccountsWithStats(ctx context.Context) ([]db.BridgedAccountStats, error) {
+	return nil, fmt.Errorf("db connection failed")
+}
+
+func TestHandleLandingError(t *testing.T) {
+	h := bridgeRoomHandler{
+		stock:           http.NotFoundHandler(),
+		roomConfig:      &mockRoomConfig{mode: roomdb.ModeOpen},
+		bridgeBotLister: &errorBotLister{},
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	h.handleLanding(rr, req)
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 for lister error, got %d", rr.Code)
+	}
+}
+
+func TestHandleBotsError(t *testing.T) {
+	h := bridgeRoomHandler{
+		stock:           http.NotFoundHandler(),
+		roomConfig:      &mockRoomConfig{mode: roomdb.ModeOpen},
+		bridgeBotLister: &errorBotLister{},
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/bots", nil)
+	h.handleBots(rr, req)
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 for lister error, got %d", rr.Code)
+	}
+}
+
+func TestNormalizeBotSort(t *testing.T) {
+	if got := normalizeBotSort("newest"); got != "newest" {
+		t.Errorf("expected newest, got %q", got)
+	}
+	if got := normalizeBotSort("deferred_desc"); got != "deferred_desc" {
+		t.Errorf("expected deferred_desc, got %q", got)
+	}
+	if got := normalizeBotSort("invalid"); got != "activity_desc" {
+		t.Errorf("expected activity_desc for invalid, got %q", got)
+	}
+	if got := normalizeBotSort(""); got != "activity_desc" {
+		t.Errorf("expected activity_desc for empty, got %q", got)
+	}
+}
+
+func TestWantsJSONResponse(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	if wantsJSONResponse(req) {
+		t.Error("expected false with no Accept header")
+	}
+
+	req.Header.Set("Accept", "application/json")
+	if !wantsJSONResponse(req) {
+		t.Error("expected true with application/json Accept header")
+	}
+
+	req.Header.Set("Accept", "text/html, Application/JSON")
+	if !wantsJSONResponse(req) {
+		t.Error("expected true with mixed-case Accept header containing application/json")
+	}
+}
+
+func TestHandleInviteCreationUnavailableRedirect(t *testing.T) {
+	h := bridgeRoomHandler{
+		roomConfig: &mockRoomConfig{mode: roomdb.ModeCommunity},
+	}
+
+	// Without JSON Accept header, should redirect
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/create-invite", nil)
+	h.handleInviteCreationUnavailable(rr, req)
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("expected 303 redirect, got %d", rr.Code)
+	}
+}
+
+func TestServeHTTPCreateInviteRestrictedMode(t *testing.T) {
+	h := bridgeRoomHandler{
+		stock:      http.NotFoundHandler(),
+		roomConfig: &mockRoomConfig{mode: roomdb.ModeRestricted},
+	}
+
+	// POST create-invite in restricted mode should be blocked
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/create-invite", nil)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("expected 303 redirect for restricted mode create-invite, got %d", rr.Code)
+	}
+}
+
+func TestServeHTTPHealthzHead(t *testing.T) {
+	h := bridgeRoomHandler{stock: http.NotFoundHandler()}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodHead, "/healthz", nil)
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected 200 for HEAD /healthz, got %d", rr.Code)
+	}
+	if rr.Body.Len() != 0 {
+		t.Errorf("expected empty body for HEAD /healthz, got %q", rr.Body.String())
+	}
+}
+
+func TestBuildBotSortOptions(t *testing.T) {
+	opts := buildBotSortOptions("newest")
+	if len(opts) != 3 {
+		t.Fatalf("expected 3 sort options, got %d", len(opts))
+	}
+	for _, opt := range opts {
+		if opt.Value == "newest" && !opt.Selected {
+			t.Error("expected newest to be selected")
+		}
+		if opt.Value != "newest" && opt.Selected {
+			t.Errorf("expected %s to not be selected", opt.Value)
+		}
+	}
+}
+
+func TestSetPublicCacheHeaders(t *testing.T) {
+	rr := httptest.NewRecorder()
+	setPublicCacheHeaders(rr)
+	if got := rr.Header().Get("Cache-Control"); got != "public, max-age=30" {
+		t.Errorf("expected Cache-Control header, got %q", got)
 	}
 }
