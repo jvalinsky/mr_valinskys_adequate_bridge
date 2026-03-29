@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/base64"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -1564,7 +1565,202 @@ func TestParseNullableTimeFormats(t *testing.T) {
 	}
 }
 
-func TestListMessagesWithSearchFilter(t *testing.T) {
+func TestDBOpenInvalidPath(t *testing.T) {
+	_, err := Open("/non/existent/path/that/cannot/be/created/db.sqlite")
+	if err == nil {
+		t.Fatal("expected error for invalid db path")
+	}
+}
+
+func TestColumnExistsError(t *testing.T) {
+	db, err := Open(":memory:?parseTime=true")
+	if err != nil {
+		t.Fatalf("failed to open memory db: %v", err)
+	}
+	db.Close()
+	_, err = db.columnExists("messages", "any")
+	if err == nil {
+		t.Fatal("expected error from closed db")
+	}
+}
+
+func TestScanBridgedAccountStatsError(t *testing.T) {
+	db, err := Open(":memory:?parseTime=true")
+	if err != nil {
+		t.Fatalf("failed to open memory db: %v", err)
+	}
+	defer db.Close()
+
+	// Test scanBridgedAccountStats directly with failing scanner
+	_, err = scanBridgedAccountStats(&failingScanner{})
+	if err == nil {
+		t.Error("expected scan error")
+	}
+}
+
+type failingScanner struct{}
+
+func (f *failingScanner) Scan(dest ...interface{}) error {
+	return fmt.Errorf("scan failed")
+}
+
+func TestCountMessagesError(t *testing.T) {
+	db, err := Open(":memory:?parseTime=true")
+	if err != nil {
+		t.Fatalf("failed to open memory db: %v", err)
+	}
+	db.Close()
+	_, err = db.CountMessages(context.Background())
+	if err == nil {
+		t.Error("expected error from closed db")
+	}
+}
+
+func TestGetRecentMessagesError(t *testing.T) {
+	db, err := Open(":memory:?parseTime=true")
+	if err != nil {
+		t.Fatalf("failed to open memory db: %v", err)
+	}
+	db.Close()
+	_, err = db.GetRecentMessages(context.Background(), 10)
+	if err == nil {
+		t.Error("expected error from closed db")
+	}
+}
+
+func TestListMessagesError(t *testing.T) {
+	db, err := Open(":memory:?parseTime=true")
+	if err != nil {
+		t.Fatalf("failed to open memory db: %v", err)
+	}
+	db.Close()
+	_, err = db.ListMessages(context.Background(), MessageListQuery{})
+	if err == nil {
+		t.Error("expected error from closed db")
+	}
+}
+
+func TestCountPublishedMessagesError(t *testing.T) {
+	db, err := Open(":memory:?parseTime=true")
+	if err != nil {
+		t.Fatalf("failed to open memory db: %v", err)
+	}
+	db.Close()
+	_, err = db.CountPublishedMessages(context.Background())
+	if err == nil {
+		t.Error("expected error from closed db")
+	}
+}
+
+func TestCountPublishFailuresError(t *testing.T) {
+	db, err := Open(":memory:?parseTime=true")
+	if err != nil {
+		t.Fatalf("failed to open memory db: %v", err)
+	}
+	db.Close()
+	_, err = db.CountPublishFailures(context.Background())
+	if err == nil {
+		t.Error("expected error from closed db")
+	}
+}
+
+func TestCountDeferredMessagesError(t *testing.T) {
+	db, err := Open(":memory:?parseTime=true")
+	if err != nil {
+		t.Fatalf("failed to open memory db: %v", err)
+	}
+	db.Close()
+	_, err = db.CountDeferredMessages(context.Background())
+	if err == nil {
+		t.Error("expected error from closed db")
+	}
+}
+
+func TestCountDeletedMessagesError(t *testing.T) {
+	db, err := Open(":memory:?parseTime=true")
+	if err != nil {
+		t.Fatalf("failed to open memory db: %v", err)
+	}
+	db.Close()
+	_, err = db.CountDeletedMessages(context.Background())
+	if err == nil {
+		t.Error("expected error from closed db")
+	}
+}
+
+func TestGetPublishFailuresError(t *testing.T) {
+	db, err := Open(":memory:?parseTime=true")
+	if err != nil {
+		t.Fatalf("failed to open memory db: %v", err)
+	}
+	db.Close()
+	_, err = db.GetPublishFailures(context.Background(), 10)
+	if err == nil {
+		t.Error("expected error from closed db")
+	}
+}
+
+func TestGetRetryCandidatesError(t *testing.T) {
+	db, err := Open(":memory:?parseTime=true")
+	if err != nil {
+		t.Fatalf("failed to open memory db: %v", err)
+	}
+	db.Close()
+	_, err = db.GetRetryCandidates(context.Background(), 10, "", 1)
+	if err == nil {
+		t.Error("expected error from closed db")
+	}
+}
+
+func TestGetDeferredCandidatesError(t *testing.T) {
+	db, err := Open(":memory:?parseTime=true")
+	if err != nil {
+		t.Fatalf("failed to open memory db: %v", err)
+	}
+	db.Close()
+	_, err = db.GetDeferredCandidates(context.Background(), 10)
+	if err == nil {
+		t.Error("expected error from closed db")
+	}
+}
+
+func TestGetLatestDeferredReasonError(t *testing.T) {
+	db, err := Open(":memory:?parseTime=true")
+	if err != nil {
+		t.Fatalf("failed to open memory db: %v", err)
+	}
+	db.Close()
+	_, _, err = db.GetLatestDeferredReason(context.Background())
+	if err == nil {
+		t.Error("expected error from closed db")
+	}
+}
+
+func TestCountBlobsError(t *testing.T) {
+	db, err := Open(":memory:?parseTime=true")
+	if err != nil {
+		t.Fatalf("failed to open memory db: %v", err)
+	}
+	db.Close()
+	_, err = db.CountBlobs(context.Background())
+	if err == nil {
+		t.Error("expected error from closed db")
+	}
+}
+
+func TestGetRecentBlobsError(t *testing.T) {
+	db, err := Open(":memory:?parseTime=true")
+	if err != nil {
+		t.Fatalf("failed to open memory db: %v", err)
+	}
+	db.Close()
+	_, err = db.GetRecentBlobs(context.Background(), 10)
+	if err == nil {
+		t.Error("expected error from closed db")
+	}
+}
+
+func TestListMessagesSearchFilter(t *testing.T) {
 	db, err := Open(":memory:?parseTime=true")
 	if err != nil {
 		t.Fatalf("failed to open memory db: %v", err)
@@ -1584,13 +1780,13 @@ func TestListMessagesWithSearchFilter(t *testing.T) {
 		t.Fatalf("add: %v", err)
 	}
 
-	messages, err := db.ListMessages(ctx, MessageListQuery{Search: "unique_searchterm"})
+	messages, err := db.ListMessages(ctx, MessageListQuery{Search: "unique_searchterm", Limit: 10})
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
 	// Search is on at_uri, at_did, ssb_msg_ref, publish_error, defer_reason, deleted_reason - not raw JSON.
 	// So searching for the DID should work.
-	messages, err = db.ListMessages(ctx, MessageListQuery{Search: "did:plc:alice"})
+	messages, err = db.ListMessages(ctx, MessageListQuery{Search: "did:plc:alice", Limit: 10})
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}

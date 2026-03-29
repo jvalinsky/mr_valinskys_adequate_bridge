@@ -353,7 +353,9 @@ func parsePairs(s string) []pair {
 			i++
 		}
 		value := strings.TrimSpace(s[valueStart:i])
-		out = append(out, pair{key: key, value: value})
+		if value != "" || (i < len(s) && s[i] == ' ') {
+			out = append(out, pair{key: key, value: value})
+		}
 	}
 	return out
 }

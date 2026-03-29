@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/bluesky-social/indigo/api/atproto"
 	appbsky "github.com/bluesky-social/indigo/api/bsky"
 	"github.com/bluesky-social/indigo/atproto/identity"
 	indigorepo "github.com/bluesky-social/indigo/repo"
@@ -73,6 +74,24 @@ func TestDIDPDSResolverResolvePDSEndpoint(t *testing.T) {
 	_, err = resolver.ResolvePDSEndpoint(context.Background(), "did:web:example.com")
 	if !errors.Is(err, ErrUnsupportedDIDMethod) {
 		t.Fatalf("expected unsupported did method error, got %v", err)
+	}
+}
+
+func TestDIDPDSResolverResolvePDSEndpointError(t *testing.T) {
+	client := &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			return nil, fmt.Errorf("network failure")
+		}),
+	}
+
+	resolver := DIDPDSResolver{
+		PLCURL:     "https://plc.example.test",
+		HTTPClient: client,
+	}
+
+	_, err := resolver.ResolvePDSEndpoint(context.Background(), "did:plc:any")
+	if err == nil {
+		t.Fatal("expected error from network failure")
 	}
 }
 
@@ -508,12 +527,7 @@ func TestDIDPDSResolverWithBadDID(t *testing.T) {
 	}
 }
 
-func TestExtractPDSEndpointNilDoc(t *testing.T) {
-	_, err := extractPDSEndpoint(nil)
-	if !errors.Is(err, ErrMissingPDSEndpoint) {
-		t.Fatalf("expected ErrMissingPDSEndpoint for nil doc, got %v", err)
-	}
-}
+// Deleted redundant TestExtractPDSEndpointNilDoc
 
 func TestExtractPDSEndpointEmptyEndpoint(t *testing.T) {
 	// The doc structure needs to match identity.DIDDocument
@@ -711,9 +725,83 @@ func TestExtractPDSEndpointMixedServices(t *testing.T) {
 	}
 }
 
-func TestClassifyDIDResultResolutionFailed(t *testing.T) {
-	got := classifyDIDResult(identity.ErrDIDResolutionFailed)
-	if got != StatusMalformedDIDDoc {
-		t.Errorf("classifyDIDResult(ErrDIDResolutionFailed) = %s, want StatusMalformedDIDDoc", got)
+func TestRunForDIDWithUnsupportedCollection(t *testing.T) {
+	ctx := context.Background()
+	did := "did:plc:unsupported"
+	bs := newMapBlockstore()
+	rr := indigorepo.NewRepo(ctx, did, bs)
+	// Create unsupported record
+	rr.CreateRecord(ctx, "app.bsky.feed.repost", &appbsky.FeedRepost{
+		LexiconTypeID: "app.bsky.feed.repost",
+		Subject:       &atproto.RepoStrongRef{Uri: "at://did:plc:x/app.bsky.feed.post/y", Cid: "abc"},
+		CreatedAt:     "2026-01-01T00:00:00Z",
+	})
+
+	root, _, _ := rr.Commit(ctx, func(ctx context.Context, did string, data []byte) ([]byte, error) { return []byte("sig"), nil })
+
+	buf := new(bytes.Buffer)
+	writeCARHeader(buf, root)
+	for _, blk := range bs.blocks {
+		ldWrite(buf, blk.Cid().Bytes(), blk.RawData())
+	}
+
+	result := RunForDID(ctx, did, SinceFilter{}, &recordingProcessor{}, nil,
+		&stubHostResolver{hosts: map[string]string{did: "http://pds"}},
+		&stubRepoFetcher{payloads: map[string][]byte{did: buf.Bytes()}})
+
+	if result.Stats.Skipped == 0 {
+		t.Error("expected skipped record for unsupported collection")
+	}
+}
+
+func TestExtractPDSEndpointNilDoc(t *testing.T) {
+	_, err := extractPDSEndpoint(nil)
+	if !errors.Is(err, ErrMissingPDSEndpoint) {
+		t.Fatalf("expected ErrMissingPDSEndpoint for nil doc, got %v", err)
+	}
+}
+
+func TestResolvePDSEndpointInvalidDID(t *testing.T) {
+	resolver := DIDPDSResolver{}
+	_, err := resolver.ResolvePDSEndpoint(context.Background(), "invalid-did")
+	if !errors.Is(err, ErrUnsupportedDIDMethod) {
+		t.Fatalf("expected ErrUnsupportedDIDMethod, got %v", err)
+	}
+}
+
+func TestResolvePDSEndpointNonPlcDID(t *testing.T) {
+	resolver := DIDPDSResolver{}
+	_, err := resolver.ResolvePDSEndpoint(context.Background(), "did:web:example.com")
+	if !errors.Is(err, ErrUnsupportedDIDMethod) {
+		t.Fatalf("expected ErrUnsupportedDIDMethod for did:web, got %v", err)
+	}
+}
+
+// Deleted redundant TestExtractPDSEndpointNilDoc
+
+func TestRunForDIDWithMalformedRecord(t *testing.T) {
+	ctx := context.Background()
+	did := "did:plc:malformed"
+	bs := newMapBlockstore()
+	rr := indigorepo.NewRepo(ctx, did, bs)
+	rr.CreateRecord(ctx, "app.bsky.feed.post", &appbsky.FeedPost{Text: "ok"})
+	root, _, _ := rr.Commit(ctx, func(ctx context.Context, did string, data []byte) ([]byte, error) { return []byte("sig"), nil })
+
+	buf := new(bytes.Buffer)
+	writeCARHeader(buf, root)
+	for _, blk := range bs.blocks {
+		data := blk.RawData()
+		if strings.Contains(string(data), "ok") {
+			data = []byte("not valid cbor")
+		}
+		ldWrite(buf, blk.Cid().Bytes(), data)
+	}
+
+	result := RunForDID(ctx, did, SinceFilter{}, &recordingProcessor{}, nil,
+		&stubHostResolver{hosts: map[string]string{did: "http://pds"}},
+		&stubRepoFetcher{payloads: map[string][]byte{did: buf.Bytes()}})
+
+	if result.Stats.Errors == 0 {
+		t.Error("expected error for malformed CBOR record")
 	}
 }

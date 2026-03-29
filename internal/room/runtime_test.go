@@ -16,6 +16,7 @@ import (
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomdb"
 )
 
 func TestRuntimeConfigValidationRejectsInvalidMode(t *testing.T) {
@@ -534,5 +535,29 @@ func TestRuntimeLoginPostWithMissingFields(t *testing.T) {
 
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected 400 for missing fields, got %d", resp.StatusCode)
+	}
+}
+
+func TestRuntimeNilReceiver(t *testing.T) {
+	var r *Runtime
+	if r.Addr() != "" {
+		t.Errorf("expected empty Addr for nil runtime, got %q", r.Addr())
+	}
+	if r.HTTPAddr() != "" {
+		t.Errorf("expected empty HTTPAddr for nil runtime, got %q", r.HTTPAddr())
+	}
+	if r.RoomFeed().Ref() != "@AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=." {
+		t.Errorf("expected zero RoomFeed for nil runtime, got %q", r.RoomFeed().Ref())
+	}
+	if err := r.AddMember(context.Background(), refs.FeedRef{}, roomdb.RoleMember); err == nil {
+		t.Error("expected error from AddMember on nil runtime")
+	}
+}
+
+func TestAddMemberError(t *testing.T) {
+	rt := &Runtime{} // DB not initialized
+	err := rt.AddMember(context.Background(), refs.FeedRef{}, roomdb.RoleMember)
+	if err == nil {
+		t.Fatal("expected error for uninitialized DB")
 	}
 }

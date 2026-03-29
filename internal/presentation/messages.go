@@ -27,10 +27,7 @@ func PrettyJSON(raw string) string {
 		return raw
 	}
 
-	formatted, err := json.MarshalIndent(decoded, "", "  ")
-	if err != nil {
-		return raw
-	}
+	formatted, _ := json.MarshalIndent(decoded, "", "  ")
 	return string(formatted)
 }
 

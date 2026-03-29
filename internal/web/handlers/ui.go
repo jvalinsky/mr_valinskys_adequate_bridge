@@ -2,6 +2,7 @@
 package handlers
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
@@ -18,14 +19,37 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/web/templates"
 )
 
+// Database defines the persistence surface required by UI handlers.
+type Database interface {
+	CheckBridgeHealth(ctx context.Context, maxStale time.Duration) (*db.BridgeHealthStatus, error)
+	CountBridgedAccounts(ctx context.Context) (int, error)
+	CountMessages(ctx context.Context) (int, error)
+	CountPublishedMessages(ctx context.Context) (int, error)
+	CountPublishFailures(ctx context.Context) (int, error)
+	CountDeferredMessages(ctx context.Context) (int, error)
+	CountDeletedMessages(ctx context.Context) (int, error)
+	CountBlobs(ctx context.Context) (int, error)
+	GetBridgeState(ctx context.Context, key string) (string, bool, error)
+	ListTopDeferredReasons(ctx context.Context, limit int) ([]db.DeferredReasonCount, error)
+	ListTopIssueAccounts(ctx context.Context, limit int) ([]db.AccountIssueSummary, error)
+	ListBridgedAccountsWithStats(ctx context.Context) ([]db.BridgedAccountStats, error)
+	ListMessagesPage(ctx context.Context, query db.MessageListQuery) (db.MessagePage, error)
+	ListMessageTypes(ctx context.Context) ([]string, error)
+	GetMessage(ctx context.Context, atURI string) (*db.Message, error)
+	GetPublishFailures(ctx context.Context, limit int) ([]db.Message, error)
+	GetRecentBlobs(ctx context.Context, limit int) ([]db.Blob, error)
+	GetAllBridgeState(ctx context.Context) ([]db.BridgeState, error)
+	GetLatestDeferredReason(ctx context.Context) (string, bool, error)
+}
+
 // UIHandler serves admin pages backed by bridge database state.
 type UIHandler struct {
-	db     *db.DB
+	db     Database
 	logger *log.Logger
 }
 
 // NewUIHandler creates a UIHandler bound to database.
-func NewUIHandler(database *db.DB, logger *log.Logger) *UIHandler {
+func NewUIHandler(database Database, logger *log.Logger) *UIHandler {
 	return &UIHandler{
 		db:     database,
 		logger: logutil.Ensure(logger),

@@ -27,9 +27,19 @@ var supportedCollections = map[string]struct{}{
 	mapper.RecordTypeProfile: {},
 }
 
+// Database defines the persistence surface required by the bridge processor.
+type Database interface {
+	GetBridgedAccount(ctx context.Context, atDID string) (*db.BridgedAccount, error)
+	AddMessage(ctx context.Context, msg db.Message) error
+	GetMessage(ctx context.Context, atURI string) (*db.Message, error)
+	SetBridgeState(ctx context.Context, key, value string) error
+	GetDeferredCandidates(ctx context.Context, limit int) ([]db.Message, error)
+	GetRetryCandidates(ctx context.Context, limit int, atDID string, maxAttempts int) ([]db.Message, error)
+}
+
 // Processor processes ATProto commits into persisted and optionally published SSB messages.
 type Processor struct {
-	db                 *db.DB
+	db                 Database
 	logger             *log.Logger
 	publisher          Publisher
 	blobBridge         BlobBridge
@@ -38,6 +48,20 @@ type Processor struct {
 
 	feedMu       sync.Mutex
 	feedInFlight map[string]*feedResolutionCall
+}
+
+// NewProcessor constructs a Processor with optional publisher/blob integrations.
+func NewProcessor(database Database, logger *log.Logger, opts ...Option) *Processor {
+	logger = logutil.Ensure(logger)
+	proc := &Processor{
+		db:           database,
+		logger:       logger,
+		feedInFlight: make(map[string]*feedResolutionCall),
+	}
+	for _, opt := range opts {
+		opt(proc)
+	}
+	return proc
 }
 
 // RetryConfig controls retry candidate selection and scheduling.
@@ -111,20 +135,6 @@ func WithFeedResolver(resolver FeedResolver) Option {
 	return func(proc *Processor) {
 		proc.feedResolver = resolver
 	}
-}
-
-// NewProcessor constructs a Processor with optional publisher/blob integrations.
-func NewProcessor(database *db.DB, logger *log.Logger, opts ...Option) *Processor {
-	logger = logutil.Ensure(logger)
-	proc := &Processor{
-		db:           database,
-		logger:       logger,
-		feedInFlight: make(map[string]*feedResolutionCall),
-	}
-	for _, opt := range opts {
-		opt(proc)
-	}
-	return proc
 }
 
 // HandleCommit satisfies firehose.EventHandler and persists supported records.

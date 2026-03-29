@@ -831,6 +831,17 @@ func (f *failPutBlobStore) Put(r io.Reader) ([]byte, error) {
 	return nil, fmt.Errorf("put failed")
 }
 
+type closerBlobStore struct {
+	*testBlobStore
+	db *db.DB
+}
+
+func (c *closerBlobStore) Put(r io.Reader) ([]byte, error) {
+	hash, err := c.testBlobStore.Put(r)
+	c.db.Close()
+	return hash, err
+}
+
 func TestEnsureBlobStorePutError(t *testing.T) {
 	database, err := db.Open(":memory:")
 	if err != nil {
@@ -864,6 +875,61 @@ func TestEnsureBlobStorePutError(t *testing.T) {
 		t.Fatal("expected error from blob store put failure")
 	}
 	if !strings.Contains(err.Error(), "store blob") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestEnsureBlobGetBlobError(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	// Close it to make queries fail
+	database.Close()
+
+	bridge := &Bridge{
+		db:        database,
+		blobStore: newTestBlobStore(),
+		logger:    log.New(io.Discard, "", 0),
+	}
+	raw := []byte(`{"text":"hello","embed":{"$type":"app.bsky.embed.images","images":[{"alt":"Test","image":{"$type":"blob","ref":{"$link":"bafyreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"},"mimeType":"image/png","size":10}}]}}`)
+	err = bridge.BridgeRecordBlobs(context.Background(), "did:plc:alice", mapper.RecordTypePost, map[string]interface{}{}, raw)
+	if err == nil {
+		t.Fatal("expected error from query blob mapping failure")
+	}
+	if !strings.Contains(err.Error(), "query blob mapping") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestEnsureBlobAddBlobError(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	// No defer close, we will close it mid-way
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("image-data"))
+	}))
+	defer server.Close()
+
+	resolver := &fakeHostResolver{host: server.URL}
+	bridge := NewWithResolver(database, newTestBlobStore(), resolver, server.Client(), log.New(io.Discard, "", 0))
+
+	// We want GetBlob to succeed (returning nil), but AddBlob to fail.
+	// In SQLite :memory:, if we close the connection, all subsequent calls fail.
+	// But SyncGetBlob and Put happen between GetBlob and AddBlob.
+	// We can use a custom BlobStore that closes the DB!
+
+	bridge.blobStore = &closerBlobStore{testBlobStore: newTestBlobStore(), db: database}
+
+	raw := []byte(`{"text":"hello","embed":{"$type":"app.bsky.embed.images","images":[{"alt":"Test","image":{"$type":"blob","ref":{"$link":"bafyreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"},"mimeType":"image/png","size":10}}]}}`)
+	err = bridge.BridgeRecordBlobs(context.Background(), "did:plc:alice", mapper.RecordTypePost, map[string]interface{}{}, raw)
+	if err == nil {
+		t.Fatal("expected error from persist blob mapping failure")
+	}
+	if !strings.Contains(err.Error(), "persist blob mapping") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

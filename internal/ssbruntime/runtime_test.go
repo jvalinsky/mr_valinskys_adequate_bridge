@@ -215,3 +215,28 @@ func TestPublishWithFeedAlreadyFollowed(t *testing.T) {
 		t.Fatalf("expected distinct refs, got same: %s", ref1)
 	}
 }
+
+func TestResolveFeedWithNilRuntime(t *testing.T) {
+	var r *Runtime
+	_, err := r.ResolveFeed(context.Background(), "did:plc:x")
+	if err == nil {
+		t.Fatal("expected error for nil runtime")
+	}
+}
+
+func TestPublishFailsWithEmptyDID(t *testing.T) {
+	ctx := context.Background()
+	rt, err := Open(ctx, Config{
+		RepoPath:   filepath.Join(t.TempDir(), "repo"),
+		MasterSeed: []byte("test-master-seed"),
+	}, log.New(io.Discard, "", 0))
+	if err != nil {
+		t.Fatalf("open runtime: %v", err)
+	}
+	defer rt.Close()
+
+	_, err = rt.Publish(ctx, "", map[string]interface{}{"type": "post"})
+	if err == nil {
+		t.Fatal("expected error for empty DID")
+	}
+}

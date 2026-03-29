@@ -1,6 +1,10 @@
 package backfill
 
-import "testing"
+import (
+	"context"
+	"strings"
+	"testing"
+)
 
 func TestParseSince(t *testing.T) {
 	seqFilter, err := ParseSince("42")
@@ -185,5 +189,37 @@ func TestParseSinceSequenceNotice(t *testing.T) {
 	}
 	if filter.SequenceNotice == "" {
 		t.Errorf("expected SequenceNotice to be set for sequence-based filtering")
+	}
+}
+
+func TestProcessRepoCARReadError(t *testing.T) {
+	// Invalid CAR data should fail ReadRepoFromCar
+	_, err := processRepoCAR(context.Background(), []byte("garbage"), "did:plc:x", SinceFilter{}, nil, nil)
+	if err == nil {
+		t.Fatal("expected error for invalid CAR data")
+	}
+	if !strings.Contains(err.Error(), "read repo car") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestIsSupportedCollectionAll(t *testing.T) {
+	if !isSupportedCollection("app.bsky.feed.post") {
+		t.Error()
+	}
+	if !isSupportedCollection("app.bsky.feed.like") {
+		t.Error()
+	}
+	if !isSupportedCollection("app.bsky.graph.follow") {
+		t.Error()
+	}
+	if !isSupportedCollection("app.bsky.graph.block") {
+		t.Error()
+	}
+	if !isSupportedCollection("app.bsky.actor.profile") {
+		t.Error()
+	}
+	if isSupportedCollection("other") {
+		t.Error()
 	}
 }

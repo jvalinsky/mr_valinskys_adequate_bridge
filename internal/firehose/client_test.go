@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -593,4 +594,57 @@ func ptrLexLink(s string) *util.LexLink {
 	}
 	l := util.LexLink(link)
 	return &l
+}
+
+func TestIsFatalStreamErrorMore(t *testing.T) {
+	tests := []struct {
+		err  error
+		want bool
+	}{
+		{fmt.Errorf("unsupported protocol scheme"), true},
+		{fmt.Errorf("malformed URL"), true},
+		{fmt.Errorf("build stream url: boom"), true},
+		{fmt.Errorf("failed to dial (status=401): unauthorized"), true},
+		{fmt.Errorf("failed to dial (status=403): forbidden"), true},
+		{fmt.Errorf("failed to dial (status=404): not found"), true},
+		{fmt.Errorf("some other error"), false},
+		{nil, false},
+		{context.Canceled, false},
+		{io.EOF, false},
+	}
+	for _, tt := range tests {
+		if got := IsFatalStreamError(tt.err); got != tt.want {
+			t.Errorf("IsFatalStreamError(%v) = %v, want %v", tt.err, got, tt.want)
+		}
+	}
+}
+
+func TestJitterDurationMore(t *testing.T) {
+	// min bound test
+	d := jitterDuration(100*time.Millisecond, 500*time.Millisecond)
+	if d < 250*time.Millisecond {
+		t.Errorf("expected at least 250ms, got %v", d)
+	}
+}
+
+func TestStreamURLMore(t *testing.T) {
+	c := NewClient("wss://example.com", nil, nil)
+	url, _ := c.streamURL()
+	if url != "wss://example.com" {
+		t.Errorf("expected wss://example.com, got %q", url)
+	}
+
+	c2 := NewClient("wss://example.com", nil, nil, WithCursor(123))
+	url2, _ := c2.streamURL()
+	if !strings.Contains(url2, "cursor=123") {
+		t.Errorf("expected cursor in URL, got %q", url2)
+	}
+}
+
+func TestClientRunDialError(t *testing.T) {
+	c := NewClient("invalid-url", nil, nil)
+	err := c.Run(context.Background())
+	if err == nil {
+		t.Fatal("expected error for invalid URL")
+	}
 }

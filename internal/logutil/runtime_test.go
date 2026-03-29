@@ -440,6 +440,24 @@ func TestNewOTLPExporterHTTPSecure(t *testing.T) {
 	}
 }
 
+func TestParsePairsMoreEdgeCases(t *testing.T) {
+	// Trailing spaces
+	if pairs := parsePairs("key=val  "); len(pairs) != 1 || pairs[0].value != "val" {
+		t.Fatalf("expected 1 pair for trailing spaces, got %v", pairs)
+	}
+	// Key with no value at end
+	if pairs := parsePairs("key="); len(pairs) != 0 {
+		t.Fatalf("expected 0 pairs for empty key= at end, got %v", pairs)
+	}
+}
+
+func TestRuntimeNewRuntimeValidationError(t *testing.T) {
+	_, err := NewRuntime(Config{}) // missing ServiceName
+	if err == nil {
+		t.Fatal("expected error from ValidateConfig")
+	}
+}
+
 func endpointHostPort(t *testing.T, rawURL string) string {
 	t.Helper()
 	u, err := url.Parse(rawURL)

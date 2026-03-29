@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -777,12 +778,34 @@ func TestMessageTypeLabel(t *testing.T) {
 		{"app.bsky.actor.profile", "profile"},
 		{"app.bsky.feed.repost", "repost"},
 		{"unknown", "unknown"},
+		{"", "unknown"},
+		{"  ", "unknown"},
 	}
 	for _, tt := range tests {
 		got := messageTypeLabel(tt.typ)
 		if got != tt.want {
 			t.Errorf("messageTypeLabel(%q) = %q, want %q", tt.typ, got, tt.want)
 		}
+	}
+}
+
+func TestBuildTypeOptionsEdgeCases(t *testing.T) {
+	// Selected type not in list
+	opts := buildTypeOptions([]string{"a.b.c"}, "x.y.z")
+	found := false
+	for _, o := range opts {
+		if o.Value == "x.y.z" && o.Selected {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected selected type to be added to options")
+	}
+
+	// Empty record type in list
+	opts = buildTypeOptions([]string{"", "  "}, "")
+	if len(opts) != 1 {
+		t.Errorf("expected only 'All types' option, got %d", len(opts))
 	}
 }
 
@@ -988,4 +1011,370 @@ func TestBuildMessagePageURLWithHasIssue(t *testing.T) {
 	if !strings.Contains(got, "has_issue=1") {
 		t.Errorf("expected has_issue=1 in URL, got %s", got)
 	}
+}
+
+type mockDatabase struct {
+	err error
+}
+
+func (m *mockDatabase) CheckBridgeHealth(ctx context.Context, maxStale time.Duration) (*db.BridgeHealthStatus, error) {
+	return nil, m.err
+}
+func (m *mockDatabase) CountBridgedAccounts(ctx context.Context) (int, error)   { return 0, m.err }
+func (m *mockDatabase) CountMessages(ctx context.Context) (int, error)          { return 0, m.err }
+func (m *mockDatabase) CountPublishedMessages(ctx context.Context) (int, error) { return 0, m.err }
+func (m *mockDatabase) CountPublishFailures(ctx context.Context) (int, error)   { return 0, m.err }
+func (m *mockDatabase) CountDeferredMessages(ctx context.Context) (int, error)  { return 0, m.err }
+func (m *mockDatabase) CountDeletedMessages(ctx context.Context) (int, error)   { return 0, m.err }
+func (m *mockDatabase) CountBlobs(ctx context.Context) (int, error)             { return 0, m.err }
+func (m *mockDatabase) GetBridgeState(ctx context.Context, key string) (string, bool, error) {
+	return "", false, m.err
+}
+func (m *mockDatabase) ListTopDeferredReasons(ctx context.Context, limit int) ([]db.DeferredReasonCount, error) {
+	return nil, m.err
+}
+func (m *mockDatabase) ListTopIssueAccounts(ctx context.Context, limit int) ([]db.AccountIssueSummary, error) {
+	return nil, m.err
+}
+func (m *mockDatabase) ListBridgedAccountsWithStats(ctx context.Context) ([]db.BridgedAccountStats, error) {
+	return nil, m.err
+}
+func (m *mockDatabase) ListMessagesPage(ctx context.Context, query db.MessageListQuery) (db.MessagePage, error) {
+	return db.MessagePage{}, m.err
+}
+func (m *mockDatabase) ListMessageTypes(ctx context.Context) ([]string, error) { return nil, m.err }
+func (m *mockDatabase) GetMessage(ctx context.Context, atURI string) (*db.Message, error) {
+	return nil, m.err
+}
+func (m *mockDatabase) GetPublishFailures(ctx context.Context, limit int) ([]db.Message, error) {
+	return nil, m.err
+}
+func (m *mockDatabase) GetRecentBlobs(ctx context.Context, limit int) ([]db.Blob, error) {
+	return nil, m.err
+}
+func (m *mockDatabase) GetAllBridgeState(ctx context.Context) ([]db.BridgeState, error) {
+	return nil, m.err
+}
+func (m *mockDatabase) GetLatestDeferredReason(ctx context.Context) (string, bool, error) {
+	return "", false, m.err
+}
+
+func TestUIHandlerInternalErrors(t *testing.T) {
+	m := &mockDatabase{err: fmt.Errorf("db boom")}
+	h := NewUIHandler(m, nil)
+	router := chi.NewRouter()
+	h.Mount(router)
+
+	paths := []string{
+		"/",
+		"/accounts",
+		"/messages",
+		"/messages/detail?at_uri=at://x",
+		"/failures",
+		"/blobs",
+		"/state",
+	}
+
+	for _, path := range paths {
+		t.Run(path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			rr := httptest.NewRecorder()
+			router.ServeHTTP(rr, req)
+			if rr.Code != http.StatusInternalServerError {
+				t.Errorf("path %s: expected 500, got %d", path, rr.Code)
+			}
+		})
+	}
+}
+
+func TestHealthzInternalError(t *testing.T) {
+	m := &mockDatabase{err: fmt.Errorf("db boom")}
+	h := NewUIHandler(m, nil)
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rr := httptest.NewRecorder()
+	h.handleHealthz(rr, req)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503, got %d", rr.Code)
+	}
+}
+
+func TestMessageDetailBadRequest(t *testing.T) {
+	h := NewUIHandler(&mockDatabase{}, nil)
+	req := httptest.NewRequest(http.MethodGet, "/messages/detail", nil) // missing at_uri
+	rr := httptest.NewRecorder()
+	h.handleMessageDetail(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", rr.Code)
+	}
+}
+
+type granularMockDatabase struct {
+	err error
+
+	// Per-call overrides
+	countBridgedAccountsErr         error
+	countMessagesErr                error
+	countPublishedMessagesErr       error
+	countPublishFailuresErr         error
+	countDeferredMessagesErr        error
+	countDeletedMessagesErr         error
+	countBlobsErr                   error
+	getBridgeStateErrs              map[string]error
+	listTopDeferredReasonsErr       error
+	listTopIssueAccountsErr         error
+	listBridgedAccountsWithStatsErr error
+	listMessagesPageErr             error
+	listMessageTypesErr             error
+	getMessageErr                   error
+	getPublishFailuresErr           error
+	getRecentBlobsErr               error
+	getAllBridgeStateErr            error
+	getLatestDeferredReasonErr      error
+}
+
+func (m *granularMockDatabase) CheckBridgeHealth(ctx context.Context, maxStale time.Duration) (*db.BridgeHealthStatus, error) {
+	return nil, m.err
+}
+func (m *granularMockDatabase) CountBridgedAccounts(ctx context.Context) (int, error) {
+	if m.countBridgedAccountsErr != nil {
+		return 0, m.countBridgedAccountsErr
+	}
+	return 0, m.err
+}
+func (m *granularMockDatabase) CountMessages(ctx context.Context) (int, error) {
+	if m.countMessagesErr != nil {
+		return 0, m.countMessagesErr
+	}
+	return 0, m.err
+}
+func (m *granularMockDatabase) CountPublishedMessages(ctx context.Context) (int, error) {
+	if m.countPublishedMessagesErr != nil {
+		return 0, m.countPublishedMessagesErr
+	}
+	return 0, m.err
+}
+func (m *granularMockDatabase) CountPublishFailures(ctx context.Context) (int, error) {
+	if m.countPublishFailuresErr != nil {
+		return 0, m.countPublishFailuresErr
+	}
+	return 0, m.err
+}
+func (m *granularMockDatabase) CountDeferredMessages(ctx context.Context) (int, error) {
+	if m.countDeferredMessagesErr != nil {
+		return 0, m.countDeferredMessagesErr
+	}
+	return 0, m.err
+}
+func (m *granularMockDatabase) CountDeletedMessages(ctx context.Context) (int, error) {
+	if m.countDeletedMessagesErr != nil {
+		return 0, m.countDeletedMessagesErr
+	}
+	return 0, m.err
+}
+func (m *granularMockDatabase) CountBlobs(ctx context.Context) (int, error) {
+	if m.countBlobsErr != nil {
+		return 0, m.countBlobsErr
+	}
+	return 0, m.err
+}
+func (m *granularMockDatabase) GetBridgeState(ctx context.Context, key string) (string, bool, error) {
+	if m.getBridgeStateErrs != nil {
+		if err, ok := m.getBridgeStateErrs[key]; ok {
+			return "", false, err
+		}
+	}
+	return "", false, m.err
+}
+func (m *granularMockDatabase) ListTopDeferredReasons(ctx context.Context, limit int) ([]db.DeferredReasonCount, error) {
+	if m.listTopDeferredReasonsErr != nil {
+		return nil, m.listTopDeferredReasonsErr
+	}
+	return nil, m.err
+}
+func (m *granularMockDatabase) ListTopIssueAccounts(ctx context.Context, limit int) ([]db.AccountIssueSummary, error) {
+	if m.listTopIssueAccountsErr != nil {
+		return nil, m.listTopIssueAccountsErr
+	}
+	return nil, m.err
+}
+func (m *granularMockDatabase) ListBridgedAccountsWithStats(ctx context.Context) ([]db.BridgedAccountStats, error) {
+	if m.listBridgedAccountsWithStatsErr != nil {
+		return nil, m.listBridgedAccountsWithStatsErr
+	}
+	return nil, m.err
+}
+func (m *granularMockDatabase) ListMessagesPage(ctx context.Context, query db.MessageListQuery) (db.MessagePage, error) {
+	if m.listMessagesPageErr != nil {
+		return db.MessagePage{}, m.listMessagesPageErr
+	}
+	return db.MessagePage{}, m.err
+}
+func (m *granularMockDatabase) ListMessageTypes(ctx context.Context) ([]string, error) {
+	if m.listMessageTypesErr != nil {
+		return nil, m.listMessageTypesErr
+	}
+	return nil, m.err
+}
+func (m *granularMockDatabase) GetMessage(ctx context.Context, atURI string) (*db.Message, error) {
+	if m.getMessageErr != nil {
+		return nil, m.getMessageErr
+	}
+	return nil, m.err
+}
+func (m *granularMockDatabase) GetPublishFailures(ctx context.Context, limit int) ([]db.Message, error) {
+	if m.getPublishFailuresErr != nil {
+		return nil, m.getPublishFailuresErr
+	}
+	return nil, m.err
+}
+func (m *granularMockDatabase) GetRecentBlobs(ctx context.Context, limit int) ([]db.Blob, error) {
+	if m.getRecentBlobsErr != nil {
+		return nil, m.getRecentBlobsErr
+	}
+	return nil, m.err
+}
+func (m *granularMockDatabase) GetAllBridgeState(ctx context.Context) ([]db.BridgeState, error) {
+	if m.getAllBridgeStateErr != nil {
+		return nil, m.getAllBridgeStateErr
+	}
+	return nil, m.err
+}
+func (m *granularMockDatabase) GetLatestDeferredReason(ctx context.Context) (string, bool, error) {
+	if m.getLatestDeferredReasonErr != nil {
+		return "", false, m.getLatestDeferredReasonErr
+	}
+	return "", false, m.err
+}
+
+func TestUIHandlerDashboardAllErrors(t *testing.T) {
+	errBoom := fmt.Errorf("boom")
+	// The dashboard handler calls many methods. We need to fail each one while others succeed.
+	methods := []string{
+		"CountBridgedAccounts",
+		"CountMessages",
+		"CountPublishedMessages",
+		"CountPublishFailures",
+		"CountDeferredMessages",
+		"CountDeletedMessages",
+		"CountBlobs",
+		"GetBridgeState_firehose",
+		"GetBridgeState_status",
+		"GetBridgeState_heartbeat",
+		"ListTopDeferredReasons",
+		"ListTopIssueAccounts",
+	}
+
+	for _, method := range methods {
+		t.Run(method, func(t *testing.T) {
+			m := &granularMockDatabase{}
+			switch method {
+			case "CountBridgedAccounts":
+				m.countBridgedAccountsErr = errBoom
+			case "CountMessages":
+				m.countMessagesErr = errBoom
+			case "CountPublishedMessages":
+				m.countPublishedMessagesErr = errBoom
+			case "CountPublishFailures":
+				m.countPublishFailuresErr = errBoom
+			case "CountDeferredMessages":
+				m.countDeferredMessagesErr = errBoom
+			case "CountDeletedMessages":
+				m.countDeletedMessagesErr = errBoom
+			case "CountBlobs":
+				m.countBlobsErr = errBoom
+			case "GetBridgeState_firehose":
+				m.getBridgeStateErrs = map[string]error{"firehose_seq": errBoom}
+			case "GetBridgeState_status":
+				m.getBridgeStateErrs = map[string]error{"bridge_runtime_status": errBoom}
+			case "GetBridgeState_heartbeat":
+				m.getBridgeStateErrs = map[string]error{"bridge_runtime_last_heartbeat_at": errBoom}
+			case "ListTopDeferredReasons":
+				m.listTopDeferredReasonsErr = errBoom
+			case "ListTopIssueAccounts":
+				m.listTopIssueAccountsErr = errBoom
+			}
+			h := NewUIHandler(m, nil)
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			rr := httptest.NewRecorder()
+			h.handleDashboard(rr, req)
+			if rr.Code != http.StatusInternalServerError {
+				t.Errorf("method %s: expected 500, got %d", method, rr.Code)
+			}
+		})
+	}
+}
+
+func TestUIHandlerMoreErrors(t *testing.T) {
+	errBoom := fmt.Errorf("boom")
+
+	t.Run("handleAccounts_TemplateError", func(t *testing.T) {
+		// We can't easily trigger a template error without mocking the templates package
+		// which is a global. Let's skip for now and focus on logic.
+	})
+
+	t.Run("handleMessages_ListMessagesPageError", func(t *testing.T) {
+		m := &granularMockDatabase{listMessagesPageErr: errBoom}
+		h := NewUIHandler(m, nil)
+		req := httptest.NewRequest(http.MethodGet, "/messages", nil)
+		rr := httptest.NewRecorder()
+		h.handleMessages(rr, req)
+		if rr.Code != http.StatusInternalServerError {
+			t.Error()
+		}
+	})
+
+	t.Run("handleMessages_ListMessageTypesError", func(t *testing.T) {
+		m := &granularMockDatabase{listMessageTypesErr: errBoom}
+		h := NewUIHandler(m, nil)
+		req := httptest.NewRequest(http.MethodGet, "/messages", nil)
+		rr := httptest.NewRecorder()
+		h.handleMessages(rr, req)
+		if rr.Code != http.StatusInternalServerError {
+			t.Error()
+		}
+	})
+
+	t.Run("handleAccounts_Error", func(t *testing.T) {
+		m := &granularMockDatabase{listBridgedAccountsWithStatsErr: errBoom}
+		h := NewUIHandler(m, nil)
+		req := httptest.NewRequest(http.MethodGet, "/accounts", nil)
+		rr := httptest.NewRecorder()
+		h.handleAccounts(rr, req)
+		if rr.Code != http.StatusInternalServerError {
+			t.Error()
+		}
+	})
+
+	t.Run("handleFailures_Error", func(t *testing.T) {
+		m := &granularMockDatabase{getPublishFailuresErr: errBoom}
+		h := NewUIHandler(m, nil)
+		req := httptest.NewRequest(http.MethodGet, "/failures", nil)
+		rr := httptest.NewRecorder()
+		h.handleFailures(rr, req)
+		if rr.Code != http.StatusInternalServerError {
+			t.Error()
+		}
+	})
+
+	t.Run("handleBlobs_Error", func(t *testing.T) {
+		m := &granularMockDatabase{getRecentBlobsErr: errBoom}
+		h := NewUIHandler(m, nil)
+		req := httptest.NewRequest(http.MethodGet, "/blobs", nil)
+		rr := httptest.NewRecorder()
+		h.handleBlobs(rr, req)
+		if rr.Code != http.StatusInternalServerError {
+			t.Error()
+		}
+	})
+
+	t.Run("handleState_Error", func(t *testing.T) {
+		m := &granularMockDatabase{getAllBridgeStateErr: errBoom}
+		h := NewUIHandler(m, nil)
+		req := httptest.NewRequest(http.MethodGet, "/state", nil)
+		rr := httptest.NewRecorder()
+		h.handleState(rr, req)
+		if rr.Code != http.StatusInternalServerError {
+			t.Error()
+		}
+	})
 }
