@@ -1,7 +1,9 @@
 package firehose
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"io"
 	"log"
@@ -12,7 +14,13 @@ import (
 	"time"
 
 	"github.com/bluesky-social/indigo/api/atproto"
-	"github.com/bluesky-social/indigo/repo"
+	appbsky "github.com/bluesky-social/indigo/api/bsky"
+	"github.com/bluesky-social/indigo/lex/util"
+	indigorepo "github.com/bluesky-social/indigo/repo"
+	blockformat "github.com/ipfs/go-block-format"
+	"github.com/ipfs/go-cid"
+	ipld "github.com/ipfs/go-ipld-format"
+	car "github.com/ipld/go-car"
 )
 
 func ptrInt64(v int64) *int64 {
@@ -268,7 +276,7 @@ func TestParseCommitWithNilBlocks(t *testing.T) {
 }
 
 func TestProcessOpsWithSkipActions(t *testing.T) {
-	rr := &repo.Repo{}
+	rr := &indigorepo.Repo{}
 	evt := &atproto.SyncSubscribeRepos_Commit{
 		Ops: []*atproto.SyncSubscribeRepos_RepoOp{
 			{Action: "delete", Path: "/some/path"},
@@ -283,7 +291,7 @@ func TestProcessOpsWithSkipActions(t *testing.T) {
 }
 
 func TestProcessOpsWithEmptyOps(t *testing.T) {
-	rr := &repo.Repo{}
+	rr := &indigorepo.Repo{}
 	evt := &atproto.SyncSubscribeRepos_Commit{
 		Ops: []*atproto.SyncSubscribeRepos_RepoOp{},
 	}
@@ -308,4 +316,245 @@ func TestReconnectConfigDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected eventual success, got %v", err)
 	}
+}
+
+type testBlockstore struct {
+	blocks map[string]blockformat.Block
+}
+
+func newTestBlockstore() *testBlockstore {
+	return &testBlockstore{blocks: make(map[string]blockformat.Block)}
+}
+
+func (bs *testBlockstore) Put(_ context.Context, blk blockformat.Block) error {
+	bs.blocks[blk.Cid().KeyString()] = blk
+	return nil
+}
+
+func (bs *testBlockstore) Get(_ context.Context, c cid.Cid) (blockformat.Block, error) {
+	blk, ok := bs.blocks[c.KeyString()]
+	if !ok {
+		return nil, &ipld.ErrNotFound{Cid: c}
+	}
+	return blk, nil
+}
+
+func createTestCAR(did string, records map[string]interface{}) ([]byte, error) {
+	ctx := context.Background()
+	bs := newTestBlockstore()
+	rr := indigorepo.NewRepo(ctx, did, bs)
+
+	for path, record := range records {
+		parts := strings.SplitN(path, "/", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		collection := parts[0]
+		var err error
+		switch r := record.(type) {
+		case *appbsky.FeedPost:
+			_, _, err = rr.CreateRecord(ctx, collection, r)
+		default:
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	root, _, err := rr.Commit(ctx, func(context.Context, string, []byte) ([]byte, error) {
+		return []byte("test-signature"), nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	buf := new(bytes.Buffer)
+	headerBuf := new(bytes.Buffer)
+	if err := car.WriteHeader(&car.CarHeader{
+		Roots:   []cid.Cid{root},
+		Version: 1,
+	}, headerBuf); err != nil {
+		return nil, err
+	}
+	if _, err := buf.Write(headerBuf.Bytes()); err != nil {
+		return nil, err
+	}
+	for _, blk := range bs.blocks {
+		var total uint64
+		cidBytes := blk.Cid().Bytes()
+		rawData := blk.RawData()
+		total = uint64(len(cidBytes) + len(rawData))
+
+		var prefix [binary.MaxVarintLen64]byte
+		prefixLen := binary.PutUvarint(prefix[:], total)
+		if _, err := buf.Write(prefix[:prefixLen]); err != nil {
+			return nil, err
+		}
+		if _, err := buf.Write(cidBytes); err != nil {
+			return nil, err
+		}
+		if _, err := buf.Write(rawData); err != nil {
+			return nil, err
+		}
+	}
+	return buf.Bytes(), nil
+}
+
+func TestParseCommitWithValidCAR(t *testing.T) {
+	records := map[string]interface{}{
+		"app.bsky.feed.post/1": &appbsky.FeedPost{
+			LexiconTypeID: "app.bsky.feed.post",
+			Text:          "test post",
+			CreatedAt:     "2026-01-01T00:00:00Z",
+		},
+	}
+	carData, err := createTestCAR("did:plc:test", records)
+	if err != nil {
+		t.Fatalf("create test CAR: %v", err)
+	}
+
+	evt := &atproto.SyncSubscribeRepos_Commit{
+		Blocks: carData,
+	}
+
+	rr, err := ParseCommit(context.Background(), evt)
+	if err != nil {
+		t.Fatalf("ParseCommit: %v", err)
+	}
+	if rr == nil {
+		t.Fatal("expected non-nil repo")
+	}
+}
+
+func TestParseCommitWithInvalidCAR(t *testing.T) {
+	evt := &atproto.SyncSubscribeRepos_Commit{
+		Blocks: []byte("not valid car data"),
+	}
+
+	_, err := ParseCommit(context.Background(), evt)
+	if err == nil {
+		t.Fatal("expected error for invalid CAR data")
+	}
+}
+
+func TestProcessOpsWithCreateAction(t *testing.T) {
+	records := map[string]interface{}{
+		"app.bsky.feed.post/test1": &appbsky.FeedPost{
+			LexiconTypeID: "app.bsky.feed.post",
+			Text:          "test post 1",
+			CreatedAt:     "2026-01-01T00:00:00Z",
+		},
+	}
+	carData, err := createTestCAR("did:plc:test", records)
+	if err != nil {
+		t.Fatalf("create test CAR: %v", err)
+	}
+
+	rr, err := ParseCommit(context.Background(), &atproto.SyncSubscribeRepos_Commit{
+		Blocks: carData,
+	})
+	if err != nil {
+		t.Fatalf("ParseCommit: %v", err)
+	}
+
+	evt := &atproto.SyncSubscribeRepos_Commit{
+		Ops: []*atproto.SyncSubscribeRepos_RepoOp{
+			{
+				Action: "create",
+				Path:   "app.bsky.feed.post/test1",
+				Cid:    ptrLexLink("bafytest"),
+			},
+		},
+	}
+
+	err = ProcessOps(context.Background(), rr, evt)
+	if err != nil {
+		t.Fatalf("ProcessOps: %v", err)
+	}
+}
+
+func TestProcessOpsWithDeleteAction(t *testing.T) {
+	records := map[string]interface{}{
+		"app.bsky.feed.post/del1": &appbsky.FeedPost{
+			LexiconTypeID: "app.bsky.feed.post",
+			Text:          "post to delete",
+			CreatedAt:     "2026-01-01T00:00:00Z",
+		},
+	}
+	carData, err := createTestCAR("did:plc:test", records)
+	if err != nil {
+		t.Fatalf("create test CAR: %v", err)
+	}
+
+	rr, err := ParseCommit(context.Background(), &atproto.SyncSubscribeRepos_Commit{
+		Blocks: carData,
+	})
+	if err != nil {
+		t.Fatalf("ParseCommit: %v", err)
+	}
+
+	evt := &atproto.SyncSubscribeRepos_Commit{
+		Ops: []*atproto.SyncSubscribeRepos_RepoOp{
+			{
+				Action: "delete",
+				Path:   "app.bsky.feed.post/del1",
+				Cid:    nil,
+			},
+		},
+	}
+
+	err = ProcessOps(context.Background(), rr, evt)
+	if err != nil {
+		t.Fatalf("ProcessOps with delete: %v", err)
+	}
+}
+
+func TestProcessOpsSkipsDelete(t *testing.T) {
+	records := map[string]interface{}{
+		"app.bsky.feed.post/del1": &appbsky.FeedPost{
+			LexiconTypeID: "app.bsky.feed.post",
+			Text:          "post to delete",
+			CreatedAt:     "2026-01-01T00:00:00Z",
+		},
+	}
+	carData, err := createTestCAR("did:plc:test", records)
+	if err != nil {
+		t.Fatalf("create test CAR: %v", err)
+	}
+
+	rr, err := ParseCommit(context.Background(), &atproto.SyncSubscribeRepos_Commit{
+		Blocks: carData,
+	})
+	if err != nil {
+		t.Fatalf("ParseCommit: %v", err)
+	}
+
+	evt := &atproto.SyncSubscribeRepos_Commit{
+		Ops: []*atproto.SyncSubscribeRepos_RepoOp{
+			{
+				Action: "delete",
+				Path:   "app.bsky.feed.post/del1",
+				Cid:    nil,
+			},
+		},
+	}
+
+	err = ProcessOps(context.Background(), rr, evt)
+	if err != nil {
+		t.Fatalf("ProcessOps with delete: %v", err)
+	}
+}
+
+func ptrString(s string) *string {
+	return &s
+}
+
+func ptrLexLink(s string) *util.LexLink {
+	link, err := cid.Decode(s)
+	if err != nil {
+		return nil
+	}
+	l := util.LexLink(link)
+	return &l
 }
