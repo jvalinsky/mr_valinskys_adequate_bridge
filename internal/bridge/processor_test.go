@@ -1806,3 +1806,170 @@ func TestResolveDeferredMessagesCascadesReplyChain(t *testing.T) {
 		t.Errorf("post C: expected published via cascade, got state=%v", storedC.MessageState)
 	}
 }
+
+func TestResolveDeferredMessagesWithEmptyDatabase(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open memory db: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	processor := NewProcessor(
+		database,
+		log.New(io.Discard, "", 0),
+		WithPublisher(&mockPublisher{ref: "%noop.sha256"}),
+	)
+
+	res, err := processor.ResolveDeferredMessages(ctx, 10)
+	if err != nil {
+		t.Fatalf("resolve deferred messages: %v", err)
+	}
+	if res.Selected != 0 || res.Published != 0 {
+		t.Fatalf("expected zero results for empty database, got %+v", res)
+	}
+}
+
+func TestRetryMessageWithPublishError(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open memory db: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	processor := NewProcessor(
+		database,
+		log.New(io.Discard, "", 0),
+		WithPublisher(&mockPublisher{err: errors.New("transient error")}),
+	)
+
+	lastAttempt := time.Now().UTC().Add(-time.Minute)
+	msg := db.Message{
+		ATURI:                "at://did:plc:alice/app.bsky.feed.post/retry-err",
+		ATCID:                "bafy-retry-err",
+		ATDID:                "did:plc:alice",
+		Type:                 mapper.RecordTypePost,
+		MessageState:         db.MessageStateFailed,
+		RawATJson:            `{"text":"retry error"}`,
+		RawSSBJson:           `{"type":"post","text":"retry error"}`,
+		PublishError:         "initial failure",
+		PublishAttempts:      1,
+		LastPublishAttemptAt: &lastAttempt,
+	}
+	if err := database.AddMessage(ctx, msg); err != nil {
+		t.Fatalf("seed failed message: %v", err)
+	}
+
+	err = processor.retryMessage(ctx, msg)
+	if err == nil {
+		t.Fatal("expected error from retry message")
+	}
+
+	stored, err := database.GetMessage(ctx, "at://did:plc:alice/app.bsky.feed.post/retry-err")
+	if err != nil {
+		t.Fatalf("get message: %v", err)
+	}
+	if stored.PublishAttempts != 2 {
+		t.Fatalf("expected publish attempts 2, got %d", stored.PublishAttempts)
+	}
+}
+
+func TestProcessRecordWithEmptyRecord(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open memory db: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	processor := NewProcessor(
+		database,
+		log.New(io.Discard, "", 0),
+		WithPublisher(&mockPublisher{ref: "%empty.sha256"}),
+	)
+
+	err = processor.ProcessRecord(
+		ctx,
+		"did:plc:alice",
+		"at://did:plc:alice/app.bsky.feed.post/empty",
+		"bafy-empty",
+		mapper.RecordTypePost,
+		[]byte(`{}`),
+	)
+	if err != nil {
+		t.Fatalf("process empty record: %v", err)
+	}
+}
+
+func TestProcessRecordWithInvalidJSON(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open memory db: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	processor := NewProcessor(
+		database,
+		log.New(io.Discard, "", 0),
+		WithPublisher(&mockPublisher{ref: "%invalid.sha256"}),
+	)
+
+	err = processor.ProcessRecord(
+		ctx,
+		"did:plc:alice",
+		"at://did:plc:alice/app.bsky.feed.post/invalid",
+		"bafy-invalid",
+		mapper.RecordTypePost,
+		[]byte(`not json`),
+	)
+	if err == nil {
+		t.Fatal("expected error for invalid JSON")
+	}
+}
+
+func TestRetryDueWithZeroAttempts(t *testing.T) {
+	msg := db.Message{
+		ATURI:           "at://did:plc:alice/app.bsky.feed.post/test",
+		PublishAttempts: 0,
+	}
+	result := retryDue(msg, time.Now().UTC(), time.Second)
+	if !result {
+		t.Fatal("expected retry due for zero attempts")
+	}
+}
+
+func TestRetryBackoffExponentialWithMaxAttempts(t *testing.T) {
+	base := retryBackoff(time.Second, 10)
+	if base < 10*time.Second {
+		t.Fatalf("expected large backoff for 10 attempts, got %v", base)
+	}
+}
+
+func TestMapDeleteRecordForLike(t *testing.T) {
+	result, err := mapDeleteRecord("did:plc:alice", mapper.RecordTypeLike, []byte(`{"subject":{"uri":"at://did:plc:bob/app.bsky.feed.post/1","cid":"bafytest"}}`))
+	if err != nil {
+		t.Fatalf("mapDeleteRecord: %v", err)
+	}
+	if result["vote"] == nil {
+		t.Fatal("expected vote in result")
+	}
+	vote := result["vote"].(map[string]interface{})
+	if vote["value"] != 0 {
+		t.Fatalf("expected value 0, got %v", vote["value"])
+	}
+}
+
+func TestMapDeleteRecordForFollow(t *testing.T) {
+	result, err := mapDeleteRecord("did:plc:alice", mapper.RecordTypeFollow, []byte(`{"subject":"did:plc:bob"}`))
+	if err != nil {
+		t.Fatalf("mapDeleteRecord: %v", err)
+	}
+	if result["following"] != false {
+		t.Fatal("expected following=false")
+	}
+	if result["blocking"] != false {
+		t.Fatal("expected blocking=false")
+	}
+}
