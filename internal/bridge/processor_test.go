@@ -1367,6 +1367,61 @@ func TestSupportedCollectionsIncludeBlockAndProfileButNotRepost(t *testing.T) {
 	}
 }
 
+func TestCborToJSONInvalidInput(t *testing.T) {
+	_, err := cborToJSON([]byte("not valid cbor"))
+	if err == nil {
+		t.Fatalf("expected error for invalid CBOR input")
+	}
+}
+
+func TestNewXRPCRecordFetcher(t *testing.T) {
+	fetcher := NewXRPCRecordFetcher(nil)
+	if fetcher == nil {
+		t.Fatalf("expected non-nil fetcher")
+	}
+}
+
+func TestPDSAwareRecordFetcherNilReceiver(t *testing.T) {
+	var fetcher *PDSAwareRecordFetcher
+	_, err := fetcher.FetchRecord(context.Background(), "at://did:plc:test/app.bsky.feed.post/1")
+	if err == nil {
+		t.Fatalf("expected error for nil receiver")
+	}
+	if !strings.Contains(err.Error(), "nil") {
+		t.Fatalf("expected nil error message, got %v", err)
+	}
+}
+
+func TestPDSAwareRecordFetcherInvalidURI(t *testing.T) {
+	fetcher := NewPDSAwareRecordFetcher(nil, nil)
+	_, err := fetcher.FetchRecord(context.Background(), "not a valid at-uri")
+	if err == nil {
+		t.Fatalf("expected error for invalid URI")
+	}
+}
+
+func TestPDSAwareRecordFetcherMissingComponents(t *testing.T) {
+	fetcher := NewPDSAwareRecordFetcher(nil, nil)
+	tests := []string{
+		"at://did:plc:test/",         // missing rkey
+		"at:///app.bsky.feed.post/1", // missing repo
+		"at://did:plc:test/ /1",      // missing collection
+	}
+	for _, uri := range tests {
+		_, err := fetcher.FetchRecord(context.Background(), uri)
+		if err == nil {
+			t.Errorf("expected error for %q", uri)
+		}
+	}
+}
+
+func TestNewPDSAwareRecordFetcher(t *testing.T) {
+	fetcher := NewPDSAwareRecordFetcher(nil, nil)
+	if fetcher == nil {
+		t.Fatalf("expected non-nil fetcher")
+	}
+}
+
 func TestProcessRecordPublishesReferenceCompatibleShapes(t *testing.T) {
 	database, err := db.Open(":memory:")
 	if err != nil {
