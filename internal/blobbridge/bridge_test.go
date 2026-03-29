@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	appbsky "github.com/bluesky-social/indigo/api/bsky"
 	lexutil "github.com/bluesky-social/indigo/lex/util"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
@@ -281,5 +282,143 @@ func TestBridgeRecordBlobsFetchesBlobFromResolvedDIDPDS(t *testing.T) {
 	}
 	if requestedDID != "did:plc:alice" {
 		t.Fatalf("unexpected blob did query %q", requestedDID)
+	}
+}
+
+func TestPostBlobCandidatesWithNilPost(t *testing.T) {
+	if got := postBlobCandidates(nil); got != nil {
+		t.Errorf("expected nil for nil post, got %v", got)
+	}
+}
+
+func TestPostBlobCandidatesWithNilEmbed(t *testing.T) {
+	post := &appbsky.FeedPost{Embed: nil}
+	if got := postBlobCandidates(post); got != nil {
+		t.Errorf("expected nil for nil embed, got %v", got)
+	}
+}
+
+func TestPostBlobCandidatesWithVideo(t *testing.T) {
+	alt := "Video description"
+	post := &appbsky.FeedPost{
+		Embed: &appbsky.FeedPost_Embed{
+			EmbedVideo: &appbsky.EmbedVideo{
+				Alt:   &alt,
+				Video: &lexutil.LexBlob{MimeType: "video/mp4", Size: 1000},
+			},
+		},
+	}
+	candidates := postBlobCandidates(post)
+	if len(candidates) != 1 {
+		t.Fatalf("expected 1 candidate, got %d", len(candidates))
+	}
+}
+
+func TestPostBlobCandidatesWithRecordWithMedia(t *testing.T) {
+	post := &appbsky.FeedPost{
+		Embed: &appbsky.FeedPost_Embed{
+			EmbedRecordWithMedia: &appbsky.EmbedRecordWithMedia{
+				Media: &appbsky.EmbedRecordWithMedia_Media{
+					EmbedImages: &appbsky.EmbedImages{
+						Images: []*appbsky.EmbedImages_Image{
+							{Image: &lexutil.LexBlob{MimeType: "image/png"}},
+						},
+					},
+				},
+			},
+		},
+	}
+	candidates := postBlobCandidates(post)
+	if len(candidates) != 1 {
+		t.Fatalf("expected 1 candidate from media, got %d", len(candidates))
+	}
+}
+
+func TestImageCandidatesWithNilImage(t *testing.T) {
+	candidates := imageCandidates([]*appbsky.EmbedImages_Image{nil})
+	if len(candidates) != 0 {
+		t.Errorf("expected 0 candidates for nil image, got %d", len(candidates))
+	}
+}
+
+func TestImageCandidatesSkipsNilImageBlob(t *testing.T) {
+	candidates := imageCandidates([]*appbsky.EmbedImages_Image{
+		{Image: nil},
+	})
+	if len(candidates) != 0 {
+		t.Errorf("expected 0 candidates for nil image blob, got %d", len(candidates))
+	}
+}
+
+func TestImageCandidatesWithAspectRatio(t *testing.T) {
+	alt := "Test image"
+	candidates := imageCandidates([]*appbsky.EmbedImages_Image{
+		{
+			Alt:         alt,
+			AspectRatio: &appbsky.EmbedDefs_AspectRatio{Width: 1920, Height: 1080},
+			Image:       &lexutil.LexBlob{MimeType: "image/png", Size: 1000},
+		},
+	})
+	if len(candidates) != 1 {
+		t.Fatalf("expected 1 candidate, got %d", len(candidates))
+	}
+	if candidates[0].Width != 1920 || candidates[0].Height != 1080 {
+		t.Errorf("unexpected dimensions: %dx%d", candidates[0].Width, candidates[0].Height)
+	}
+}
+
+func TestLabelOrFallback(t *testing.T) {
+	tests := []struct {
+		label string
+		index int
+		want  string
+	}{
+		{"", 1, "bridged attachment 1"},
+		{"  ", 2, "bridged attachment 2"},
+		{"Description", 3, "Description"},
+	}
+	for _, tt := range tests {
+		got := labelOrFallback(tt.label, tt.index)
+		if got != tt.want {
+			t.Errorf("labelOrFallback(%q, %d) = %q, want %q", tt.label, tt.index, got, tt.want)
+		}
+	}
+}
+
+func TestAppendMention(t *testing.T) {
+	mapped := map[string]interface{}{}
+	appendMention(mapped, map[string]interface{}{"name": "Test"})
+	if mapped["mentions"] == nil {
+		t.Error("expected mentions in mapped")
+	}
+}
+
+func TestAppendMarkdownBlock(t *testing.T) {
+	if appendMarkdownBlock("hello", "world") != "hello\n\nworld" {
+		t.Error("unexpected result")
+	}
+	if appendMarkdownBlock("", "world") != "world" {
+		t.Error("expected world for empty text")
+	}
+	if appendMarkdownBlock("hello", "") != "hello" {
+		t.Error("expected hello for empty block")
+	}
+}
+
+func TestAsString(t *testing.T) {
+	tests := []struct {
+		input interface{}
+		want  string
+	}{
+		{nil, ""},
+		{"hello", "hello"},
+		{123, "123"},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		got := asString(tt.input)
+		if got != tt.want {
+			t.Errorf("asString(%v) = %q, want %q", tt.input, got, tt.want)
+		}
 	}
 }

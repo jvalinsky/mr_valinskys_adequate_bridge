@@ -212,7 +212,10 @@ func (s *Server) Close() error {
 	for _, p := range s.peers {
 		p.Conn.Close()
 	}
-	return s.ln.Close()
+	if s.ln != nil {
+		return s.ln.Close()
+	}
+	return nil
 }
 
 type Client struct {

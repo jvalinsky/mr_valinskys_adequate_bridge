@@ -1599,6 +1599,58 @@ func TestParseDeferReasonURIs(t *testing.T) {
 	}
 }
 
+func TestRetryBackoffWithZeroAttempts(t *testing.T) {
+	base := retryBackoff(time.Second, 0)
+	if base != time.Second {
+		t.Fatalf("expected base backoff for zero attempts, got %v", base)
+	}
+}
+
+func TestRetryBackoffWithOneAttempt(t *testing.T) {
+	base := retryBackoff(time.Second, 1)
+	if base != time.Second {
+		t.Fatalf("expected base backoff for one attempt, got %v", base)
+	}
+}
+
+func TestRetryBackoffExponentialGrowth(t *testing.T) {
+	base1 := retryBackoff(time.Second, 1)
+	base2 := retryBackoff(time.Second, 2)
+	base3 := retryBackoff(time.Second, 3)
+	if base1 >= base2 || base2 >= base3 {
+		t.Fatalf("expected exponential growth, got base1=%v base2=%v base3=%v", base1, base2, base3)
+	}
+}
+
+func TestRetryBackoffWithZeroBase(t *testing.T) {
+	base := retryBackoff(0, 2)
+	if base < 5*time.Second {
+		t.Fatalf("expected default base for zero input, got %v", base)
+	}
+}
+
+func TestCollectionFromPath(t *testing.T) {
+	tests := []struct {
+		path string
+		coll string
+		ok   bool
+	}{
+		{"app.bsky.feed.post/123", "app.bsky.feed.post", true},
+		{"app.bsky.graph.follow/456", "app.bsky.graph.follow", true},
+		{"invalid", "", false},
+		{"", "", false},
+	}
+	for _, tt := range tests {
+		coll, ok := collectionFromPath(tt.path)
+		if ok != tt.ok {
+			t.Errorf("collectionFromPath(%q): ok=%v, want %v", tt.path, ok, tt.ok)
+		}
+		if tt.ok && coll != tt.coll {
+			t.Errorf("collectionFromPath(%q): coll=%q, want %q", tt.path, coll, tt.coll)
+		}
+	}
+}
+
 func TestResolveDeferredMessagesCascadesReplyChain(t *testing.T) {
 	database, err := db.Open(":memory:")
 	if err != nil {

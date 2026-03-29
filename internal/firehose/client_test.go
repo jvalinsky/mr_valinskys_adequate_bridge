@@ -3,6 +3,7 @@ package firehose
 import (
 	"context"
 	"errors"
+	"io"
 	"log"
 	"os"
 	"strings"
@@ -11,7 +12,12 @@ import (
 	"time"
 
 	"github.com/bluesky-social/indigo/api/atproto"
+	"github.com/bluesky-social/indigo/repo"
 )
+
+func ptrInt64(v int64) *int64 {
+	return &v
+}
 
 type mockHandler struct {
 	commits int
@@ -23,7 +29,6 @@ func (m *mockHandler) HandleCommit(ctx context.Context, evt *atproto.SyncSubscri
 }
 
 func TestFirehoseClient(t *testing.T) {
-	// Only run this test if explicitly requested, as it requires network access
 	if os.Getenv("TEST_FIREHOSE") == "" {
 		t.Skip("Skipping firehose test; set TEST_FIREHOSE=1 to run")
 	}
@@ -65,6 +70,41 @@ func TestClientStreamURLWithCursor(t *testing.T) {
 	}
 }
 
+func TestClientStreamURLWithZeroCursor(t *testing.T) {
+	handler := &mockHandler{}
+	client := NewClient(
+		"wss://example.com/xrpc/com.atproto.sync.subscribeRepos",
+		handler,
+		log.New(os.Stdout, "", 0),
+		WithCursor(0),
+	)
+
+	u, err := client.streamURL()
+	if err != nil {
+		t.Fatalf("streamURL: %v", err)
+	}
+	if strings.Contains(u, "cursor=") {
+		t.Fatalf("expected no cursor query for zero, got %s", u)
+	}
+}
+
+func TestClientStreamURLWithoutCursor(t *testing.T) {
+	handler := &mockHandler{}
+	client := NewClient(
+		"wss://example.com/xrpc/com.atproto.sync.subscribeRepos",
+		handler,
+		log.New(os.Stdout, "", 0),
+	)
+
+	u, err := client.streamURL()
+	if err != nil {
+		t.Fatalf("streamURL: %v", err)
+	}
+	if u != "wss://example.com/xrpc/com.atproto.sync.subscribeRepos" {
+		t.Fatalf("expected original URL, got %s", u)
+	}
+}
+
 func TestIsFatalStreamError(t *testing.T) {
 	cases := []struct {
 		err   error
@@ -77,6 +117,11 @@ func TestIsFatalStreamError(t *testing.T) {
 		{err: errors.New("unsupported protocol scheme wsx"), fatal: true},
 		{err: errors.New("temporary network reset"), fatal: false},
 		{err: context.Canceled, fatal: false},
+		{err: context.DeadlineExceeded, fatal: false},
+		{err: io.EOF, fatal: false},
+		{err: nil, fatal: false},
+		{err: errors.New("malformed url detected"), fatal: true},
+		{err: errors.New("build stream URL: invalid"), fatal: true},
 	}
 
 	for _, tc := range cases {
@@ -126,5 +171,141 @@ func TestRunWithReconnectLoopStopsOnFatal(t *testing.T) {
 	}
 	if attempts.Load() != 1 {
 		t.Fatalf("expected 1 attempt for fatal error, got %d", attempts.Load())
+	}
+}
+
+func TestRunWithReconnectLoopContextCancel(t *testing.T) {
+	cfg := ReconnectConfig{
+		InitialBackoff: 1 * time.Millisecond,
+		MaxBackoff:     5 * time.Millisecond,
+		Jitter:         0,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := runWithReconnectLoop(ctx, log.New(os.Stdout, "", 0), cfg, func(context.Context) error {
+		return errors.New("temporary error")
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+}
+
+func TestJitterDuration(t *testing.T) {
+	base := 500 * time.Millisecond
+	jitter := 100 * time.Millisecond
+
+	for i := 0; i < 10; i++ {
+		d := jitterDuration(base, jitter)
+		if d < 400*time.Millisecond || d > 600*time.Millisecond {
+			t.Fatalf("jitter out of expected range: %v (base=%v, jitter=%v)", d, base, jitter)
+		}
+	}
+}
+
+func TestJitterDurationWithZeroJitter(t *testing.T) {
+	d := jitterDuration(100*time.Millisecond, 0)
+	if d != 100*time.Millisecond {
+		t.Fatalf("expected 100ms, got %v", d)
+	}
+}
+
+func TestJitterDurationWithZeroBase(t *testing.T) {
+	d := jitterDuration(0, 50*time.Millisecond)
+	if d < 1500*time.Millisecond {
+		t.Fatalf("expected >=1.5s for zero base, got %v", d)
+	}
+}
+
+func TestJitterDurationMinBound(t *testing.T) {
+	d := jitterDuration(100*time.Millisecond, 200*time.Millisecond)
+	if d < 250*time.Millisecond {
+		t.Fatalf("expected >=250ms minimum, got %v", d)
+	}
+}
+
+func TestNewClientWithEmptyURL(t *testing.T) {
+	handler := &mockHandler{}
+	client := NewClient("", handler, log.New(os.Stdout, "", 0))
+	if client.relayURL != "wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos" {
+		t.Fatalf("expected default URL, got %s", client.relayURL)
+	}
+}
+
+func TestNewClientWithCustomURL(t *testing.T) {
+	handler := &mockHandler{}
+	customURL := "wss://custom.example.com/firehose"
+	client := NewClient(customURL, handler, log.New(os.Stdout, "", 0))
+	if client.relayURL != customURL {
+		t.Fatalf("expected custom URL, got %s", client.relayURL)
+	}
+}
+
+func TestStreamURLWithInvalidURL(t *testing.T) {
+	handler := &mockHandler{}
+	client := &Client{
+		relayURL: "http://[ invalid",
+		handler:  handler,
+		logger:   log.New(os.Stdout, "", 0),
+		cursor:   ptrInt64(123),
+	}
+
+	_, err := client.streamURL()
+	if err == nil {
+		t.Fatal("expected error for invalid URL")
+	}
+}
+
+func TestParseCommitWithNilBlocks(t *testing.T) {
+	evt := &atproto.SyncSubscribeRepos_Commit{
+		Blocks: nil,
+	}
+	_, err := ParseCommit(context.Background(), evt)
+	if err == nil {
+		t.Fatal("expected error for nil blocks")
+	}
+}
+
+func TestProcessOpsWithSkipActions(t *testing.T) {
+	rr := &repo.Repo{}
+	evt := &atproto.SyncSubscribeRepos_Commit{
+		Ops: []*atproto.SyncSubscribeRepos_RepoOp{
+			{Action: "delete", Path: "/some/path"},
+			{Action: "update", Cid: nil},
+		},
+	}
+
+	err := ProcessOps(context.Background(), rr, evt)
+	if err != nil {
+		t.Fatalf("expected no error for skip actions, got %v", err)
+	}
+}
+
+func TestProcessOpsWithEmptyOps(t *testing.T) {
+	rr := &repo.Repo{}
+	evt := &atproto.SyncSubscribeRepos_Commit{
+		Ops: []*atproto.SyncSubscribeRepos_RepoOp{},
+	}
+
+	err := ProcessOps(context.Background(), rr, evt)
+	if err != nil {
+		t.Fatalf("expected no error for empty ops, got %v", err)
+	}
+}
+
+func TestReconnectConfigDefaults(t *testing.T) {
+	var attempts atomic.Int32
+	cfg := ReconnectConfig{}
+
+	err := runWithReconnectLoop(context.Background(), log.New(os.Stdout, "", 0), cfg, func(context.Context) error {
+		n := attempts.Add(1)
+		if n < 2 {
+			return errors.New("temporary disconnect")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("expected eventual success, got %v", err)
 	}
 }

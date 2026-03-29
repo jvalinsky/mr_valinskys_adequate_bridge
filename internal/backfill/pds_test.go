@@ -10,8 +10,10 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	appbsky "github.com/bluesky-social/indigo/api/bsky"
+	"github.com/bluesky-social/indigo/atproto/identity"
 	indigorepo "github.com/bluesky-social/indigo/repo"
 	"github.com/bluesky-social/indigo/xrpc"
 	blockformat "github.com/ipfs/go-block-format"
@@ -290,4 +292,218 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return fn(req)
+}
+
+func TestFixedHostResolver(t *testing.T) {
+	resolver := FixedHostResolver{Host: "https://pds.example.com"}
+	got, err := resolver.ResolvePDSEndpoint(context.Background(), "any-did")
+	if err != nil {
+		t.Fatalf("resolve endpoint: %v", err)
+	}
+	if got != "https://pds.example.com" {
+		t.Fatalf("expected https://pds.example.com, got %q", got)
+	}
+}
+
+func TestConfiguredHTTPClient(t *testing.T) {
+	custom := &http.Client{Timeout: 5 * time.Second}
+	got := configuredHTTPClient(custom)
+	if got != custom {
+		t.Fatalf("expected custom client")
+	}
+	got = configuredHTTPClient(nil)
+	if got == nil {
+		t.Fatalf("expected non-nil default client")
+	}
+	if got.Timeout != 10*time.Second {
+		t.Fatalf("expected 10s timeout, got %v", got.Timeout)
+	}
+}
+
+func TestNormalizeServiceEndpoint(t *testing.T) {
+	tests := []struct {
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{"https://pds.example.com", "https://pds.example.com", false},
+		{"http://pds.example.com", "http://pds.example.com", false},
+		{"  https://pds.example.com  ", "https://pds.example.com", false},
+		{"https://pds.example.com/", "https://pds.example.com", false},
+		{"https://pds.example.com/some/path", "https://pds.example.com/some/path", false},
+		{"https://pds.example.com?query=1", "https://pds.example.com", false},
+		{"https://pds.example.com#fragment", "https://pds.example.com", false},
+		{"", "", true},
+		{"   ", "", true},
+		{"ftp://pds.example.com", "", true},
+		{"://pds.example.com", "", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got, err := NormalizeServiceEndpoint(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("NormalizeServiceEndpoint(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr && got != tt.want {
+				t.Errorf("NormalizeServiceEndpoint(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestClassifyDIDResult(t *testing.T) {
+	tests := []struct {
+		err      error
+		expected DIDStatus
+	}{
+		{nil, StatusSuccess},
+		{ErrUnsupportedDIDMethod, StatusUnsupportedDID},
+		{ErrMissingPDSEndpoint, StatusMalformedDIDDoc},
+		{ErrInvalidPDSEndpoint, StatusMalformedDIDDoc},
+		{errors.New("some other error"), StatusTransportError},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.expected), func(t *testing.T) {
+			got := classifyDIDResult(tt.err)
+			if got != tt.expected {
+				t.Errorf("classifyDIDResult(%v) = %s, want %s", tt.err, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestClassifyDIDResultXRPCErrors(t *testing.T) {
+	tests := []struct {
+		statusCode int
+		body       string
+		expected   DIDStatus
+	}{
+		{http.StatusUnauthorized, "AuthMissing", StatusAuthRequired},
+		{http.StatusForbidden, "InvalidSignature", StatusAuthRequired},
+		{http.StatusNotFound, "RecordNotFound", StatusNotFound},
+		{http.StatusInternalServerError, "InternalError", StatusTransportError},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.body, func(t *testing.T) {
+			err := &xrpc.Error{
+				StatusCode: tt.statusCode,
+				Wrapped:    &xrpc.XRPCError{ErrStr: tt.body, Message: "test"},
+			}
+			got := classifyDIDResult(err)
+			if got != tt.expected {
+				t.Errorf("classifyDIDResult(xrpc %d) = %s, want %s", tt.statusCode, got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestClassifyDIDResultNotFoundWithBadXRPCBody(t *testing.T) {
+	err := &xrpc.Error{
+		StatusCode: http.StatusNotFound,
+		Wrapped:    &xrpc.XRPCError{ErrStr: "NotFound", Message: "failed to decode xrpc error message"},
+	}
+	got := classifyDIDResult(err)
+	if got != StatusTransportError {
+		t.Errorf("classifyDIDResult() = %s, want StatusTransportError for bad xrpc body", got)
+	}
+}
+
+func TestRunForDIDWithNilResolver(t *testing.T) {
+	result := RunForDID(
+		context.Background(),
+		"did:plc:test",
+		SinceFilter{},
+		&recordingProcessor{},
+		nil,
+		nil,
+		nil,
+	)
+	if result.Status != StatusTransportError {
+		t.Fatalf("expected StatusTransportError for nil resolver, got %s", result.Status)
+	}
+}
+
+func TestRunForDIDWithNilFetcher(t *testing.T) {
+	resolver := &stubHostResolver{hosts: map[string]string{"did:plc:test": "https://pds.example.com"}}
+	result := RunForDID(
+		context.Background(),
+		"did:plc:test",
+		SinceFilter{},
+		&recordingProcessor{},
+		nil,
+		resolver,
+		nil,
+	)
+	if result.Status != StatusTransportError {
+		t.Fatalf("expected StatusTransportError for nil fetcher, got %s", result.Status)
+	}
+}
+
+func TestClassifyDIDResultIdentityErrNotFound(t *testing.T) {
+	result := classifyDIDResult(identity.ErrDIDNotFound)
+	if result != StatusNotFound {
+		t.Errorf("classifyDIDResult(identity.ErrDIDNotFound) = %s, want StatusNotFound", result)
+	}
+}
+
+func TestStubHostResolverNotFound(t *testing.T) {
+	resolver := &stubHostResolver{errs: map[string]error{
+		"did:plc:notfound": identity.ErrDIDNotFound,
+	}}
+	host, err := resolver.ResolvePDSEndpoint(context.Background(), "did:plc:notfound")
+	if err == nil {
+		t.Fatalf("expected error, got host=%q", host)
+	}
+	if !errors.Is(err, identity.ErrDIDNotFound) {
+		t.Errorf("expected identity.ErrDIDNotFound, got %v", err)
+	}
+}
+
+func TestXRPCRepoFetcher(t *testing.T) {
+	var called bool
+	client := &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			called = true
+			if req.URL.Path != "/xrpc/com.atproto.sync.getRepo" {
+				t.Errorf("unexpected path: %s", req.URL.Path)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader("")),
+				Header:     make(http.Header),
+				Request:    req,
+			}, nil
+		}),
+	}
+
+	fetcher := XRPCRepoFetcher{HTTPClient: client}
+	_, err := fetcher.FetchRepo(context.Background(), "https://pds.example.com", "did:plc:test")
+	if err != nil {
+		t.Fatalf("fetch repo: %v", err)
+	}
+	if !called {
+		t.Fatal("expected HTTP client to be called")
+	}
+}
+
+func TestDIDPDSResolverWithBadDID(t *testing.T) {
+	resolver := DIDPDSResolver{
+		PLCURL:     "https://plc.example.test",
+		HTTPClient: &http.Client{},
+	}
+	_, err := resolver.ResolvePDSEndpoint(context.Background(), "not-a-did")
+	if !errors.Is(err, ErrUnsupportedDIDMethod) {
+		t.Fatalf("expected ErrUnsupportedDIDMethod, got %v", err)
+	}
+}
+
+func TestExtractPDSEndpointNilDoc(t *testing.T) {
+	_, err := extractPDSEndpoint(nil)
+	if !errors.Is(err, ErrMissingPDSEndpoint) {
+		t.Fatalf("expected ErrMissingPDSEndpoint for nil doc, got %v", err)
+	}
 }
