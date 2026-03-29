@@ -1,0 +1,398 @@
+package replication
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"sync"
+	"time"
+
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/feedlog"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
+)
+
+const EBTVersion = 3
+
+type Note struct {
+	Seq       int64
+	Replicate bool
+	Receive   bool
+}
+
+type NetworkFrontier map[string]Note
+
+func (n Note) MarshalJSON() ([]byte, error) {
+	if !n.Replicate {
+		return []byte("-1"), nil
+	}
+	i := n.Seq
+	if i == -1 {
+		i = 0
+	}
+	i = i << 1
+	if !n.Receive {
+		i |= 1
+	}
+	return []byte(fmt.Sprintf("%d", i)), nil
+}
+
+func (nf *NetworkFrontier) UnmarshalJSON(data []byte) error {
+	var dummy map[string]int64
+	if err := json.Unmarshal(data, &dummy); err != nil {
+		return err
+	}
+
+	result := make(NetworkFrontier)
+	for fstr, i := range dummy {
+		_, err := refs.ParseFeedRef(fstr)
+		if err != nil {
+			continue
+		}
+
+		n := Note{
+			Replicate: i != -1,
+			Receive:   !(i&1 == 1),
+			Seq:       i >> 1,
+		}
+		result[fstr] = n
+	}
+	*nf = result
+	return nil
+}
+
+type StateMatrix struct {
+	basePath  string
+	self      string
+	mu        sync.Mutex
+	frontiers map[string]NetworkFrontier
+	store     feedlog.FeedStore
+}
+
+func NewStateMatrix(basePath string, self *refs.FeedRef, store feedlog.FeedStore) (*StateMatrix, error) {
+	sm := &StateMatrix{
+		basePath:  basePath,
+		frontiers: make(map[string]NetworkFrontier),
+		store:     store,
+	}
+	if self != nil {
+		sm.self = self.String()
+	}
+	return sm, nil
+}
+
+func (sm *StateMatrix) Inspect(peer *refs.FeedRef) (NetworkFrontier, error) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	return sm.loadFrontier(peer.String())
+}
+
+func (sm *StateMatrix) loadFrontier(peer string) (NetworkFrontier, error) {
+	if frontier, ok := sm.frontiers[peer]; ok {
+		return frontier, nil
+	}
+	return make(NetworkFrontier), nil
+}
+
+func (sm *StateMatrix) Update(who *refs.FeedRef, update NetworkFrontier) (NetworkFrontier, error) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	current := sm.frontiers[who.String()]
+	if current == nil {
+		current = make(NetworkFrontier)
+	}
+
+	for feed, note := range update {
+		current[feed] = note
+	}
+
+	sm.frontiers[who.String()] = current
+	return current, nil
+}
+
+func (sm *StateMatrix) Changed(self, peer *refs.FeedRef) (NetworkFrontier, error) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	selfNf, err := sm.loadFrontier(self.String())
+	if err != nil {
+		return nil, err
+	}
+	if selfNf == nil {
+		selfNf = make(NetworkFrontier)
+	}
+
+	peerNf, err := sm.loadFrontier(peer.String())
+	if err != nil {
+		return nil, err
+	}
+	if peerNf == nil {
+		peerNf = make(NetworkFrontier)
+	}
+
+	relevant := make(NetworkFrontier)
+
+	for wantedFeed, myNote := range selfNf {
+		theirNote, has := peerNf[wantedFeed]
+		if !has && myNote.Receive {
+			relevant[wantedFeed] = myNote
+			continue
+		}
+
+		if !theirNote.Replicate {
+			continue
+		}
+
+		if !theirNote.Receive && wantedFeed != peer.String() {
+			continue
+		}
+
+		relevant[wantedFeed] = myNote
+	}
+
+	return relevant, nil
+}
+
+func (sm *StateMatrix) Close() error {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.frontiers = nil
+	return nil
+}
+
+type Sessions struct {
+	mu      sync.Mutex
+	open    map[string]*Session
+	waiting map[string]chan<- struct{}
+}
+
+type Session struct {
+	remote     string
+	mu         sync.Mutex
+	subscribed map[string]context.CancelFunc
+}
+
+func NewSessions() *Sessions {
+	return &Sessions{
+		open:    make(map[string]*Session),
+		waiting: make(map[string]chan<- struct{}),
+	}
+}
+
+func (s *Sessions) Started(addr string) *Session {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	session := &Session{
+		remote:     addr,
+		subscribed: make(map[string]context.CancelFunc),
+	}
+
+	s.open[addr] = session
+
+	if ch, ok := s.waiting[addr]; ok {
+		close(ch)
+		delete(s.waiting, addr)
+	}
+
+	return session
+}
+
+func (s *Sessions) Ended(addr string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.open, addr)
+}
+
+func (s *Sessions) WaitFor(ctx context.Context, addr string, dur time.Duration) bool {
+	s.mu.Lock()
+
+	if _, has := s.open[addr]; has {
+		s.mu.Unlock()
+		return true
+	}
+
+	c := make(chan struct{})
+	s.waiting[addr] = c
+	s.mu.Unlock()
+
+	select {
+	case <-c:
+		return true
+	case <-ctx.Done():
+		return false
+	case <-time.After(dur):
+		return false
+	}
+}
+
+func (s *Session) Subscribed(feed string, cancel context.CancelFunc) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if fn, ok := s.subscribed[feed]; ok {
+		fn()
+		delete(s.subscribed, feed)
+	}
+	s.subscribed[feed] = cancel
+}
+
+func (s *Session) Unsubscribe(feed string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if fn, ok := s.subscribed[feed]; ok {
+		fn()
+		delete(s.subscribed, feed)
+	}
+}
+
+type ReplicationLister interface {
+	ListFeeds() ([]refs.FeedRef, error)
+}
+
+type FeedManager interface {
+	GetFeedSeq(author *refs.FeedRef) (int64, error)
+	GetMessage(author *refs.FeedRef, seq int64) ([]byte, error)
+}
+
+var ErrNotFound = fmt.Errorf("message not found")
+
+type ByteSourceReader interface {
+	Next(ctx context.Context) bool
+	Bytes() ([]byte, error)
+	Err() error
+}
+
+type Writer interface {
+	Write(ctx context.Context, data []byte) error
+}
+
+type EBTHandler struct {
+	self        *refs.FeedRef
+	stateMatrix *StateMatrix
+	store       FeedManager
+	sessions    *Sessions
+	replicate   ReplicationLister
+}
+
+func NewEBTHandler(self *refs.FeedRef, store FeedManager, matrix *StateMatrix, repl ReplicationLister) *EBTHandler {
+	return &EBTHandler{
+		self:        self,
+		stateMatrix: matrix,
+		store:       store,
+		sessions:    NewSessions(),
+		replicate:   repl,
+	}
+}
+
+func (h *EBTHandler) HandleDuplex(ctx context.Context, tx Writer, rx ByteSourceReader, remoteAddr string) error {
+	session := h.sessions.Started(remoteAddr)
+	defer h.sessions.Ended(remoteAddr)
+
+	if err := h.sendState(ctx, tx, remoteAddr); err != nil {
+		return err
+	}
+
+	for rx.Next(ctx) {
+		data, err := rx.Bytes()
+		if err != nil {
+			return err
+		}
+
+		var frontierUpdate NetworkFrontier
+		if err := json.Unmarshal(data, &frontierUpdate); err != nil {
+			continue
+		}
+
+		wants, err := h.stateMatrix.Update(FeedRefToPtr(*h.self), frontierUpdate)
+		if err != nil {
+			return err
+		}
+
+		for feedStr, note := range wants {
+			if !note.Replicate {
+				session.Unsubscribe(feedStr)
+				continue
+			}
+
+			if !note.Receive {
+				session.Unsubscribe(feedStr)
+				continue
+			}
+
+			feed, err := refs.ParseFeedRef(feedStr)
+			if err != nil {
+				continue
+			}
+
+			arg := CreateHistArgs{
+				ID:    feed,
+				Seq:   note.Seq + 1,
+				Limit: -1,
+				Live:  true,
+			}
+
+			subCtx, cancel := context.WithCancel(ctx)
+			err = h.createStreamHistory(subCtx, tx, arg)
+			if err != nil {
+				cancel()
+				continue
+			}
+			session.Subscribed(feedStr, cancel)
+		}
+	}
+
+	return rx.Err()
+}
+
+func (h *EBTHandler) sendState(ctx context.Context, tx Writer, remote string) error {
+	currState, err := h.stateMatrix.Changed(h.self, nil)
+	if err != nil {
+		return err
+	}
+
+	data, err := json.Marshal(currState)
+	if err != nil {
+		return err
+	}
+
+	return tx.Write(ctx, data)
+}
+
+type CreateHistArgs struct {
+	ID    *refs.FeedRef
+	Seq   int64
+	Limit int
+	Live  bool
+}
+
+func (h *EBTHandler) createStreamHistory(ctx context.Context, tx Writer, arg CreateHistArgs) error {
+	feed := arg.ID
+
+	for seq := arg.Seq; ; seq++ {
+		msg, err := h.store.GetMessage(feed, seq)
+		if err != nil {
+			if err == ErrNotFound {
+				if !arg.Live {
+					return nil
+				}
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(100 * time.Millisecond):
+					continue
+				}
+			}
+			return err
+		}
+
+		if err := tx.Write(ctx, msg); err != nil {
+			return err
+		}
+	}
+}
+
+func FeedRefToPtr(f refs.FeedRef) *refs.FeedRef {
+	return &f
+}
