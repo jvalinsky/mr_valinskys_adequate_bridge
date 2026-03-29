@@ -21,3 +21,10 @@ bin/
 
 # Live bridge database
 bridge-live.sqlite
+
+# Test and build artifacts
+*.out
+*.test
+*.html
+/bridge-cli
+.claude/settings.local.json
