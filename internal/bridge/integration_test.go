@@ -396,3 +396,106 @@ func TestIntegrationHandleCommitWithSeqUpdate(t *testing.T) {
 		t.Fatalf("HandleCommit with update: %v", err)
 	}
 }
+
+func TestIntegrationHandleCommitWithNilCID(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open memory db: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	if err := database.AddBridgedAccount(ctx, db.BridgedAccount{
+		ATDID:     "did:plc:test",
+		SSBFeedID: "@test.ed25519",
+		Active:    true,
+	}); err != nil {
+		t.Fatalf("add account: %v", err)
+	}
+
+	records := map[string]interface{}{
+		"app.bsky.feed.post/nilcid": &appbsky.FeedPost{
+			LexiconTypeID: "app.bsky.feed.post",
+			Text:          "Test post",
+			CreatedAt:     time.Now().UTC().Format(time.RFC3339),
+		},
+	}
+	carData, err := createBridgeTestCAR("did:plc:test", records)
+	if err != nil {
+		t.Fatalf("create test CAR: %v", err)
+	}
+
+	processor := NewProcessor(database, log.New(io.Discard, "", 0))
+
+	err = processor.HandleCommit(ctx, &atproto.SyncSubscribeRepos_Commit{
+		Repo:   "did:plc:test",
+		Blocks: carData,
+		Ops: []*atproto.SyncSubscribeRepos_RepoOp{
+			{Action: "create", Path: "app.bsky.feed.post/nilcid", Cid: nil},
+		},
+	})
+	if err != nil {
+		t.Fatalf("HandleCommit with nil CID: %v", err)
+	}
+}
+
+func TestIntegrationHandleCommitWithEmptyOps(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open memory db: %v", err)
+	}
+	defer database.Close()
+
+	processor := NewProcessor(database, log.New(io.Discard, "", 0))
+
+	err = processor.HandleCommit(context.Background(), &atproto.SyncSubscribeRepos_Commit{
+		Repo: "did:plc:test",
+		Ops:  []*atproto.SyncSubscribeRepos_RepoOp{},
+	})
+	if err != nil {
+		t.Fatalf("HandleCommit with empty ops: %v", err)
+	}
+}
+
+func TestIntegrationProcessOpWithInvalidPath(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open memory db: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	if err := database.AddBridgedAccount(ctx, db.BridgedAccount{
+		ATDID:     "did:plc:test",
+		SSBFeedID: "@test.ed25519",
+		Active:    true,
+	}); err != nil {
+		t.Fatalf("add account: %v", err)
+	}
+
+	records := map[string]interface{}{
+		"app.bsky.feed.post/valid": &appbsky.FeedPost{
+			LexiconTypeID: "app.bsky.feed.post",
+			Text:          "Test post",
+			CreatedAt:     time.Now().UTC().Format(time.RFC3339),
+		},
+	}
+	carData, err := createBridgeTestCAR("did:plc:test", records)
+	if err != nil {
+		t.Fatalf("create test CAR: %v", err)
+	}
+
+	rr, err := indigorepo.ReadRepoFromCar(ctx, bytes.NewReader(carData))
+	if err != nil {
+		t.Fatalf("read repo: %v", err)
+	}
+
+	processor := NewProcessor(database, log.New(io.Discard, "", 0))
+
+	for _, path := range []string{"invalid", "/post", "post/", "app.bsky.feed.post"} {
+		err := processor.processOp(ctx, rr, "did:plc:test", path, "bafytest", 1)
+		if err != nil {
+			t.Errorf("processOp(%q): expected nil, got %v", path, err)
+		}
+	}
+}

@@ -546,6 +546,42 @@ func TestProcessOpsSkipsDelete(t *testing.T) {
 	}
 }
 
+func TestProcessOpsWithUnknownAction(t *testing.T) {
+	records := map[string]interface{}{
+		"app.bsky.feed.post/test1": &appbsky.FeedPost{
+			LexiconTypeID: "app.bsky.feed.post",
+			Text:          "Test post",
+			CreatedAt:     time.Now().UTC().Format(time.RFC3339),
+		},
+	}
+	carData, err := createTestCAR("did:plc:test", records)
+	if err != nil {
+		t.Fatalf("create test CAR: %v", err)
+	}
+
+	rr, err := ParseCommit(context.Background(), &atproto.SyncSubscribeRepos_Commit{
+		Blocks: carData,
+	})
+	if err != nil {
+		t.Fatalf("ParseCommit: %v", err)
+	}
+
+	evt := &atproto.SyncSubscribeRepos_Commit{
+		Ops: []*atproto.SyncSubscribeRepos_RepoOp{
+			{
+				Action: "tombstone",
+				Path:   "app.bsky.feed.post/test1",
+				Cid:    ptrLexLink("bafytest"),
+			},
+		},
+	}
+
+	err = ProcessOps(context.Background(), rr, evt)
+	if err != nil {
+		t.Fatalf("ProcessOps with unknown action: %v", err)
+	}
+}
+
 func ptrString(s string) *string {
 	return &s
 }

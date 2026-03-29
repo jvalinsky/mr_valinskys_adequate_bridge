@@ -1706,6 +1706,30 @@ func TestCollectionFromPath(t *testing.T) {
 	}
 }
 
+func TestIsSupportedCollection(t *testing.T) {
+	tests := []struct {
+		collection string
+		supported  bool
+	}{
+		{mapper.RecordTypePost, true},
+		{mapper.RecordTypeLike, true},
+		{mapper.RecordTypeFollow, true},
+		{mapper.RecordTypeBlock, true},
+		{mapper.RecordTypeProfile, true},
+		{mapper.RecordTypeRepost, false},
+		{"app.bsky.feed.lists", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.collection, func(t *testing.T) {
+			got := isSupportedCollection(tt.collection)
+			if got != tt.supported {
+				t.Errorf("isSupportedCollection(%q) = %v, want %v", tt.collection, got, tt.supported)
+			}
+		})
+	}
+}
+
 func TestResolveDeferredMessagesCascadesReplyChain(t *testing.T) {
 	database, err := db.Open(":memory:")
 	if err != nil {
