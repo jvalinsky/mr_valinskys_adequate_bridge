@@ -1,8 +1,10 @@
 package secretstream
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"io"
 	"net"
 	"testing"
 )
@@ -148,5 +150,39 @@ func TestOriginalHandshake(t *testing.T) {
 		if err != nil {
 			t.Errorf("Handshake %d failed: %v", i, err)
 		}
+	}
+}
+func TestOriginalReadWrite(t *testing.T) {
+	appKey := NewAppKey("test")
+	_, alicePriv, _ := ed25519.GenerateKey(rand.Reader)
+	bobPub, bobPriv, _ := ed25519.GenerateKey(rand.Reader)
+
+	p1, p2 := net.Pipe()
+	defer p1.Close()
+	defer p2.Close()
+
+	done := make(chan struct{}, 2)
+	msg := []byte("hello bob")
+
+	go func() {
+		client, _ := NewClient(p1, appKey, alicePriv, bobPub)
+		client.Handshake()
+		client.Write(msg)
+		done <- struct{}{}
+	}()
+
+	go func() {
+		server, _ := NewServer(p2, appKey, bobPriv)
+		server.Handshake()
+		got := make([]byte, len(msg))
+		io.ReadFull(server, got)
+		if !bytes.Equal(got, msg) {
+			t.Errorf("got %s, want %s", got, msg)
+		}
+		done <- struct{}{}
+	}()
+
+	for i := 0; i < 2; i++ {
+		<-done
 	}
 }

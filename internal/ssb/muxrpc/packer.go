@@ -23,11 +23,14 @@ type Packer struct {
 	closeErr  error
 	closeOnce sync.Once
 	closing   chan struct{}
+
+	pending *codec.Packet
 }
 
 func NewPacker(rwc io.ReadWriteCloser) *Packer {
 	return &Packer{
 		decoder: codec.NewDecoder(),
+		encoder: codec.Encoder{},
 		r:       codec.NewReader(rwc),
 		w:       codec.NewWriter(rwc),
 		c:       rwc,
@@ -45,9 +48,17 @@ func (pkr *Packer) NextHeader(ctx context.Context, hdr *codec.Header) error {
 	pkr.rl.Lock()
 	defer pkr.rl.Unlock()
 
+	if pkr.pending != nil {
+		hdr.Flag = pkr.pending.Flag
+		hdr.Len = uint32(len(pkr.pending.Body))
+		hdr.Req = pkr.pending.Req
+		return nil
+	}
+
 	// If we have data in the decoder, try to extract a packet
 	p, err := pkr.decoder.NextPacket()
 	if err == nil {
+		pkr.pending = p
 		hdr.Flag = p.Flag
 		hdr.Len = uint32(len(p.Body))
 		hdr.Req = p.Req
@@ -66,6 +77,12 @@ func (pkr *Packer) NextHeader(ctx context.Context, hdr *codec.Header) error {
 func (pkr *Packer) NextPacket(ctx context.Context) (*codec.Packet, error) {
 	pkr.rl.Lock()
 	defer pkr.rl.Unlock()
+
+	if pkr.pending != nil {
+		p := pkr.pending
+		pkr.pending = nil
+		return p, nil
+	}
 
 	// Try decoder first
 	p, err := pkr.decoder.NextPacket()

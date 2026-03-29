@@ -380,9 +380,24 @@ func (r *rpc) Async(ctx context.Context, ret interface{}, tipe RequestEncoding, 
 		return err
 	}
 
-	if len(b) > 0 && tipe == TypeJSON && ret != nil {
-		if err := json.Unmarshal(b, ret); err != nil {
-			return err
+	if len(b) > 0 && ret != nil {
+		switch tipe {
+		case TypeJSON:
+			if err := json.Unmarshal(b, ret); err != nil {
+				return err
+			}
+		case TypeString:
+			if s, ok := ret.(*string); ok {
+				*s = string(b)
+			} else {
+				return fmt.Errorf("muxrpc: expected *string for TypeString, got %T", ret)
+			}
+		case TypeBinary:
+			if bb, ok := ret.(*[]byte); ok {
+				*bb = b
+			} else {
+				return fmt.Errorf("muxrpc: expected *[]byte for TypeBinary, got %T", ret)
+			}
 		}
 	}
 
