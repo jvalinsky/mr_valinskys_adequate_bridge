@@ -50,6 +50,107 @@ func TestDashboardDefaultsRuntimeStatusToUnknown(t *testing.T) {
 	}
 }
 
+func TestDashboardWithData(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	ctx := context.Background()
+	// Seed deferred reasons.
+	if err := database.AddMessage(ctx, db.Message{
+		ATURI: "at://did:plc:x/app.bsky.feed.post/1", ATCID: "c1", ATDID: "did:plc:x",
+		Type: mapper.RecordTypePost, MessageState: db.MessageStateDeferred, DeferReason: "reason1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Seed issue accounts.
+	if err := database.AddBridgedAccount(ctx, db.BridgedAccount{
+		ATDID: "did:plc:y", SSBFeedID: "@y.ed25519", Active: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.AddMessage(ctx, db.Message{
+		ATURI: "at://did:plc:y/app.bsky.feed.post/2", ATCID: "c2", ATDID: "did:plc:y",
+		Type: mapper.RecordTypePost, MessageState: db.MessageStateFailed, PublishError: "boom",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	body := fetchUI(t, database, "/")
+	if !strings.Contains(body, "reason1") {
+		t.Fatalf("dashboard missing deferred reason: %s", body)
+	}
+	if !strings.Contains(body, "did:plc:y") {
+		t.Fatalf("dashboard missing issue account: %s", body)
+	}
+}
+
+func TestAccountsPageWithData(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	ctx := context.Background()
+	if err := database.AddBridgedAccount(ctx, db.BridgedAccount{
+		ATDID: "did:plc:z", SSBFeedID: "@z.ed25519", Active: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	body := fetchUI(t, database, "/accounts")
+	if !strings.Contains(body, "did:plc:z") {
+		t.Fatalf("accounts page missing account: %s", body)
+	}
+}
+
+func TestBlobsPageWithData(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	ctx := context.Background()
+	if err := database.AddBlob(ctx, db.Blob{
+		ATCID: "cid1", SSBBlobRef: "&blob1", Size: 100, MimeType: "image/png",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	body := fetchUI(t, database, "/blobs")
+	if !strings.Contains(body, "cid1") || !strings.Contains(body, "&amp;blob1") {
+		t.Fatalf("blobs page missing blob: %s", body)
+	}
+}
+
+func TestMessagesPageWithData(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	ctx := context.Background()
+	if err := database.AddMessage(ctx, db.Message{
+		ATURI: "at://did:plc:x/app.bsky.feed.post/1", ATCID: "c1", ATDID: "did:plc:x",
+		Type: mapper.RecordTypePost, MessageState: db.MessageStatePublished,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	body := fetchUI(t, database, "/messages")
+	if !strings.Contains(body, "at://did:plc:x/app.bsky.feed.post/1") {
+		t.Fatalf("messages page missing message: %s", body)
+	}
+}
+
+func TestStatePageWithData(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	ctx := context.Background()
+	if err := database.SetBridgeState(ctx, "k1", "v1"); err != nil {
+		t.Fatal(err)
+	}
+
+	body := fetchUI(t, database, "/state")
+	if !strings.Contains(body, "k1") || !strings.Contains(body, "v1") {
+		t.Fatalf("state page missing key/value: %s", body)
+	}
+}
+
 func TestFailuresAndStatePagesRender(t *testing.T) {
 	database := openTestDB(t)
 	defer database.Close()
@@ -604,6 +705,12 @@ func TestMessageIssueSummary(t *testing.T) {
 			wantSummary: "No issue",
 			wantClass:   "muted",
 		},
+		{
+			name:        "pending_with_delete",
+			message:     db.Message{MessageState: db.MessageStatePending, DeletedReason: "del"},
+			wantSummary: "del",
+			wantClass:   "muted",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -650,8 +757,7 @@ func TestCompactIssueText(t *testing.T) {
 		{"", "No issue"},
 		{"  ", "No issue"},
 		{"short", "short"},
-		{"exact88chars_1234567890123456789012345678901234567890123456789012345678", "exact88chars_1234567890123456789012345678901234567890123456789012345678"},
-		{"this is a longer text that should be truncated to 88 characters and have ellipsis", "this is a longer text that should be truncated to 88 characters and have ellipsis"},
+		{strings.Repeat("a", 100), strings.Repeat("a", 85) + "..."},
 		{"  multiple   spaces  here  ", "multiple spaces here"},
 	}
 	for _, tt := range tests {
@@ -763,29 +869,6 @@ func TestFormatOptionalSeq(t *testing.T) {
 	v := int64(42)
 	if formatOptionalSeq(&v) != "42" {
 		t.Error("expected 42")
-	}
-}
-
-func TestMessageTypeLabel(t *testing.T) {
-	tests := []struct {
-		typ  string
-		want string
-	}{
-		{"app.bsky.feed.post", "post"},
-		{"app.bsky.feed.like", "like"},
-		{"app.bsky.graph.follow", "follow"},
-		{"app.bsky.graph.block", "block"},
-		{"app.bsky.actor.profile", "profile"},
-		{"app.bsky.feed.repost", "repost"},
-		{"unknown", "unknown"},
-		{"", "unknown"},
-		{"  ", "unknown"},
-	}
-	for _, tt := range tests {
-		got := messageTypeLabel(tt.typ)
-		if got != tt.want {
-			t.Errorf("messageTypeLabel(%q) = %q, want %q", tt.typ, got, tt.want)
-		}
 	}
 }
 
@@ -1108,6 +1191,27 @@ func TestMessageDetailBadRequest(t *testing.T) {
 	}
 }
 
+func TestUIHandlerHandleMessageDetailNotFound(t *testing.T) {
+	m := &mockDatabase{} // returns nil, nil for GetMessage
+	h := NewUIHandler(m, nil)
+	req := httptest.NewRequest(http.MethodGet, "/messages/detail?at_uri=at://none", nil)
+	rr := httptest.NewRecorder()
+	h.handleMessageDetail(rr, req)
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d", rr.Code)
+	}
+}
+
+func TestUIHandlerHandleMessagesInvalidLimit(t *testing.T) {
+	h := NewUIHandler(&mockDatabase{}, nil)
+	req := httptest.NewRequest(http.MethodGet, "/messages?limit=abc", nil)
+	rr := httptest.NewRecorder()
+	h.handleMessages(rr, req)
+	if rr.Code != http.StatusOK { // it defaults to defaultLimit
+		t.Errorf("expected 200, got %d", rr.Code)
+	}
+}
+
 type granularMockDatabase struct {
 	err error
 
@@ -1377,4 +1481,93 @@ func TestUIHandlerMoreErrors(t *testing.T) {
 			t.Error()
 		}
 	})
+}
+
+func TestIssueReason(t *testing.T) {
+	tests := []struct {
+		name string
+		msg  db.Message
+		want string
+	}{
+		{"deferred_with_reason", db.Message{MessageState: db.MessageStateDeferred, DeferReason: "r1"}, "r1"},
+		{"deleted_with_reason", db.Message{MessageState: db.MessageStateDeleted, DeletedReason: "r2"}, "r2"},
+		{"failed_with_publish_error", db.Message{MessageState: db.MessageStateFailed, PublishError: "e1"}, "e1"},
+		{"any_with_defer_reason", db.Message{MessageState: db.MessageStatePublished, DeferReason: "r3"}, "r3"},
+		{"any_with_delete_reason", db.Message{MessageState: db.MessageStatePublished, DeletedReason: "r4"}, "r4"},
+		{"none", db.Message{MessageState: db.MessageStatePublished}, "(none)"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := issueReason(tt.msg)
+			if got != tt.want {
+				t.Errorf("got %q, want %q", got, tt.want)
+			}
+			if strings.TrimSpace(got) != fullIssueText(tt.msg) {
+				t.Errorf("fullIssueText mismatch: %q", fullIssueText(tt.msg))
+			}
+		})
+	}
+}
+
+func TestSanitizeMessageSort(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"oldest", "oldest"},
+		{"newest", "newest"},
+		{"invalid", "newest"},
+		{"", "newest"},
+		{"  attempts_desc  ", "attempts_desc"},
+	}
+	for _, tt := range tests {
+		got := sanitizeMessageSort(tt.input)
+		if got != tt.want {
+			t.Errorf("sanitizeMessageSort(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestParseMessageLimit(t *testing.T) {
+	tests := []struct {
+		input string
+		want  int
+	}{
+		{"50", 50},
+		{"100", 100},
+		{"200", 200},
+		{"500", 500},
+		{"999", 100},
+		{"abc", 100},
+		{"", 100},
+	}
+	for _, tt := range tests {
+		got := parseMessageLimit(tt.input)
+		if got != tt.want {
+			t.Errorf("parseMessageLimit(%q) = %d, want %d", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestMessageTypeLabelMore(t *testing.T) {
+	tests := []struct {
+		typ  string
+		want string
+	}{
+		{"app.bsky.feed.post", "post"},
+		{"app.bsky.feed.like", "like"},
+		{"app.bsky.graph.follow", "follow"},
+		{"app.bsky.graph.block", "block"},
+		{"app.bsky.actor.profile", "profile"},
+		{"app.bsky.feed.repost", "repost"},
+		{"unknown", "unknown"},
+		{"", "unknown"},
+		{"  ", "unknown"},
+	}
+	for _, tt := range tests {
+		got := messageTypeLabel(tt.typ)
+		if got != tt.want {
+			t.Errorf("messageTypeLabel(%q) = %q, want %q", tt.typ, got, tt.want)
+		}
+	}
 }

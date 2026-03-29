@@ -627,6 +627,63 @@ func TestAuthHandlersSubmit(t *testing.T) {
 	}
 }
 
+func TestAuthHandlersSuccess(t *testing.T) {
+	h := &authHandler{authFallback: &mockAuthFallbackSuccess{}}
+
+	// Login success
+	req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader("username=admin&password=pw"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	h.handleLogin(rr, req)
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("expected 303, got %d", rr.Code)
+	}
+
+	// Reset password success
+	req2 := httptest.NewRequest(http.MethodPost, "/reset-password", strings.NewReader("token=good&password=new"))
+	req2.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr2 := httptest.NewRecorder()
+	h.handleResetPassword(rr2, req2)
+	if rr2.Code != http.StatusSeeOther {
+		t.Errorf("expected 303, got %d", rr2.Code)
+	}
+}
+
+type mockAuthFallbackSuccess struct{}
+
+func (m *mockAuthFallbackSuccess) Check(ctx context.Context, u, p string) (int64, error) {
+	return 1, nil
+}
+func (m *mockAuthFallbackSuccess) SetPassword(ctx context.Context, id int64, p string) error {
+	return nil
+}
+func (m *mockAuthFallbackSuccess) CreateResetToken(ctx context.Context, c, f int64) (string, error) {
+	return "token", nil
+}
+func (m *mockAuthFallbackSuccess) SetPasswordWithToken(ctx context.Context, t, p string) error {
+	return nil
+}
+
+func TestAuthHandlersMethods(t *testing.T) {
+	h := &authHandler{}
+	methods := []string{http.MethodPut, http.MethodDelete}
+	for _, m := range methods {
+		req := httptest.NewRequest(m, "/login", nil)
+		rr := httptest.NewRecorder()
+		h.handleLogin(rr, req)
+		if rr.Code != http.StatusMethodNotAllowed {
+			t.Error()
+		}
+
+		req2 := httptest.NewRequest(m, "/reset-password", nil)
+		rr2 := httptest.NewRecorder()
+		h.handleResetPassword(rr2, req2)
+		if rr2.Code != http.StatusMethodNotAllowed {
+			t.Error()
+		}
+	}
+}
+
 type mockAuthFallback struct{}
 
 func (m *mockAuthFallback) Check(ctx context.Context, u, p string) (int64, error) {
@@ -648,14 +705,75 @@ func TestInviteHandlersErrors(t *testing.T) {
 	if rr.Code != http.StatusInternalServerError {
 		t.Errorf("expected 500, got %d", rr.Code)
 	}
+
+	// 2. room mode not open
+	h2 := &inviteHandler{config: &mockRoomConfig{mode: roomdb.ModeCommunity}}
+	rr2 := httptest.NewRecorder()
+	h2.handleCreateInvite(rr2, req)
+	if rr2.Code != http.StatusForbidden {
+		t.Errorf("expected 403, got %d", rr2.Code)
+	}
+
+	// 3. create fail
+	h3 := &inviteHandler{
+		config: &mockRoomConfig{mode: roomdb.ModeOpen},
+		roomDB: &mockInvitesService{createErr: fmt.Errorf("fail")},
+	}
+	rr3 := httptest.NewRecorder()
+	h3.handleCreateInvite(rr3, req)
+	if rr3.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500, got %d", rr3.Code)
+	}
+
+	// 4. handleJoin MethodNotAllowed
+	h4 := &inviteHandler{}
+	req4 := httptest.NewRequest(http.MethodPut, "/join?token=test", nil)
+	rr4 := httptest.NewRecorder()
+	h4.handleJoin(rr4, req4)
+	if rr4.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", rr4.Code)
+	}
+}
+
+func TestInviteHandlersMethods(t *testing.T) {
+	h := &inviteHandler{}
+	req := httptest.NewRequest(http.MethodPut, "/create-invite", nil)
+	rr := httptest.NewRecorder()
+	h.handleCreateInvite(rr, req)
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", rr.Code)
+	}
+}
+
+type mockInvitesService struct {
+	roomdb.InvitesService
+	createErr error
+}
+
+func (m *mockInvitesService) Create(ctx context.Context, id int64) (string, error) {
+	return "", m.createErr
+}
+
+func TestHandleJoinPost(t *testing.T) {
+	h := &inviteHandler{}
+	req := httptest.NewRequest(http.MethodPost, "/join?token=test", nil)
+	rr := httptest.NewRecorder()
+	h.handleJoin(rr, req)
+	if rr.Code != http.StatusNotImplemented {
+		t.Errorf("expected 501, got %d", rr.Code)
+	}
 }
 
 type mockRoomConfig struct {
-	err error
+	err  error
+	mode roomdb.PrivacyMode
 }
 
 func (m *mockRoomConfig) GetPrivacyMode(ctx context.Context) (roomdb.PrivacyMode, error) {
-	return roomdb.ModeUnknown, m.err
+	if m.err != nil {
+		return roomdb.ModeUnknown, m.err
+	}
+	return m.mode, nil
 }
 func (m *mockRoomConfig) SetPrivacyMode(ctx context.Context, mode roomdb.PrivacyMode) error {
 	return nil

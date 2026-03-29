@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -1569,6 +1571,21 @@ func TestDBOpenInvalidPath(t *testing.T) {
 	_, err := Open("/non/existent/path/that/cannot/be/created/db.sqlite")
 	if err == nil {
 		t.Fatal("expected error for invalid db path")
+	}
+}
+
+func TestDBOpenInitSchemaError(t *testing.T) {
+	// Creating a directory where the DB file should be will cause a failure to open/init
+	tmp := t.TempDir()
+	dbPath := filepath.Join(tmp, "mydb")
+	err := os.Mkdir(dbPath, 0755)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = Open(dbPath)
+	if err == nil {
+		t.Fatal("expected error when opening a directory as a database")
 	}
 }
 

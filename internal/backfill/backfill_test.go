@@ -2,6 +2,7 @@ package backfill
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -221,5 +222,27 @@ func TestIsSupportedCollectionAll(t *testing.T) {
 	}
 	if isSupportedCollection("other") {
 		t.Error()
+	}
+}
+
+func TestRunForDID_DialError(t *testing.T) {
+	ctx := context.Background()
+	res := RunForDID(ctx, "did:plc:err", SinceFilter{}, nil, nil,
+		&stubHostResolver{errs: map[string]error{"did:plc:err": fmt.Errorf("dial fail")}}, nil)
+	if res.Status != StatusTransportError {
+		t.Errorf("expected StatusTransportError, got %s", res.Status)
+	}
+}
+
+func TestProcessRepoCAR_IterationError(t *testing.T) {
+	// A repo that has a valid header but fails during iteration.
+	// mustCreateRepoCAR is available in pds_test.go (same package).
+	carData := mustCreateRepoCAR(t, "did:plc:test")
+	// Truncate it to corrupt the block stream
+	carData = carData[:len(carData)-10]
+
+	_, err := processRepoCAR(context.Background(), carData, "did:plc:test", SinceFilter{}, nil, nil)
+	if err == nil {
+		t.Fatal("expected iteration error for truncated CAR")
 	}
 }

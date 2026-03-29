@@ -761,6 +761,34 @@ func TestExtractPDSEndpointNilDoc(t *testing.T) {
 	}
 }
 
+func TestClassifyDIDResult_XRPCError(t *testing.T) {
+	tests := []struct {
+		status int
+		want   DIDStatus
+	}{
+		{http.StatusUnauthorized, StatusAuthRequired},
+		{http.StatusNotFound, StatusNotFound},
+		{http.StatusInternalServerError, StatusTransportError},
+	}
+	for _, tt := range tests {
+		got := classifyDIDResult(&xrpc.Error{StatusCode: tt.status})
+		if got != tt.want {
+			t.Errorf("status %d: got %s, want %s", tt.status, got, tt.want)
+		}
+	}
+}
+
+func TestClassifyDIDResult_NotFoundWithDecodeError(t *testing.T) {
+	err := &xrpc.Error{
+		StatusCode: http.StatusNotFound,
+		Wrapped:    fmt.Errorf("failed to decode xrpc error message"),
+	}
+	got := classifyDIDResult(err)
+	if got != StatusTransportError {
+		t.Errorf("expected StatusTransportError for decode error, got %s", got)
+	}
+}
+
 func TestResolvePDSEndpointInvalidDID(t *testing.T) {
 	resolver := DIDPDSResolver{}
 	_, err := resolver.ResolvePDSEndpoint(context.Background(), "invalid-did")

@@ -458,6 +458,32 @@ func TestRuntimeNewRuntimeValidationError(t *testing.T) {
 	}
 }
 
+func TestRuntimeShutdownNilProvider(t *testing.T) {
+	rt := &Runtime{}
+	err := rt.Shutdown(context.Background())
+	if err != nil {
+		t.Fatalf("expected nil error for nil provider, got %v", err)
+	}
+}
+
+func TestValidateConfigMoreErrors(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  Config
+	}{
+		{"invalid protocol", Config{Protocol: "ftp", ServiceName: "s"}},
+		{"invalid output", Config{LocalOutput: "pdf", ServiceName: "s"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ValidateConfig(tt.cfg)
+			if err == nil {
+				t.Error("expected error")
+			}
+		})
+	}
+}
+
 func endpointHostPort(t *testing.T, rawURL string) string {
 	t.Helper()
 	u, err := url.Parse(rawURL)
