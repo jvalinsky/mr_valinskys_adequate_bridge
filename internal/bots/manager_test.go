@@ -22,19 +22,19 @@ func TestDeriveKeyPair(t *testing.T) {
 	}
 
 	// They should be identical and deterministic
-	if string(kp1.Secret()) != string(kp2.Secret()) {
+	if string(kp1.Private()) != string(kp2.Private()) {
 		t.Errorf("expected deterministic keys")
 	}
 
-	if kp1.ID().Ref() != kp2.ID().Ref() {
+	if kp1.FeedRef().String() != kp2.FeedRef().String() {
 		t.Errorf("expected matching Feed IDs")
 	}
 
 	// Different DID should produce different key
 	kp3, _ := manager.deriveKeyPair("did:plc:different")
-	if kp1.ID().Ref() == kp3.ID().Ref() {
+	if kp1.FeedRef().String() == kp3.FeedRef().String() {
 		t.Errorf("expected different Feed IDs for different DIDs")
 	}
 
-	t.Logf("Derived Feed ID for %s: %s", atDID, kp1.ID().Ref())
+	t.Logf("Derived Feed ID for %s: %s", atDID, kp1.FeedRef().String())
 }

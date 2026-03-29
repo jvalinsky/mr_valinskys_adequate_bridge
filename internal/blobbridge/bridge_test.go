@@ -7,11 +7,9 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 
 	lexutil "github.com/bluesky-social/indigo/lex/util"
-	ssbrepo "go.cryptoscope.co/ssb/repo"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/mapper"
@@ -46,6 +44,52 @@ func (f *fakeHostResolver) ResolvePDSEndpoint(_ context.Context, did string) (st
 	return f.host, nil
 }
 
+type testBlobStore struct {
+	data map[string][]byte
+}
+
+func newTestBlobStore() *testBlobStore {
+	return &testBlobStore{data: make(map[string][]byte)}
+}
+
+func (b *testBlobStore) Put(r io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return nil, err
+	}
+	hash := data
+	b.data[string(hash)] = data
+	return hash, nil
+}
+
+func (b *testBlobStore) Get(hash []byte) (io.ReadCloser, error) {
+	data, ok := b.data[string(hash)]
+	if !ok {
+		return nil, io.EOF
+	}
+	return io.NopCloser(bytes.NewReader(data)), nil
+}
+
+func (b *testBlobStore) Has(hash []byte) (bool, error) {
+	_, ok := b.data[string(hash)]
+	return ok, nil
+}
+
+func (b *testBlobStore) Size(hash []byte) (int64, error) {
+	data, ok := b.data[string(hash)]
+	if !ok {
+		return 0, io.EOF
+	}
+	return int64(len(data)), nil
+}
+
+func (b *testBlobStore) Delete(hash []byte) error {
+	delete(b.data, string(hash))
+	return nil
+}
+
+var _ BlobStore = (*testBlobStore)(nil)
+
 func TestBridgeRecordBlobsMapsPostImagesToMentionsAndMarkdown(t *testing.T) {
 	database, err := db.Open(":memory:")
 	if err != nil {
@@ -53,11 +97,7 @@ func TestBridgeRecordBlobsMapsPostImagesToMentionsAndMarkdown(t *testing.T) {
 	}
 	defer database.Close()
 
-	repo := ssbrepo.New(filepath.Join(t.TempDir(), "repo"))
-	blobStore, err := ssbrepo.OpenBlobStore(repo)
-	if err != nil {
-		t.Fatalf("open blobstore: %v", err)
-	}
+	blobStore := newTestBlobStore()
 
 	bridge := New(
 		database,
@@ -116,11 +156,7 @@ func TestBridgeRecordBlobsIgnoresExternalThumbs(t *testing.T) {
 	}
 	defer database.Close()
 
-	repo := ssbrepo.New(filepath.Join(t.TempDir(), "repo"))
-	blobStore, err := ssbrepo.OpenBlobStore(repo)
-	if err != nil {
-		t.Fatalf("open blobstore: %v", err)
-	}
+	blobStore := newTestBlobStore()
 
 	bridge := New(database, blobStore, nil, log.New(io.Discard, "", 0))
 
@@ -170,11 +206,7 @@ func TestBridgeRecordBlobsMapsProfileAvatarUsingExistingBlob(t *testing.T) {
 		t.Fatalf("seed blob mapping: %v", err)
 	}
 
-	repo := ssbrepo.New(filepath.Join(t.TempDir(), "repo"))
-	blobStore, err := ssbrepo.OpenBlobStore(repo)
-	if err != nil {
-		t.Fatalf("open blobstore: %v", err)
-	}
+	blobStore := newTestBlobStore()
 
 	bridge := New(database, blobStore, nil, log.New(io.Discard, "", 0))
 
@@ -206,11 +238,7 @@ func TestBridgeRecordBlobsFetchesBlobFromResolvedDIDPDS(t *testing.T) {
 	}
 	defer database.Close()
 
-	repo := ssbrepo.New(filepath.Join(t.TempDir(), "repo"))
-	blobStore, err := ssbrepo.OpenBlobStore(repo)
-	if err != nil {
-		t.Fatalf("open blobstore: %v", err)
-	}
+	blobStore := newTestBlobStore()
 
 	var requestedPath string
 	var requestedDID string

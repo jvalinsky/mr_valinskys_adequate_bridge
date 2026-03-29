@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strings"
@@ -15,17 +16,26 @@ import (
 	appbsky "github.com/bluesky-social/indigo/api/bsky"
 	lexutil "github.com/bluesky-social/indigo/lex/util"
 	"github.com/bluesky-social/indigo/xrpc"
-	"go.cryptoscope.co/ssb"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/mapper"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/feedlog"
 )
+
+// BlobStore wraps our feedlog.BlobStore to match the expected interface.
+type BlobStore interface {
+	Put(r io.Reader) ([]byte, error)
+	Get(hash []byte) (io.ReadCloser, error)
+	Has(hash []byte) (bool, error)
+	Size(hash []byte) (int64, error)
+	Delete(hash []byte) error
+}
 
 // Bridge fetches ATProto blobs, stores them in SSB, and persists CID mappings.
 type Bridge struct {
 	db        *db.DB
-	blobStore ssb.BlobStore
+	blobStore BlobStore
 	xrpc      lexutil.LexClient
 	resolver  HostResolver
 	client    *http.Client
@@ -38,7 +48,7 @@ type HostResolver interface {
 }
 
 // New constructs a blob Bridge.
-func New(database *db.DB, blobStore ssb.BlobStore, xrpcClient lexutil.LexClient, logger *log.Logger) *Bridge {
+func New(database *db.DB, blobStore BlobStore, xrpcClient lexutil.LexClient, logger *log.Logger) *Bridge {
 	logger = logutil.Ensure(logger)
 	return &Bridge{
 		db:        database,
@@ -50,7 +60,7 @@ func New(database *db.DB, blobStore ssb.BlobStore, xrpcClient lexutil.LexClient,
 
 // NewWithResolver constructs a blob Bridge that resolves the correct host per
 // DID before fetching each blob.
-func NewWithResolver(database *db.DB, blobStore ssb.BlobStore, resolver HostResolver, httpClient *http.Client, logger *log.Logger) *Bridge {
+func NewWithResolver(database *db.DB, blobStore BlobStore, resolver HostResolver, httpClient *http.Client, logger *log.Logger) *Bridge {
 	logger = logutil.Ensure(logger)
 	return &Bridge{
 		db:        database,
@@ -60,6 +70,9 @@ func NewWithResolver(database *db.DB, blobStore ssb.BlobStore, resolver HostReso
 		logger:    logger,
 	}
 }
+
+// Ensure feedlog.BlobStore implements BlobStore
+var _ BlobStore = feedlog.BlobStore(nil)
 
 // BridgeRecordBlobs resolves blobs referenced by a mapped record into SSB-native fields.
 func (b *Bridge) BridgeRecordBlobs(ctx context.Context, atDID, collection string, mapped map[string]interface{}, rawRecordJSON []byte) error {
@@ -308,22 +321,24 @@ func (b *Bridge) ensureBlob(ctx context.Context, atDID string, cand blobCandidat
 		return "", fmt.Errorf("fetch blob cid=%s did=%s: %w", cand.CID, atDID, err)
 	}
 
-	blobRef, err := b.blobStore.Put(bytes.NewReader(payload))
+	blobHash, err := b.blobStore.Put(bytes.NewReader(payload))
 	if err != nil {
 		return "", fmt.Errorf("store blob cid=%s: %w", cand.CID, err)
 	}
 
+	blobRefStr := fmt.Sprintf("&%x.blake2b", blobHash)
+
 	if err := b.db.AddBlob(ctx, db.Blob{
 		ATCID:      cand.CID,
-		SSBBlobRef: blobRef.Ref(),
+		SSBBlobRef: blobRefStr,
 		Size:       int64(len(payload)),
 		MimeType:   cand.MimeType,
 	}); err != nil {
 		return "", fmt.Errorf("persist blob mapping cid=%s: %w", cand.CID, err)
 	}
 
-	b.logger.Printf("event=blob_bridged did=%s cid=%s ssb_blob_ref=%s size=%d mime=%s", atDID, cand.CID, blobRef.Ref(), len(payload), strings.TrimSpace(cand.MimeType))
-	return blobRef.Ref(), nil
+	b.logger.Printf("event=blob_bridged did=%s cid=%s ssb_blob_ref=%s size=%d mime=%s", atDID, cand.CID, blobRefStr, len(payload), strings.TrimSpace(cand.MimeType))
+	return blobRefStr, nil
 }
 
 func (b *Bridge) clientForDID(ctx context.Context, atDID string) (lexutil.LexClient, error) {

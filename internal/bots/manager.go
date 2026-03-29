@@ -2,56 +2,39 @@
 package bots
 
 import (
-	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/sha256"
 	"fmt"
 	"sync"
 
-	"go.cryptoscope.co/margaret"
-	"go.cryptoscope.co/margaret/multilog"
-	"go.cryptoscope.co/ssb"
-	"go.cryptoscope.co/ssb/message"
-	refs "go.mindeco.de/ssb-refs"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/feedlog"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/keys"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/publisher"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 )
 
-// Manager derives per-DID keypairs and caches corresponding publishers.
 type Manager struct {
 	mu         sync.Mutex
-	publishers map[string]ssb.Publisher
+	publishers map[string]*publisher.Publisher
 	masterSeed []byte
-	receiveLog margaret.Log
-	userFeeds  multilog.MultiLog
+	receiveLog feedlog.Log
+	userFeeds  feedlog.MultiLog
 	hmacKey    *[32]byte
+	keyPairs   map[string]*keys.KeyPair
 }
 
-type botKeyPair struct {
-	id   refs.FeedRef
-	pair ed25519.PrivateKey
-}
-
-func (b botKeyPair) ID() refs.FeedRef {
-	return b.id
-}
-
-func (b botKeyPair) Secret() ed25519.PrivateKey {
-	return b.pair
-}
-
-// NewManager creates a new bot manager that derives keys from masterSeed
-// and uses the provided logs to publish messages.
-func NewManager(masterSeed []byte, rxLog margaret.Log, users multilog.MultiLog, hmacKey *[32]byte) *Manager {
+func NewManager(masterSeed []byte, rxLog feedlog.Log, users feedlog.MultiLog, hmacKey *[32]byte) *Manager {
 	return &Manager{
-		publishers: make(map[string]ssb.Publisher),
+		publishers: make(map[string]*publisher.Publisher),
 		masterSeed: masterSeed,
 		receiveLog: rxLog,
 		userFeeds:  users,
 		hmacKey:    hmacKey,
+		keyPairs:   make(map[string]*keys.KeyPair),
 	}
 }
 
-// GetPublisher returns a publisher for the given AT DID, generating it if needed.
-func (m *Manager) GetPublisher(atDID string) (ssb.Publisher, error) {
+func (m *Manager) GetPublisher(atDID string) (*publisher.Publisher, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -64,46 +47,41 @@ func (m *Manager) GetPublisher(atDID string) (ssb.Publisher, error) {
 		return nil, fmt.Errorf("failed to derive keypair: %w", err)
 	}
 
-	opts := []message.PublishOption{}
+	var hmacKey []byte
 	if m.hmacKey != nil {
-		opts = append(opts, message.SetHMACKey(m.hmacKey))
+		hmacKey = m.hmacKey[:]
 	}
 
-	pub, err := message.OpenPublishLog(m.receiveLog, m.userFeeds, kp, opts...)
+	pub, err := publisher.New(kp, m.receiveLog, m.userFeeds, publisher.WithHMAC(hmacKey))
 	if err != nil {
-		return nil, fmt.Errorf("failed to open publish log: %w", err)
+		return nil, fmt.Errorf("failed to create publisher: %w", err)
 	}
 
 	m.publishers[atDID] = pub
 	return pub, nil
 }
 
-// GetFeedID returns the SSB feed ID for atDID without creating a publisher.
 func (m *Manager) GetFeedID(atDID string) (refs.FeedRef, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	kp, err := m.deriveKeyPair(atDID)
 	if err != nil {
 		return refs.FeedRef{}, err
 	}
-	return kp.ID(), nil
+	return kp.FeedRef(), nil
 }
 
-// deriveKeyPair deterministically derives an Ed25519 keypair from atDID.
-func (m *Manager) deriveKeyPair(atDID string) (ssb.KeyPair, error) {
+func (m *Manager) deriveKeyPair(atDID string) (*keys.KeyPair, error) {
+	if kp, ok := m.keyPairs[atDID]; ok {
+		return kp, nil
+	}
+
 	mac := hmac.New(sha256.New, m.masterSeed)
 	mac.Write([]byte(atDID))
 	seed := mac.Sum(nil)
 
-	// Ed25519 seeds are always 32 bytes.
-	privKey := ed25519.NewKeyFromSeed(seed[:ed25519.SeedSize])
-	pubKey := privKey.Public().(ed25519.PublicKey)
-
-	feedRef, err := refs.NewFeedRefFromBytes(pubKey, refs.RefAlgoFeedSSB1)
-	if err != nil {
-		return nil, err
-	}
-
-	return botKeyPair{
-		id:   feedRef,
-		pair: privKey,
-	}, nil
+	kp := keys.FromSeed(*(*[32]byte)(seed[:32]))
+	m.keyPairs[atDID] = kp
+	return kp, nil
 }

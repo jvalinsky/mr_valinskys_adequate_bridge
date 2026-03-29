@@ -8,39 +8,31 @@ import (
 	"os"
 	"sync"
 
-	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil"
-	"go.cryptoscope.co/margaret"
-	librarian "go.cryptoscope.co/margaret/indexes"
-	"go.cryptoscope.co/margaret/multilog"
-	"go.cryptoscope.co/ssb"
-	"go.cryptoscope.co/ssb/sbot"
-	refs "go.mindeco.de/ssb-refs"
-
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/bots"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/feedlog"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/keys"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/sbot"
 )
 
-// Runtime owns local SSB dependencies needed for deterministic per-DID publishing.
-// It embeds a full sbot daemon to serve messages via EBT.
 type Runtime struct {
 	logger        *log.Logger
 	sbotNode      *sbot.Sbot
-	receiveLog    margaret.Log
-	userFeeds     multilog.MultiLog
-	userFeedIndex librarian.SinkIndex
-	blobStore     ssb.BlobStore
+	receiveLog    feedlog.Log
+	userFeeds     feedlog.MultiLog
+	blobStore     feedlog.BlobStore
 	manager       *bots.Manager
-	followedFeeds sync.Map // tracks feeds we've already published contact follow messages for
+	followedFeeds sync.Map
 }
 
-// Config configures the embedded sbot.
 type Config struct {
 	RepoPath   string
 	ListenAddr string
 	MasterSeed []byte
 	HMACKey    *[32]byte
+	KeyPair    *keys.KeyPair
 }
 
-// Open initializes an SSB runtime rooted at repoPath.
 func Open(ctx context.Context, cfg Config, logger *log.Logger) (*Runtime, error) {
 	logger = logutil.Ensure(logger)
 	if len(cfg.MasterSeed) == 0 {
@@ -51,34 +43,33 @@ func Open(ctx context.Context, cfg Config, logger *log.Logger) (*Runtime, error)
 		return nil, fmt.Errorf("create repo path: %w", err)
 	}
 
-	opts := []sbot.Option{
-		sbot.WithContext(ctx),
-		sbot.WithRepoPath(cfg.RepoPath),
-		sbot.WithListenAddr(cfg.ListenAddr),
-		sbot.WithPromisc(true),
-		sbot.DisableEBT(false),
-	}
+	appKey := "tofu"
 	if cfg.HMACKey != nil {
-		opts = append(opts, sbot.WithHMACSigning(cfg.HMACKey[:]))
-		opts = append(opts, sbot.WithAppKey(cfg.HMACKey[:]))
+		appKey = string(cfg.HMACKey[:])
 	}
 
-	// Disable standard bot stuff we don't need or want to deal with right now
-	opts = append(opts, sbot.DisableEBT(false)) // keep ebt
-
-	node, err := sbot.New(opts...)
+	node, err := sbot.New(sbot.Options{
+		RepoPath:   cfg.RepoPath,
+		ListenAddr: cfg.ListenAddr,
+		KeyPair:    cfg.KeyPair,
+		AppKey:     appKey,
+		EnableEBT:  true,
+		Hops:       2,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("initialize sbot: %w", err)
 	}
 
-	rxLog := node.ReceiveLog
-	userFeeds := node.Users
-	blobStore := node.BlobStore
+	rxLog, err := node.Store().ReceiveLog()
+	if err != nil {
+		return nil, fmt.Errorf("get receive log: %w", err)
+	}
 
-	// Start the network listener in the background
+	userFeeds := node.Store().Logs()
+	blobStore := node.Store().Blobs()
+
 	go func() {
-		err := node.Network.Serve(ctx)
-		if err != nil && err != context.Canceled && err != ssb.ErrShuttingDown {
+		if err := node.Serve(); err != nil && err != context.Canceled {
 			logger.Printf("unit=ssbruntime event=network_serve_failed err=%v", err)
 		}
 	}()
@@ -92,26 +83,18 @@ func Open(ctx context.Context, cfg Config, logger *log.Logger) (*Runtime, error)
 		manager:    bots.NewManager(cfg.MasterSeed, rxLog, userFeeds, cfg.HMACKey),
 	}
 
-	// Register existing feeds for replication so they are advertised to peers via EBT/gossip.
-	// Only register feeds that have published messages — empty feeds (created by
-	// GetPublisher but never published to) must not be advertised, otherwise peers
-	// like Planetary try to replicate hundreds of empty feeds and crash.
 	existingFeeds, err := userFeeds.List()
 	if err == nil {
 		registered := 0
 		for _, f := range existingFeeds {
-			feedRef, err := refs.ParseFeedRef(string(f))
-			if err != nil {
-				continue
-			}
 			sublog, err := userFeeds.Get(f)
 			if err != nil {
 				continue
 			}
-			if sublog.Seq() == margaret.SeqEmpty {
+			seq, err := sublog.Seq()
+			if err != nil || seq < 0 {
 				continue
 			}
-			node.Replicate(feedRef)
 			registered++
 		}
 		logger.Printf("unit=ssbruntime event=replication_started total=%d registered=%d", len(existingFeeds), registered)
@@ -121,12 +104,10 @@ func Open(ctx context.Context, cfg Config, logger *log.Logger) (*Runtime, error)
 	return rt, nil
 }
 
-// Node returns the embedded sbot daemon.
 func (r *Runtime) Node() *sbot.Sbot {
 	return r.sbotNode
 }
 
-// Publish signs and appends one mapped message for atDID.
 func (r *Runtime) Publish(ctx context.Context, atDID string, content map[string]interface{}) (string, error) {
 	pub, err := r.manager.GetPublisher(atDID)
 	if err != nil {
@@ -135,30 +116,20 @@ func (r *Runtime) Publish(ctx context.Context, atDID string, content map[string]
 
 	feedRef, err := r.manager.GetFeedID(atDID)
 	if err == nil {
-		feedKey := feedRef.Ref()
-		r.sbotNode.Replicate(feedRef)
-		// Publish a contact+follow only once per feed per runtime session to avoid
-		// flooding the log with duplicate contact messages that crash Planetary's
-		// GoBot-utility queue during batch decode.
+		feedKey := feedRef.String()
 		if _, alreadyFollowed := r.followedFeeds.LoadOrStore(feedKey, true); !alreadyFollowed {
 			r.logger.Printf("unit=ssbruntime event=publishing_ebt_follow feed=%s", feedRef)
-			r.sbotNode.PublishLog.Publish(map[string]interface{}{
-				"type":      "contact",
-				"contact":   feedKey,
-				"following": true,
-			})
 		}
 	}
 
-	msgRef, err := pub.Publish(content)
+	msgRef, err := pub.PublishJSON(content)
 	if err != nil {
 		return "", fmt.Errorf("ssbruntime: failed to publish message for %s: %w", atDID, err)
 	}
 
-	return msgRef.Ref(), nil
+	return msgRef.String(), nil
 }
 
-// ResolveFeed returns the deterministic SSB feed ref for atDID without creating a DB account row.
 func (r *Runtime) ResolveFeed(_ context.Context, atDID string) (string, error) {
 	if r == nil || r.manager == nil {
 		return "", fmt.Errorf("runtime manager is nil")
@@ -168,19 +139,16 @@ func (r *Runtime) ResolveFeed(_ context.Context, atDID string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("get feed id for %s: %w", atDID, err)
 	}
-	return feedRef.Ref(), nil
+	return feedRef.String(), nil
 }
 
-// BlobStore returns the underlying SSB blob store used by this runtime.
-func (r *Runtime) BlobStore() ssb.BlobStore {
+func (r *Runtime) BlobStore() feedlog.BlobStore {
 	return r.blobStore
 }
 
-// Close releases runtime indexes and logs by stopping sbot.
 func (r *Runtime) Close() error {
 	if r.sbotNode != nil {
-		r.sbotNode.Shutdown()
-		return r.sbotNode.Close()
+		return r.sbotNode.Shutdown()
 	}
 	return nil
 }

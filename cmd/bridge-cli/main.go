@@ -31,11 +31,12 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/publishqueue"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/room"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomdb"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssbruntime"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/web/handlers"
 	websecurity "github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/web/security"
 	roomrefs "github.com/ssbc/go-ssb-refs"
-	roomdb "github.com/ssbc/go-ssb-room/v2/roomdb"
 	"github.com/urfave/cli/v2"
 	oldmuxrpc "go.cryptoscope.co/muxrpc/v2"
 	"go.cryptoscope.co/netwrap"
@@ -1116,26 +1117,37 @@ func runRoomTunnelBootstrap(ctx context.Context, ssbRT *ssbruntime.Runtime, room
 	)
 
 	// Parse feed refs once (these don't change).
-	bridgeFeed, err := roomrefs.ParseFeedRef(ssbRT.Node().KeyPair.ID().Ref())
+	bridgeFeedRef, err := roomrefs.ParseFeedRef(ssbRT.Node().KeyPair.ID().Ref())
 	if err != nil {
 		logger.Printf("event=room_bridge_feed_parse_failed err=%v", err)
 		return
 	}
-	oldRoomFeed, err := oldrefs.ParseFeedRef(roomRT.RoomFeed().String())
+	bridgeFeed, err := refs.ParseFeedRef("@" + base64.StdEncoding.EncodeToString(bridgeFeedRef.PubKey()) + ".ed25519")
+	if err != nil {
+		logger.Printf("event=room_bridge_feed_parse_failed err=%v", err)
+		return
+	}
+
+	oldRoomFeedRef, err := oldrefs.ParseFeedRef(roomRT.RoomFeed().String())
+	if err != nil {
+		logger.Printf("event=room_old_feed_parse_failed err=%v", err)
+		return
+	}
+	oldRoomFeed, err := refs.ParseFeedRef("@" + base64.StdEncoding.EncodeToString(oldRoomFeedRef.PubKey()) + ".ed25519")
 	if err != nil {
 		logger.Printf("event=room_old_feed_parse_failed err=%v", err)
 		return
 	}
 
 	// Ensure bridge is a room admin so it can announce.
-	if err := roomRT.AddMember(ctx, bridgeFeed, roomdb.RoleAdmin); err != nil {
+	if err := roomRT.AddMember(ctx, *bridgeFeed, roomdb.RoleAdmin); err != nil {
 		if !strings.Contains(err.Error(), "already exists") {
 			logger.Printf("event=room_add_member_failed err=%v", err)
 		}
 	}
 
 	// Authorize the room feed in the bridge sbot for replication.
-	ssbRT.Node().Replicate(oldRoomFeed)
+	ssbRT.Node().Replicate(*oldRoomFeed)
 
 	// Poll until the room MUXRPC port is accepting TCP connections.
 	roomAddr := roomRT.Addr()
