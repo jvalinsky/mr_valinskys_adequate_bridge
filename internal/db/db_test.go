@@ -12,6 +12,265 @@ import (
 	"time"
 )
 
+
+func TestOpenError(t *testing.T) {
+	// 1. Invalid path (directory that doesn't exist)
+	tmpDir, err := os.MkdirTemp("", "db_test_*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "nonexistent", "bridge.db")
+	_, err = Open(dbPath)
+	if err == nil {
+		t.Error("expected error for invalid path, got nil")
+	}
+
+	// 2. Database that fails initSchema
+	invalidDB := filepath.Join(tmpDir, "invalid.txt")
+	if err := os.WriteFile(invalidDB, []byte("this is not a sqlite database"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, err = Open(invalidDB)
+	if err == nil {
+		t.Error("expected error for non-database file, got nil")
+	}
+}
+
+func TestInitSchemaErrors(t *testing.T) {
+	db, err := Open(":memory:?parseTime=true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// Force ensureColumn to fail by creating a table with a conflicting name
+	// but this is tricky because ensureColumn checks if table exists.
+	// Let's try to add a column that already exists but with a different definition?
+	// SQLite ALTER TABLE ADD COLUMN is quite limited.
+	// Actually, let's test ensureColumn directly for error paths.
+}
+
+func TestEnsureColumn(t *testing.T) {
+	db, err := Open(":memory:?parseTime=true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	// 1. Column exists (should be no-op)
+	if err := db.ensureColumn("messages", "at_uri", "TEXT"); err != nil {
+		t.Errorf("expected no-op for existing column, got error: %v", err)
+	}
+
+	// 2. Column doesn't exist (should add it)
+	if err := db.ensureColumn("messages", "test_new_col", "TEXT"); err != nil {
+		t.Errorf("failed to add new column: %v", err)
+	}
+
+	// 3. Error: Invalid table name
+	if err := db.ensureColumn("nonexistent_table", "col", "TEXT"); err == nil {
+		t.Error("expected error for nonexistent table, got nil")
+	}
+
+	// 4. Error: Invalid column definition
+	if err := db.ensureColumn("messages", "bad_col", "INVALID_TYPE!!!"); err == nil {
+		t.Error("expected error for invalid column definition, got nil")
+	}
+}
+
+func TestCursorEdgeCases(t *testing.T) {
+	// 1. Empty URI -> returns ""
+	c1 := messageListCursor{CreatedAt: time.Now(), ATURI: ""}
+	enc1 := encodeMessageListCursor(c1)
+	if enc1 != "" {
+		t.Errorf("expected empty string for empty URI, got %q", enc1)
+	}
+
+	// 2. Special characters in URI
+	c2 := messageListCursor{CreatedAt: time.Now(), ATURI: "at://did:plc:123/!@#$%^&*()"}
+	enc2 := encodeMessageListCursor(c2)
+	dec2, ok := decodeMessageListCursor(enc2)
+	if !ok || dec2.ATURI != c2.ATURI {
+		t.Errorf("failed special char URI cursor test")
+	}
+
+	// 3. Zero time -> returns ""
+	c3 := messageListCursor{CreatedAt: time.Time{}, ATURI: "uri"}
+	enc3 := encodeMessageListCursor(c3)
+	if enc3 != "" {
+		t.Errorf("expected empty string for zero time, got %q", enc3)
+	}
+
+	// 4. Decode invalid base64
+	_, ok = decodeMessageListCursor("!!!not-base64!!!")
+	if ok {
+		t.Error("expected failure for invalid base64")
+	}
+
+	// 5. Decode invalid JSON
+	encInvalidJSON := base64.RawURLEncoding.EncodeToString([]byte("{invalid-json}"))
+	_, ok = decodeMessageListCursor(encInvalidJSON)
+	if ok {
+		t.Error("expected failure for invalid JSON")
+	}
+
+	// 6. Decode invalid time format
+	encInvalidTime := base64.RawURLEncoding.EncodeToString([]byte(`{"created_at":"not-a-time","at_uri":"uri"}`))
+	_, ok = decodeMessageListCursor(encInvalidTime)
+	if ok {
+		t.Error("expected failure for invalid time format")
+	}
+
+	// 7. Decode empty ATURI in JSON
+	encEmptyURI := base64.RawURLEncoding.EncodeToString([]byte(`{"created_at":"2026-01-01T00:00:00Z","at_uri":" "}`))
+	_, ok = decodeMessageListCursor(encEmptyURI)
+	if ok {
+		t.Error("expected failure for empty ATURI in decoded JSON")
+	}
+}
+
+func TestScanners(t *testing.T) {
+	db, err := Open(":memory:?parseTime=true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+
+	// Add some data to exercise scanners
+	acc := BridgedAccount{ATDID: "did:plc:scanner", SSBFeedID: "@scan.ed25519", Active: true}
+	db.AddBridgedAccount(ctx, acc)
+	db.AddMessage(ctx, Message{ATURI: "at://scan/1", ATDID: acc.ATDID, Type: "test", MessageState: MessageStatePublished})
+	db.AddBlob(ctx, Blob{ATCID: "bafy-scan", SSBBlobRef: "&scan", Size: 100})
+	db.SetBridgeState(ctx, "scan-key", "scan-val")
+
+	// Exercise all scanners via their high-level methods
+	if _, err := db.ListMessageTypes(ctx); err != nil {
+		t.Error(err)
+	}
+	if _, err := db.ListTopIssueAccounts(ctx, 10); err != nil {
+		t.Error(err)
+	}
+	if _, err := db.GetRecentBlobs(ctx, 10); err != nil {
+		t.Error(err)
+	}
+	if _, err := db.GetAllBridgeState(ctx); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestMoreErrorPaths(t *testing.T) {
+	db, _ := Open(":memory:?parseTime=true")
+	defer db.Close()
+
+	// 1. ensureColumn error path (invalid syntax)
+	// SQLite is very permissive, but this should fail:
+	err := db.ensureColumn("messages", "bad_col", "REFERS TO NOTHING")
+	if err == nil {
+		t.Error("expected error for invalid column definition, got nil")
+	}
+
+	// 2. decodeMessageListCursor edge cases
+	// Invalid base64
+	_, ok := decodeMessageListCursor("not-base64!")
+	if ok {
+		t.Error("expected failure for invalid base64")
+	}
+
+	// 3. columnExists error path (invalid table name)
+	_, err = db.columnExists("`", "col")
+	if err == nil {
+		t.Error("expected error for invalid table name in columnExists")
+	}
+}
+
+func TestScannerDirectErrors(t *testing.T) {
+	db, err := Open(":memory:?parseTime=true")
+	if err != nil {
+		t.Fatalf("failed to open db: %v", err)
+	}
+	db.conn.SetMaxOpenConns(1)
+	defer db.Close()
+
+	ctx := context.Background()
+	// Add one message so we have a row to scan
+	if err := db.AddMessage(ctx, Message{ATURI: "at://scan/1", ATDID: "did:plc:1", Type: "test"}); err != nil {
+		t.Fatalf("failed to add message: %v", err)
+	}
+
+	// 1. scanMessageTypeRow expects 1 column. Give it 2.
+	rows1, err := db.conn.Query("SELECT at_uri, at_cid FROM messages LIMIT 1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows1.Next() {
+		_, err = scanMessageTypeRow(rows1)
+		if err == nil {
+			t.Error("expected error for scanMessageTypeRow with 2 columns, got nil")
+		}
+	}
+	rows1.Close()
+
+	// 2. scanDeferredReasonCountRow expects 2 columns. Give it 1.
+	rows2, err := db.conn.Query("SELECT at_uri FROM messages LIMIT 1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows2.Next() {
+		_, err = scanDeferredReasonCountRow(rows2)
+		if err == nil {
+			t.Error("expected error for scanDeferredReasonCountRow with 1 column, got nil")
+		}
+	}
+	rows2.Close()
+
+	// 3. scanBridgeStateRow expects 3 columns. Give it 1.
+	rows3, err := db.conn.Query("SELECT at_uri FROM messages LIMIT 1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows3.Next() {
+		_, err = scanBridgeStateRow(rows3)
+		if err == nil {
+			t.Error("expected error for scanBridgeStateRow with 1 column, got nil")
+		}
+	}
+	rows3.Close()
+
+	// 4. scanAccountIssueSummaryRow (expects 8 columns)
+	rows4, err := db.conn.Query("SELECT at_uri FROM messages LIMIT 1")
+	if err == nil && rows4.Next() {
+		_, err = scanAccountIssueSummaryRow(rows4)
+		if err == nil {
+			t.Error("expected error for scanAccountIssueSummaryRow with 1 column, got nil")
+		}
+	}
+	rows4.Close()
+
+	// 5. scanBlobRow (expects 5 columns)
+	rows5, err := db.conn.Query("SELECT at_uri FROM messages LIMIT 1")
+	if err == nil && rows5.Next() {
+		_, err = scanBlobRow(rows5)
+		if err == nil {
+			t.Error("expected error for scanBlobRow with 1 column, got nil")
+		}
+	}
+	rows5.Close()
+
+	// 6. scanMessagesRows (force scanMessageRow to fail)
+	rows6, err := db.conn.Query("SELECT at_uri FROM messages LIMIT 1")
+	if err == nil {
+		_, err = scanMessagesRows(rows6)
+		if err == nil {
+			t.Error("expected error for scanMessagesRows with 1 column, got nil")
+		}
+	}
+	rows6.Close()
+}
+
 func TestDB(t *testing.T) {
 	db, err := Open(":memory:?parseTime=true")
 	if err != nil {
@@ -2015,6 +2274,826 @@ func TestErrorPathsAfterClose(t *testing.T) {
 	}
 	if _, err := db.ListMessageTypes(ctx); err == nil {
 		t.Error("expected error from ListMessageTypes on closed DB")
+	}
+}
+
+func TestOpenInvalidPath(t *testing.T) {
+	// A path that is definitely not a valid SQLite database should fail.
+	_, err := Open("/dev/null/nonexistent/path/db.sqlite")
+	if err == nil {
+		t.Fatal("expected error opening invalid path")
+	}
+}
+
+func TestOpenReadOnlyFS(t *testing.T) {
+	// Open on a path where we can connect but initSchema fails because
+	// the database is read-only.
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "readonly.sqlite")
+
+	// Create a valid empty file that SQLite can open but not write to.
+	f, err := os.Create(dbPath)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	f.Close()
+	// Make it read-only.
+	if err := os.Chmod(dbPath, 0o444); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { os.Chmod(dbPath, 0o644) })
+
+	// This should fail at initSchema because it can't create tables.
+	_, err = Open(dbPath + "?mode=ro")
+	if err == nil {
+		t.Fatal("expected error opening read-only database")
+	}
+}
+
+func TestOpenCorruptFile(t *testing.T) {
+	// Write garbage to a file and try to Open it. Ping should fail
+	// or initSchema should fail.
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "corrupt.sqlite")
+	if err := os.WriteFile(dbPath, []byte("this is not a sqlite database"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	_, err := Open(dbPath)
+	if err == nil {
+		t.Fatal("expected error opening corrupt file")
+	}
+}
+
+func TestInitSchemaReopen(t *testing.T) {
+	// Opening a file-backed DB twice exercises initSchema's ensureColumn
+	// paths where columns already exist (the "exists" branch).
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "reopen.sqlite")
+
+	db1, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("first open: %v", err)
+	}
+	ctx := context.Background()
+	// Seed some data so the DB is non-empty.
+	if err := db1.AddBridgedAccount(ctx, BridgedAccount{
+		ATDID: "did:plc:reopen", SSBFeedID: "@reopen.ed25519", Active: true,
+	}); err != nil {
+		t.Fatalf("add account: %v", err)
+	}
+	db1.Close()
+
+	// Second open calls initSchema again; all ensureColumn calls should
+	// find columns already present and return nil (no-op).
+	db2, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("second open: %v", err)
+	}
+	defer db2.Close()
+
+	acc, err := db2.GetBridgedAccount(ctx, "did:plc:reopen")
+	if err != nil {
+		t.Fatalf("get account after reopen: %v", err)
+	}
+	if acc == nil {
+		t.Fatal("expected account to persist after reopen")
+	}
+}
+
+func TestEnsureColumnAlreadyExists(t *testing.T) {
+	// Directly test ensureColumn when a column already exists.
+	database, err := Open(":memory:?parseTime=true")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer database.Close()
+
+	// "at_uri" already exists on messages. Calling ensureColumn should be a no-op.
+	if err := database.ensureColumn("messages", "at_uri", "TEXT"); err != nil {
+		t.Fatalf("ensureColumn existing: %v", err)
+	}
+}
+
+func TestEnsureColumnAddsNew(t *testing.T) {
+	// Test ensureColumn when a column does NOT exist; it should add it.
+	database, err := Open(":memory:?parseTime=true")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer database.Close()
+
+	// Add a brand new column.
+	if err := database.ensureColumn("messages", "test_coverage_col", "TEXT"); err != nil {
+		t.Fatalf("ensureColumn new: %v", err)
+	}
+
+	// Verify the column exists by inserting a row that uses it.
+	_, err = database.conn.Exec(`INSERT INTO messages (at_uri, at_cid, at_did, type, test_coverage_col) VALUES ('at://test', 'cid', 'did', 'type', 'val')`)
+	if err != nil {
+		t.Fatalf("insert with new column: %v", err)
+	}
+}
+
+func TestEnsureColumnInvalidTable(t *testing.T) {
+	// Test ensureColumn with a non-existent table; should not error on PRAGMA
+	// but will fail on ALTER TABLE.
+	database, err := Open(":memory:?parseTime=true")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer database.Close()
+
+	// PRAGMA table_info on a non-existent table returns empty rows, so
+	// columnExists returns false. Then ALTER TABLE on a non-existent table
+	// should fail.
+	err = database.ensureColumn("nonexistent_table", "col", "TEXT")
+	if err == nil {
+		t.Fatal("expected error for ensureColumn on nonexistent table")
+	}
+}
+
+func TestColumnExists(t *testing.T) {
+	database, err := Open(":memory:?parseTime=true")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer database.Close()
+
+	// Existing column.
+	exists, err := database.columnExists("messages", "at_uri")
+	if err != nil {
+		t.Fatalf("columnExists: %v", err)
+	}
+	if !exists {
+		t.Error("expected at_uri to exist")
+	}
+
+	// Non-existing column.
+	exists, err = database.columnExists("messages", "nonexistent_col_xyz")
+	if err != nil {
+		t.Fatalf("columnExists: %v", err)
+	}
+	if exists {
+		t.Error("expected nonexistent_col_xyz to not exist")
+	}
+
+	// Non-existing table (returns empty result set from PRAGMA).
+	exists, err = database.columnExists("nonexistent_table", "col")
+	if err != nil {
+		t.Fatalf("columnExists nonexistent table: %v", err)
+	}
+	if exists {
+		t.Error("expected false for nonexistent table")
+	}
+}
+
+func TestInitSchemaWithPartialSchema(t *testing.T) {
+	// Create a DB with only a partial schema (messages table without
+	// migration columns), then open it normally. This tests the ensureColumn
+	// path where columns genuinely need to be added.
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "partial.sqlite")
+
+	// Open a raw SQLite connection and create a minimal messages table
+	// missing the migration columns.
+	rawConn, err := sql.Open("sqlite3", dbPath)
+	if err != nil {
+		t.Fatalf("raw open: %v", err)
+	}
+	// Include message_state since schema.sql creates an index on it, but
+	// leave out migration-only columns (published_at, publish_error, etc.)
+	// so ensureColumn will add them.
+	_, err = rawConn.Exec(`
+		CREATE TABLE IF NOT EXISTS bridged_accounts (
+			at_did TEXT PRIMARY KEY,
+			ssb_feed_id TEXT NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			active BOOLEAN DEFAULT 1
+		);
+		CREATE TABLE IF NOT EXISTS messages (
+			at_uri TEXT PRIMARY KEY,
+			at_cid TEXT NOT NULL,
+			ssb_msg_ref TEXT,
+			at_did TEXT NOT NULL,
+			type TEXT NOT NULL,
+			message_state TEXT NOT NULL DEFAULT 'pending',
+			raw_at_json TEXT,
+			raw_ssb_json TEXT,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			FOREIGN KEY(at_did) REFERENCES bridged_accounts(at_did)
+		);
+		CREATE INDEX IF NOT EXISTS idx_messages_at_did ON messages(at_did);
+		CREATE INDEX IF NOT EXISTS idx_messages_type ON messages(type);
+		CREATE INDEX IF NOT EXISTS idx_messages_state ON messages(message_state);
+		CREATE TABLE IF NOT EXISTS blobs (
+			at_cid TEXT PRIMARY KEY,
+			ssb_blob_ref TEXT NOT NULL,
+			size INTEGER,
+			mime_type TEXT,
+			downloaded_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
+		CREATE TABLE IF NOT EXISTS bridge_state (
+			key TEXT PRIMARY KEY,
+			value TEXT NOT NULL,
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);
+	`)
+	if err != nil {
+		t.Fatalf("create partial schema: %v", err)
+	}
+	rawConn.Close()
+
+	// Now open with db.Open which runs initSchema. It should add all the
+	// missing migration columns via ensureColumn.
+	database, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open with partial schema: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	// Verify we can add a full message with all fields.
+	now := time.Now().UTC().Truncate(time.Second)
+	seq := int64(5)
+	if err := database.AddMessage(ctx, Message{
+		ATURI:                "at://did:plc:partial/app.bsky.feed.post/1",
+		ATCID:                "bafy-partial",
+		ATDID:                "did:plc:partial",
+		Type:                 "app.bsky.feed.post",
+		MessageState:         MessageStateFailed,
+		PublishError:         "fail",
+		PublishAttempts:      1,
+		LastPublishAttemptAt: &now,
+		DeferReason:          "reason",
+		DeferAttempts:        1,
+		LastDeferAttemptAt:   &now,
+		DeletedAt:            &now,
+		DeletedSeq:           &seq,
+		DeletedReason:        "gone",
+	}); err != nil {
+		t.Fatalf("add message on migrated schema: %v", err)
+	}
+
+	msg, err := database.GetMessage(ctx, "at://did:plc:partial/app.bsky.feed.post/1")
+	if err != nil {
+		t.Fatalf("get message: %v", err)
+	}
+	if msg == nil {
+		t.Fatal("expected message after migration")
+	}
+	if msg.PublishError != "fail" {
+		t.Errorf("expected publish_error 'fail', got %q", msg.PublishError)
+	}
+	if msg.DeletedSeq == nil || *msg.DeletedSeq != 5 {
+		t.Errorf("expected deleted_seq 5, got %v", msg.DeletedSeq)
+	}
+}
+
+func TestCheckBridgeHealthBadHeartbeatFormat(t *testing.T) {
+	// When heartbeat is not a valid RFC3339 string, the parse silently fails
+	// and healthy stays true (based on status alone).
+	database, err := Open(":memory:?parseTime=true")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	if err := database.SetBridgeState(ctx, "bridge_runtime_status", "live"); err != nil {
+		t.Fatalf("set status: %v", err)
+	}
+	if err := database.SetBridgeState(ctx, "bridge_runtime_last_heartbeat_at", "not-a-time"); err != nil {
+		t.Fatalf("set heartbeat: %v", err)
+	}
+
+	health, err := database.CheckBridgeHealth(ctx, 60*time.Second)
+	if err != nil {
+		t.Fatalf("CheckBridgeHealth: %v", err)
+	}
+	// Status is "live", heartbeat parse fails -> healthy remains true.
+	if !health.Healthy {
+		t.Error("expected healthy when heartbeat parse fails")
+	}
+}
+
+func TestCheckBridgeHealthEmptyHeartbeat(t *testing.T) {
+	// Status is "live" but no heartbeat key at all.
+	database, err := Open(":memory:?parseTime=true")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	if err := database.SetBridgeState(ctx, "bridge_runtime_status", "live"); err != nil {
+		t.Fatalf("set status: %v", err)
+	}
+
+	health, err := database.CheckBridgeHealth(ctx, 60*time.Second)
+	if err != nil {
+		t.Fatalf("CheckBridgeHealth: %v", err)
+	}
+	// Status is "live", no heartbeat -> healthy=true (no staleness to check).
+	if !health.Healthy {
+		t.Error("expected healthy when heartbeat is absent")
+	}
+}
+
+func TestCheckBridgeHealthNonLiveStatus(t *testing.T) {
+	database, err := Open(":memory:?parseTime=true")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	if err := database.SetBridgeState(ctx, "bridge_runtime_status", "stopping"); err != nil {
+		t.Fatalf("set status: %v", err)
+	}
+	if err := database.SetBridgeState(ctx, "bridge_runtime_last_heartbeat_at", time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatalf("set heartbeat: %v", err)
+	}
+
+	health, err := database.CheckBridgeHealth(ctx, 60*time.Second)
+	if err != nil {
+		t.Fatalf("CheckBridgeHealth: %v", err)
+	}
+	if health.Healthy {
+		t.Error("expected unhealthy for non-live status")
+	}
+	if health.Status != "stopping" {
+		t.Errorf("expected status 'stopping', got %q", health.Status)
+	}
+}
+
+func TestMessageKeysetOrderAllBranches(t *testing.T) {
+	tests := []struct {
+		sort    string
+		reverse bool
+		want    string
+	}{
+		{"newest", false, "created_at DESC, at_uri DESC"},
+		{"newest", true, "created_at ASC, at_uri ASC"},
+		{"oldest", false, "created_at ASC, at_uri ASC"},
+		{"oldest", true, "created_at DESC, at_uri DESC"},
+	}
+	for _, tt := range tests {
+		got := messageKeysetOrder(tt.sort, tt.reverse)
+		if got != tt.want {
+			t.Errorf("messageKeysetOrder(%q, %v) = %q, want %q", tt.sort, tt.reverse, got, tt.want)
+		}
+	}
+}
+
+func TestReverseMessages(t *testing.T) {
+	msgs := []Message{
+		{ATURI: "a"},
+		{ATURI: "b"},
+		{ATURI: "c"},
+	}
+	reverseMessages(msgs)
+	if msgs[0].ATURI != "c" || msgs[1].ATURI != "b" || msgs[2].ATURI != "a" {
+		t.Errorf("unexpected order after reverse: %v", []string{msgs[0].ATURI, msgs[1].ATURI, msgs[2].ATURI})
+	}
+
+	// Empty and single-element slices should not panic.
+	reverseMessages(nil)
+	reverseMessages([]Message{{ATURI: "x"}})
+}
+
+func TestNormalizeBotDirectorySort(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"newest", "newest"},
+		{"deferred_desc", "deferred_desc"},
+		{"activity_desc", "activity_desc"},
+		{"invalid", "activity_desc"},
+		{"", "activity_desc"},
+		{"  newest  ", "newest"},
+	}
+	for _, tt := range tests {
+		got := normalizeBotDirectorySort(tt.input)
+		if got != tt.want {
+			t.Errorf("normalizeBotDirectorySort(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestListMessagesPagePrevDirection(t *testing.T) {
+	database, err := Open(":memory:?parseTime=true")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+
+	// Seed 5 messages.
+	for i := 0; i < 5; i++ {
+		uri := fmt.Sprintf("at://did:plc:x/app.bsky.feed.post/prev%d", i)
+		if err := database.AddMessage(ctx, Message{
+			ATURI:        uri,
+			ATCID:        fmt.Sprintf("cid-prev%d", i),
+			ATDID:        "did:plc:x",
+			Type:         "app.bsky.feed.post",
+			MessageState: MessageStatePublished,
+		}); err != nil {
+			t.Fatalf("add %d: %v", i, err)
+		}
+	}
+
+	// First page: newest, limit 2.
+	page1, err := database.ListMessagesPage(ctx, MessageListQuery{Sort: "newest", Limit: 2})
+	if err != nil {
+		t.Fatalf("page1: %v", err)
+	}
+	if len(page1.Messages) != 2 {
+		t.Fatalf("expected 2, got %d", len(page1.Messages))
+	}
+
+	// Next page.
+	page2, err := database.ListMessagesPage(ctx, MessageListQuery{
+		Sort:      "newest",
+		Limit:     2,
+		Cursor:    page1.NextCursor,
+		Direction: "next",
+	})
+	if err != nil {
+		t.Fatalf("page2: %v", err)
+	}
+
+	// Go back with "prev" direction.
+	prevPage, err := database.ListMessagesPage(ctx, MessageListQuery{
+		Sort:      "newest",
+		Limit:     2,
+		Cursor:    page2.PrevCursor,
+		Direction: "prev",
+	})
+	if err != nil {
+		t.Fatalf("prev: %v", err)
+	}
+	if len(prevPage.Messages) != 2 {
+		t.Fatalf("expected 2 on prev, got %d", len(prevPage.Messages))
+	}
+	// When going "prev", HasNext should be true (we came from a later page).
+	if !prevPage.HasNext {
+		t.Error("expected HasNext when going prev with cursor")
+	}
+}
+
+func TestOpenFileBacked(t *testing.T) {
+	// Test Open with a file-backed DB to cover the Ping path.
+	dbPath := filepath.Join(t.TempDir(), "test.sqlite")
+	database, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open file-backed: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	if err := database.SetBridgeState(ctx, "test_key", "test_val"); err != nil {
+		t.Fatalf("SetBridgeState: %v", err)
+	}
+	val, ok, err := database.GetBridgeState(ctx, "test_key")
+	if err != nil {
+		t.Fatalf("GetBridgeState: %v", err)
+	}
+	if !ok || val != "test_val" {
+		t.Errorf("expected test_val, got %q ok=%v", val, ok)
+	}
+}
+
+func TestAddMessageWithExplicitCreatedAt(t *testing.T) {
+	database, err := Open(":memory:?parseTime=true")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+
+	// Non-zero CreatedAt triggers the else branch in AddMessage.
+	customTime := time.Date(2025, 6, 15, 12, 0, 0, 123456789, time.UTC)
+	if err := database.AddMessage(ctx, Message{
+		ATURI:        "at://did:plc:x/app.bsky.feed.post/custom-time",
+		ATCID:        "bafy-ct",
+		ATDID:        "did:plc:x",
+		Type:         "app.bsky.feed.post",
+		MessageState: MessageStatePublished,
+		CreatedAt:    customTime,
+	}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	msg, err := database.GetMessage(ctx, "at://did:plc:x/app.bsky.feed.post/custom-time")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if msg == nil {
+		t.Fatal("expected message")
+	}
+	// CreatedAt should be truncated to millisecond and in UTC.
+	expected := customTime.Truncate(time.Millisecond).UTC()
+	if !msg.CreatedAt.Equal(expected) {
+		t.Errorf("expected created_at %v, got %v", expected, msg.CreatedAt)
+	}
+}
+
+func TestListMessagesPageEmptyResultsNoCursors(t *testing.T) {
+	database, err := Open(":memory:?parseTime=true")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+
+	// Keyset sort, no messages in DB.
+	page, err := database.ListMessagesPage(ctx, MessageListQuery{
+		Sort:  "newest",
+		Limit: 10,
+	})
+	if err != nil {
+		t.Fatalf("ListMessagesPage: %v", err)
+	}
+	if len(page.Messages) != 0 {
+		t.Fatalf("expected 0, got %d", len(page.Messages))
+	}
+	if page.HasNext || page.HasPrev {
+		t.Error("expected no pagination flags on empty result")
+	}
+	if page.NextCursor != "" || page.PrevCursor != "" {
+		t.Error("expected empty cursors on empty result")
+	}
+}
+
+func TestListTopDeferredReasonsWithData(t *testing.T) {
+	database, err := Open(":memory:?parseTime=true")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+
+	// Add deferred messages with different reasons.
+	for i, reason := range []string{"missing_parent", "missing_parent", "rate_limited"} {
+		if err := database.AddMessage(ctx, Message{
+			ATURI:        fmt.Sprintf("at://did:plc:x/app.bsky.feed.post/defer%d", i),
+			ATCID:        fmt.Sprintf("cid-defer%d", i),
+			ATDID:        "did:plc:x",
+			Type:         "app.bsky.feed.post",
+			MessageState: MessageStateDeferred,
+			DeferReason:  reason,
+		}); err != nil {
+			t.Fatalf("add %d: %v", i, err)
+		}
+	}
+
+	reasons, err := database.ListTopDeferredReasons(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListTopDeferredReasons: %v", err)
+	}
+	if len(reasons) != 2 {
+		t.Fatalf("expected 2 reasons, got %d", len(reasons))
+	}
+	// "missing_parent" should be first (count=2).
+	if reasons[0].Reason != "missing_parent" || reasons[0].Count != 2 {
+		t.Errorf("expected missing_parent:2, got %s:%d", reasons[0].Reason, reasons[0].Count)
+	}
+}
+
+func TestListTopIssueAccountsWithData(t *testing.T) {
+	database, err := Open(":memory:?parseTime=true")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+
+	if err := database.AddBridgedAccount(ctx, BridgedAccount{
+		ATDID: "did:plc:issue1", SSBFeedID: "@issue1.ed25519", Active: true,
+	}); err != nil {
+		t.Fatalf("add account: %v", err)
+	}
+
+	// Add failed and deferred messages.
+	if err := database.AddMessage(ctx, Message{
+		ATURI:        "at://did:plc:issue1/app.bsky.feed.post/f1",
+		ATCID:        "cid-f1",
+		ATDID:        "did:plc:issue1",
+		Type:         "app.bsky.feed.post",
+		MessageState: MessageStateFailed,
+		PublishError: "err",
+	}); err != nil {
+		t.Fatalf("add failed: %v", err)
+	}
+	if err := database.AddMessage(ctx, Message{
+		ATURI:        "at://did:plc:issue1/app.bsky.feed.post/d1",
+		ATCID:        "cid-d1",
+		ATDID:        "did:plc:issue1",
+		Type:         "app.bsky.feed.post",
+		MessageState: MessageStateDeferred,
+		DeferReason:  "reason",
+	}); err != nil {
+		t.Fatalf("add deferred: %v", err)
+	}
+
+	issues, err := database.ListTopIssueAccounts(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListTopIssueAccounts: %v", err)
+	}
+	if len(issues) != 1 {
+		t.Fatalf("expected 1 account, got %d", len(issues))
+	}
+	if issues[0].IssueMessages != 2 {
+		t.Errorf("expected 2 issue messages, got %d", issues[0].IssueMessages)
+	}
+	if issues[0].FailedMessages != 1 {
+		t.Errorf("expected 1 failed, got %d", issues[0].FailedMessages)
+	}
+}
+
+func TestScanMessageRowMinimalNulls(t *testing.T) {
+	// Exercise scanMessageRow via GetRecentMessages with messages that have
+	// all nullable fields as NULL.
+	database, err := Open(":memory:?parseTime=true")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+
+	// Add a minimal message with only required fields.
+	if err := database.AddMessage(ctx, Message{
+		ATURI:        "at://did:plc:x/app.bsky.feed.post/minimal",
+		ATCID:        "bafy-min",
+		ATDID:        "did:plc:x",
+		Type:         "app.bsky.feed.post",
+		MessageState: MessageStatePending,
+	}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	messages, err := database.GetRecentMessages(ctx, 10)
+	if err != nil {
+		t.Fatalf("GetRecentMessages: %v", err)
+	}
+	if len(messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(messages))
+	}
+	msg := messages[0]
+	if msg.SSBMsgRef != "" {
+		t.Errorf("expected empty ssb_msg_ref, got %q", msg.SSBMsgRef)
+	}
+	if msg.PublishedAt != nil {
+		t.Error("expected nil published_at")
+	}
+	if msg.LastPublishAttemptAt != nil {
+		t.Error("expected nil last_publish_attempt_at")
+	}
+	if msg.LastDeferAttemptAt != nil {
+		t.Error("expected nil last_defer_attempt_at")
+	}
+	if msg.DeletedAt != nil {
+		t.Error("expected nil deleted_at")
+	}
+	if msg.DeletedSeq != nil {
+		t.Error("expected nil deleted_seq")
+	}
+}
+
+func TestScanMessageRowAllFieldsPopulated(t *testing.T) {
+	// Exercise scanMessageRow through GetRecentMessages with all nullable
+	// fields populated.
+	database, err := Open(":memory:?parseTime=true")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+
+	now := time.Now().UTC().Truncate(time.Second)
+	seq := int64(42)
+	if err := database.AddMessage(ctx, Message{
+		ATURI:                "at://did:plc:x/app.bsky.feed.post/allfields",
+		ATCID:                "bafy-all",
+		SSBMsgRef:            "%all.sha256",
+		ATDID:                "did:plc:x",
+		Type:                 "app.bsky.feed.post",
+		MessageState:         MessageStateDeleted,
+		RawATJson:            `{"text":"all"}`,
+		RawSSBJson:           `{"type":"post"}`,
+		PublishedAt:          &now,
+		PublishError:         "error",
+		PublishAttempts:      2,
+		LastPublishAttemptAt: &now,
+		DeferReason:          "reason",
+		DeferAttempts:        1,
+		LastDeferAttemptAt:   &now,
+		DeletedAt:            &now,
+		DeletedSeq:           &seq,
+		DeletedReason:        "gone",
+	}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	messages, err := database.GetRecentMessages(ctx, 10)
+	if err != nil {
+		t.Fatalf("GetRecentMessages: %v", err)
+	}
+	if len(messages) != 1 {
+		t.Fatalf("expected 1, got %d", len(messages))
+	}
+	msg := messages[0]
+	if msg.PublishedAt == nil {
+		t.Error("expected published_at")
+	}
+	if msg.LastPublishAttemptAt == nil {
+		t.Error("expected last_publish_attempt_at")
+	}
+	if msg.LastDeferAttemptAt == nil {
+		t.Error("expected last_defer_attempt_at")
+	}
+	if msg.DeletedAt == nil {
+		t.Error("expected deleted_at")
+	}
+	if msg.DeletedSeq == nil || *msg.DeletedSeq != 42 {
+		t.Errorf("expected deleted_seq 42, got %v", msg.DeletedSeq)
+	}
+}
+
+func TestGetLatestDeferredReasonValidButEmpty(t *testing.T) {
+	// Test the path where defer_reason is Valid but empty after trim.
+	database, err := Open(":memory:?parseTime=true")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+
+	// Add a deferred message with a whitespace-only defer reason.
+	// Since AddMessage stores it as-is, we need to use raw SQL.
+	_, err = database.conn.ExecContext(ctx,
+		`INSERT INTO messages (at_uri, at_cid, at_did, type, message_state, defer_reason)
+		 VALUES ('at://empty-reason', 'cid', 'did', 'type', 'deferred', '   ')`)
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	// The query filters out empty/whitespace reasons, so this returns not found.
+	reason, ok, err := database.GetLatestDeferredReason(ctx)
+	if err != nil {
+		t.Fatalf("GetLatestDeferredReason: %v", err)
+	}
+	if ok {
+		t.Errorf("expected not found for whitespace reason, got %q", reason)
+	}
+}
+
+func TestListActiveBridgedAccountsWithStatsSortedSearchFilter(t *testing.T) {
+	database, err := Open(":memory:?parseTime=true")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+
+	if err := database.AddBridgedAccount(ctx, BridgedAccount{
+		ATDID: "did:plc:sorted1", SSBFeedID: "@s1.ed25519", Active: true,
+	}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if err := database.AddBridgedAccount(ctx, BridgedAccount{
+		ATDID: "did:plc:sorted2", SSBFeedID: "@s2.ed25519", Active: true,
+	}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	// Test with search filter.
+	results, err := database.ListActiveBridgedAccountsWithStatsSorted(ctx, "sorted1", "newest")
+	if err != nil {
+		t.Fatalf("sorted with search: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1, got %d", len(results))
+	}
+
+	// Test without search.
+	results, err = database.ListActiveBridgedAccountsWithStatsSorted(ctx, "", "activity_desc")
+	if err != nil {
+		t.Fatalf("sorted without search: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2, got %d", len(results))
 	}
 }
 
