@@ -2,8 +2,11 @@
 package templates
 
 import (
+	"fmt"
 	"html/template"
 	"io"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/presentation"
@@ -225,7 +228,30 @@ const pageLayout = `
         .grid-two {
             display: grid;
             gap: 12px;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+        }
+
+        .breadcrumbs {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.85rem;
+            color: var(--muted);
+            margin-bottom: 12px;
+        }
+
+        .breadcrumbs a {
+            text-decoration: none;
+            color: var(--brand);
+            font-weight: 600;
+        }
+
+        .breadcrumbs a:hover {
+            text-decoration: underline;
+        }
+
+        .breadcrumb-sep {
+            color: var(--line);
         }
 
         .mini-list {
@@ -522,6 +548,8 @@ const pageLayout = `
                 <a href="/" class="{{navClass .Chrome.ActiveNav "dashboard"}}" {{navCurrent .Chrome.ActiveNav "dashboard"}}>Dashboard</a>
                 <a href="/accounts" class="{{navClass .Chrome.ActiveNav "accounts"}}" {{navCurrent .Chrome.ActiveNav "accounts"}}>Accounts</a>
                 <a href="/messages" class="{{navClass .Chrome.ActiveNav "messages"}}" {{navCurrent .Chrome.ActiveNav "messages"}}>Messages</a>
+                <a href="/feed" class="{{navClass .Chrome.ActiveNav "feed"}}" {{navCurrent .Chrome.ActiveNav "feed"}}>Global Feed</a>
+                <a href="/post" class="{{navClass .Chrome.ActiveNav "post"}}" {{navCurrent .Chrome.ActiveNav "post"}}>Compose Post</a>
                 <a href="/failures" class="{{navClass .Chrome.ActiveNav "failures"}}" {{navCurrent .Chrome.ActiveNav "failures"}}>Failures</a>
                 <a href="/blobs" class="{{navClass .Chrome.ActiveNav "blobs"}}" {{navCurrent .Chrome.ActiveNav "blobs"}}>Blobs</a>
                 <a href="/state" class="{{navClass .Chrome.ActiveNav "state"}}" {{navCurrent .Chrome.ActiveNav "state"}}>State</a>
@@ -530,7 +558,20 @@ const pageLayout = `
     </header>
 
     <main id="main-content" class="app-main">
-        {{if .Chrome.Status.Visible}}
+            {{if .Chrome.Breadcrumbs}}
+            <nav class="breadcrumbs" aria-label="Breadcrumb">
+                {{range $i, $bc := .Chrome.Breadcrumbs}}
+                    {{if $i}}<span class="breadcrumb-sep">/</span>{{end}}
+                    {{if $bc.Href}}
+                        <a href="{{$bc.Href}}">{{$bc.Label}}</a>
+                    {{else}}
+                        <span>{{$bc.Label}}</span>
+                    {{end}}
+                {{end}}
+            </nav>
+            {{end}}
+
+            {{if .Chrome.Status.Visible}}
         <section class="status-strip {{statusToneClass .Chrome.Status.Tone}}" role="status" aria-live="polite">
             <h2>{{.Chrome.Status.Title}}</h2>
             <p>{{.Chrome.Status.Body}}</p>
@@ -837,6 +878,12 @@ const messageDetailContent = `
         </div>
         <div>
             <span class="pill {{stateClass .State}}">{{.State}}</span>
+            {{if or (eq .State "failed") (eq .State "deferred")}}
+            <form action="/messages/retry" method="POST" style="display:inline-block;margin-left:8px">
+                <input type="hidden" name="at_uri" value="{{.ATURI}}">
+                <button type="submit" class="button-link tone-success" style="cursor:pointer;font-weight:700">Retry Publishing</button>
+            </form>
+            {{end}}
         </div>
     </div>
 </section>
@@ -910,16 +957,82 @@ const messageDetailContent = `
 </section>
 
 <section class="grid-two">
-    <article class="section section-pad">
-        <h2 class="page-title" style="font-size:1.2rem">Raw ATProto JSON</h2>
-        <pre>{{.RawATProtoJSON}}</pre>
+    <article class="section">
+        <div class="section-pad"><h2 class="page-title" style="font-size:1.2rem">Raw ATProto JSON</h2></div>
+        <pre class="section-pad" style="background:#f8f9fa;overflow:auto;max-height:600px;font-size:0.85rem">{{.RawATProtoJSON}}</pre>
     </article>
-
-    <article class="section section-pad">
-        <h2 class="page-title" style="font-size:1.2rem">Raw SSB JSON</h2>
-        <pre>{{.RawSSBJSON}}</pre>
+ 
+    <article class="section">
+        <div class="section-pad"><h2 class="page-title" style="font-size:1.2rem">Raw SSB JSON</h2></div>
+        <pre class="section-pad" style="background:#f8f9fa;overflow:auto;max-height:600px;font-size:0.85rem">{{.RawSSBJSON}}</pre>
     </article>
 </section>
+
+{{if .RawWireFormat}}
+<section class="section section-pad">
+    <div class="toolbar">
+        <h2 class="page-title" style="font-size:1.2rem">Diagnostic Wire Log</h2>
+        <button id="toggle-raw-wire-btn" class="button-link" onclick="toggleRawWire()">Show Raw Wire Format</button>
+    </div>
+    <div id="raw-wire-section" style="display:none;margin-top:12px">
+        <p class="subtitle">Simulated MuxRPC framing hex dump for diagnostic verification.</p>
+        <pre class="mono" style="background:#1a1a1a;color:#00ff00;overflow:auto;max-height:400px;font-size:0.8rem;padding:16px;border:none;border-radius:8px">{{.RawWireFormat}}</pre>
+    </div>
+</section>
+
+<script>
+function toggleRawWire() {
+    const rawWireSection = document.getElementById('raw-wire-section');
+    if (!rawWireSection) return;
+    
+    const isVisible = rawWireSection.style.display !== 'none';
+    rawWireSection.style.display = isVisible ? 'none' : 'block';
+    const toggleButton = document.getElementById('toggle-raw-wire-btn');
+    if (toggleButton) {
+        toggleButton.textContent = isVisible ? "Show Raw Wire Format" : "Hide Raw Wire";
+    }
+}
+</script>
+{{end}}
+{{end}}
+`
+
+const feedContent = `
+{{define "content"}}
+<section class="section section-pad">
+    <h1 class="page-title">Global Feed</h1>
+    <p class="subtitle">Unified chronological stream of all bridged messages.</p>
+</section>
+
+{{if .Feed}}
+<section class="section">
+    {{range .Feed}}
+    <article class="section section-pad" style="border-bottom:1px solid var(--line);margin-bottom:16px;padding-bottom:16px;">
+        <div style="display:flex;gap:12px;align-items:flex-start;">
+            {{if .HasImage}}
+            <div style="flex-shrink:0;">
+                <img src="/blobs/view?ref={{.ImageRef}}" alt="SSB image" style="max-width:150px;border-radius:8px;">
+            </div>
+            {{end}}
+            <div style="flex:1;">
+                <div class="mono" title="{{.ATDID}}"><span class="truncate">{{.ATDID}}</span></div>
+                <div style="font-size:0.9rem;color:var(--muted);margin-bottom:4px;">{{.Type}}</div>
+                <div class="mono" style="font-size:1.1rem;line-height:1.4;">{{formatSSBText .Text}}</div>
+                <div style="font-size:0.8rem;color:var(--muted);margin-top:8px;">{{fmtTime .CreatedAt}}</div>
+            </div>
+        </div>
+    </article>
+    {{end}}
+</section>
+{{else}}
+<div class="empty">No messages in the global feed yet.</div>
+{{end}}
+
+<div class="toolbar" style="margin-top:16px;">
+    <a class="button-link" href="/feed?limit=25">Show 25</a>
+    <a class="button-link" href="/feed?limit=50" style="margin-left:8px;">Show 50</a>
+    <a class="button-link" href="/feed?limit=100" style="margin-left:8px;">Show 100</a>
+</div>
 {{end}}
 `
 
@@ -1086,8 +1199,15 @@ const stateContent = `
 
 // PageChrome controls global page shell behavior.
 type PageChrome struct {
-	ActiveNav string
-	Status    PageStatus
+	ActiveNav   string
+	Status      PageStatus
+	Breadcrumbs []Breadcrumb
+}
+
+// Breadcrumb is one segment of a navigation breadcrumb trail.
+type Breadcrumb struct {
+	Label string
+	Href  string
 }
 
 // PageStatus controls the optional top status strip.
@@ -1239,6 +1359,23 @@ type MessagesData struct {
 // DetailField is one labeled value rendered in message detail sections.
 type DetailField = presentation.DetailField
 
+// FeedRow is one message row in the global feed view.
+type FeedRow struct {
+	ATURI     string
+	ATDID     string
+	Type      string
+	CreatedAt time.Time
+	Text      string
+	HasImage  bool
+	ImageRef  string
+}
+
+// FeedData is the template model for the global feed page.
+type FeedData struct {
+	Chrome PageChrome
+	Feed   []FeedRow
+}
+
 // MessageDetailData is the template model for a per-message detail page.
 type MessageDetailData struct {
 	Chrome                PageChrome
@@ -1263,6 +1400,8 @@ type MessageDetailData struct {
 	BridgedMessageFields  []DetailField
 	RawATProtoJSON        string
 	RawSSBJSON            string
+	RawWireFormat         string
+	ShowRawWire           bool
 	FilterByDIDURL        string
 	FilterByStateURL      string
 	FilterByTypeURL       string
@@ -1331,6 +1470,50 @@ type StateData struct {
 	HeartbeatAge      string
 }
 
+// PostData is the template model for the compose post page.
+type PostData struct {
+	Chrome   PageChrome
+	Accounts []AccountRow
+}
+
+const postContent = `
+{{define "content"}}
+<section class="section section-pad">
+    <h1 class="page-title">Compose Post</h1>
+    <p class="subtitle">Publish a record to the local PDS for end-to-end bridge testing.</p>
+</section>
+
+<section class="section section-pad" style="max-width:800px">
+    <form action="/post" method="POST" enctype="multipart/form-data" style="display:grid;gap:20px">
+        <div class="form-group">
+            <label class="metric-label" style="display:block;margin-bottom:8px">Author Account</label>
+            <select name="at_did" required style="width:100%;padding:12px;border:1px solid var(--line);border-radius:8px">
+                <option value="">Select an account...</option>
+                {{range .Accounts}}
+                <option value="{{.ATDID}}">{{.ATDID}}</option>
+                {{end}}
+            </select>
+        </div>
+
+        <div class="form-group">
+            <label class="metric-label" style="display:block;margin-bottom:8px">Message Text</label>
+            <textarea name="text" required rows="4" style="width:100%;padding:12px;border:1px solid var(--line);border-radius:8px;font-family:inherit" placeholder="What's happening?"></textarea>
+        </div>
+
+        <div class="form-group">
+            <label class="metric-label" style="display:block;margin-bottom:8px">Image (Optional)</label>
+            <input type="file" name="image" accept="image/*" style="width:100%;padding:8px">
+        </div>
+
+        <div style="margin-top:10px">
+            <button type="submit" class="button-link tone-success" style="padding:12px 24px;font-size:1rem;font-weight:700;cursor:pointer">Publish to ATProto</button>
+            <a href="/" class="button-link" style="margin-left:12px">Cancel</a>
+        </div>
+    </form>
+</section>
+{{end}}
+`
+
 // RenderDashboard renders the dashboard page.
 func RenderDashboard(w io.Writer, data DashboardData) error {
 	return dashboardTemplate.Execute(w, data)
@@ -1351,6 +1534,11 @@ func RenderMessageDetail(w io.Writer, data MessageDetailData) error {
 	return messageDetailTemplate.Execute(w, data)
 }
 
+// RenderFeed renders the global feed page.
+func RenderFeed(w io.Writer, data FeedData) error {
+	return feedTemplate.Execute(w, data)
+}
+
 // RenderFailures renders the failures page.
 func RenderFailures(w io.Writer, data FailuresData) error {
 	return failuresTemplate.Execute(w, data)
@@ -1366,14 +1554,21 @@ func RenderState(w io.Writer, data StateData) error {
 	return stateTemplate.Execute(w, data)
 }
 
+// RenderPost renders the compose post page.
+func RenderPost(w io.Writer, data PostData) error {
+	return postTemplate.Execute(w, data)
+}
+
 var (
 	dashboardTemplate     = mustPageTemplate("dashboard", dashboardContent)
 	accountsTemplate      = mustPageTemplate("accounts", accountsContent)
 	messagesTemplate      = mustPageTemplate("messages", messagesContent)
 	messageDetailTemplate = mustPageTemplate("message-detail", messageDetailContent)
 	failuresTemplate      = mustPageTemplate("failures", failuresContent)
+	feedTemplate          = mustPageTemplate("feed", feedContent)
 	blobsTemplate         = mustPageTemplate("blobs", blobsContent)
 	stateTemplate         = mustPageTemplate("state", stateContent)
+	postTemplate          = mustPageTemplate("post", postContent)
 )
 
 func mustPageTemplate(name, content string) *template.Template {
@@ -1421,6 +1616,21 @@ func mustPageTemplate(name, content string) *template.Template {
 			default:
 				return "state-pending"
 			}
+		},
+		"formatSSBText": func(text string) template.HTML {
+			if text == "" {
+				return ""
+			}
+			// Preserve newlines
+			text = template.HTMLEscapeString(text)
+			text = strings.ReplaceAll(text, "\n", "<br>")
+
+			// Simple URL detection
+			urlRegex := regexp.MustCompile(`https?://[^\s<>"{}|\\^` + "`" + `\[\]]+`)
+			text = urlRegex.ReplaceAllStringFunc(text, func(u string) string {
+				return fmt.Sprintf("<a href=\"%s\" target=\"_blank\" rel=\"noopener\">%s</a>", u, u)
+			})
+			return template.HTML(text)
 		},
 	}).Parse(pageLayout + content))
 }

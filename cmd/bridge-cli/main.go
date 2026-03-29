@@ -862,6 +862,19 @@ func main() {
 						Name:  "ui-auth-pass-env",
 						Usage: "environment variable containing HTTP Basic auth password for the admin UI",
 					},
+					&cli.StringFlag{
+						Name:  "pds-host",
+						Usage: "optional PDS host for manual posting (defaults to live AppView)",
+					},
+					&cli.StringFlag{
+						Name:    "pds-password",
+						Usage:   "password for PDS accounts when manual posting",
+						EnvVars: []string{"BRIDGE_PDS_PASSWORD"},
+					},
+					&cli.StringFlag{
+						Name:  "repo-path",
+						Usage: "path to SSB repo for blob viewing",
+					},
 				},
 				Action: func(c *cli.Context) error {
 					logRuntime, err := newBridgeLogRuntime(c, "bridge-ui")
@@ -875,6 +888,33 @@ func main() {
 						return err
 					}
 					defer database.Close()
+
+					var atpClient *handlers.PDSClient
+					if c.String("pds-host") != "" && c.String("pds-password") != "" {
+						host, err := resolveLiveXRPCHost(c.String("pds-host"))
+						if err != nil {
+							return err
+						}
+						atpClient = &handlers.PDSClient{
+							Host:     host,
+							Password: c.String("pds-password"),
+						}
+					}
+
+					var blobStore handlers.BlobStore
+					if c.String("repo-path") != "" {
+						// We only need the blob store part of the runtime.
+						// For now, let's open the full runtime as it's easier.
+						ssbRuntime, err := ssbruntime.Open(c.Context, ssbruntime.Config{
+							RepoPath:   c.String("repo-path"),
+							MasterSeed: []byte(botSeed), // Use global bot seed
+						}, logRuntime.Logger("ssb"))
+						if err != nil {
+							return fmt.Errorf("open ssb runtime for blobs: %w", err)
+						}
+						defer ssbRuntime.Close()
+						blobStore = ssbRuntime.BlobStore()
+					}
 
 					listenAddr := c.String("listen-addr")
 					authUser := strings.TrimSpace(c.String("ui-auth-user"))
@@ -907,7 +947,7 @@ func main() {
 						r.Use(websecurity.BasicAuthMiddleware(authUser, authPass))
 					}
 
-					ui := handlers.NewUIHandler(database, uiLogger)
+					ui := handlers.NewUIHandler(database, uiLogger, atpClient, blobStore)
 					ui.Mount(r)
 
 					server := &http.Server{

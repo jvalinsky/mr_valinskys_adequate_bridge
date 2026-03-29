@@ -385,7 +385,7 @@ func TestHealthzReturns200WhenLive(t *testing.T) {
 	}
 
 	router := chi.NewRouter()
-	NewUIHandler(database, nil).Mount(router)
+	NewUIHandler(database, nil, nil, nil).Mount(router)
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
@@ -404,7 +404,7 @@ func TestHealthzReturns503WhenNotLive(t *testing.T) {
 
 	// No bridge state set — status is empty.
 	router := chi.NewRouter()
-	NewUIHandler(database, nil).Mount(router)
+	NewUIHandler(database, nil, nil, nil).Mount(router)
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
@@ -428,7 +428,7 @@ func TestHealthzReturns503WhenHeartbeatStale(t *testing.T) {
 	}
 
 	router := chi.NewRouter()
-	NewUIHandler(database, nil).Mount(router)
+	NewUIHandler(database, nil, nil, nil).Mount(router)
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
@@ -452,7 +452,7 @@ func fetchUI(t *testing.T, database *db.DB, path string) string {
 	t.Helper()
 
 	router := chi.NewRouter()
-	NewUIHandler(database, nil).Mount(router)
+	NewUIHandler(database, nil, nil, nil).Mount(router)
 
 	req := httptest.NewRequest(http.MethodGet, path, nil)
 	rr := httptest.NewRecorder()
@@ -605,7 +605,7 @@ func (e *erroringDB) GetLatestDeferredReason(ctx context.Context) (string, bool,
 
 func TestHandlersHandleErrors(t *testing.T) {
 	errDB := &erroringDB{}
-	handler := NewUIHandler(errDB, nil)
+	handler := NewUIHandler(errDB, nil, nil, nil)
 	router := chi.NewRouter()
 	handler.Mount(router)
 
@@ -721,7 +721,7 @@ func TestMessagesPageHandlesBadLimit(t *testing.T) {
 	defer database.Close()
 
 	router := chi.NewRouter()
-	NewUIHandler(database, nil).Mount(router)
+	NewUIHandler(database, nil, nil, nil).Mount(router)
 	req := httptest.NewRequest(http.MethodGet, "/messages?limit=abc", nil)
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
@@ -736,7 +736,7 @@ func TestMessageDetailHandlesUnknownURI(t *testing.T) {
 	defer database.Close()
 
 	router := chi.NewRouter()
-	NewUIHandler(database, nil).Mount(router)
+	NewUIHandler(database, nil, nil, nil).Mount(router)
 	req := httptest.NewRequest(http.MethodGet, "/messages/detail?at_uri=at://unknown", nil)
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
@@ -960,7 +960,7 @@ func TestHandleMessagesEdgeCases(t *testing.T) {
 	defer database.Close()
 
 	router := chi.NewRouter()
-	NewUIHandler(database, nil).Mount(router)
+	NewUIHandler(database, nil, nil, nil).Mount(router)
 
 	t.Run("invalid cursor type", func(t *testing.T) {
 		// cursor=abc is invalid base64/JSON for db.DecodeMessageListCursor but handled gracefully by the UI
@@ -1464,10 +1464,22 @@ func (m *mockDatabase) GetAllBridgeState(ctx context.Context) ([]db.BridgeState,
 func (m *mockDatabase) GetLatestDeferredReason(ctx context.Context) (string, bool, error) {
 	return "", false, m.err
 }
+func (m *mockDatabase) ResetMessageForRetry(ctx context.Context, atURI string) error {
+	return m.err
+}
+func (m *mockDatabase) GetBridgedAccount(ctx context.Context, atDID string) (*db.BridgedAccount, error) {
+	return nil, m.err
+}
+func (m *mockDatabase) ListPublishedMessagesGlobal(ctx context.Context, limit int) ([]db.Message, error) {
+	return nil, m.err
+}
+func (m *mockDatabase) GetBlobBySSBRef(ctx context.Context, ssbBlobRef string) (*db.Blob, error) {
+	return nil, m.err
+}
 
 func TestUIHandlerInternalErrors(t *testing.T) {
 	m := &mockDatabase{err: fmt.Errorf("db boom")}
-	h := NewUIHandler(m, nil)
+	h := NewUIHandler(m, nil, nil, nil)
 	router := chi.NewRouter()
 	h.Mount(router)
 
@@ -1495,7 +1507,7 @@ func TestUIHandlerInternalErrors(t *testing.T) {
 
 func TestHealthzInternalError(t *testing.T) {
 	m := &mockDatabase{err: fmt.Errorf("db boom")}
-	h := NewUIHandler(m, nil)
+	h := NewUIHandler(m, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rr := httptest.NewRecorder()
 	h.handleHealthz(rr, req)
@@ -1505,7 +1517,7 @@ func TestHealthzInternalError(t *testing.T) {
 }
 
 func TestMessageDetailBadRequest(t *testing.T) {
-	h := NewUIHandler(&mockDatabase{}, nil)
+	h := NewUIHandler(&mockDatabase{}, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodGet, "/messages/detail", nil) // missing at_uri
 	rr := httptest.NewRecorder()
 	h.handleMessageDetail(rr, req)
@@ -1516,7 +1528,7 @@ func TestMessageDetailBadRequest(t *testing.T) {
 
 func TestUIHandlerHandleMessageDetailNotFound(t *testing.T) {
 	m := &mockDatabase{} // returns nil, nil for GetMessage
-	h := NewUIHandler(m, nil)
+	h := NewUIHandler(m, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodGet, "/messages/detail?at_uri=at://none", nil)
 	rr := httptest.NewRecorder()
 	h.handleMessageDetail(rr, req)
@@ -1526,7 +1538,7 @@ func TestUIHandlerHandleMessageDetailNotFound(t *testing.T) {
 }
 
 func TestUIHandlerHandleMessagesInvalidLimit(t *testing.T) {
-	h := NewUIHandler(&mockDatabase{}, nil)
+	h := NewUIHandler(&mockDatabase{}, nil, nil, nil)
 	req := httptest.NewRequest(http.MethodGet, "/messages?limit=abc", nil)
 	rr := httptest.NewRecorder()
 	h.handleMessages(rr, req)
@@ -1648,6 +1660,18 @@ func (m *granularMockDatabase) GetMessage(ctx context.Context, atURI string) (*d
 	}
 	return nil, m.err
 }
+func (m *granularMockDatabase) GetLatestDeferredReason(ctx context.Context) (string, bool, error) {
+	if m.getLatestDeferredReasonErr != nil {
+		return "", false, m.getLatestDeferredReasonErr
+	}
+	return "", false, m.err
+}
+func (m *granularMockDatabase) ResetMessageForRetry(ctx context.Context, atURI string) error {
+	return m.err
+}
+func (m *granularMockDatabase) GetBridgedAccount(ctx context.Context, atDID string) (*db.BridgedAccount, error) {
+	return nil, m.err
+}
 func (m *granularMockDatabase) GetPublishFailures(ctx context.Context, limit int) ([]db.Message, error) {
 	if m.getPublishFailuresErr != nil {
 		return nil, m.getPublishFailuresErr
@@ -1666,11 +1690,11 @@ func (m *granularMockDatabase) GetAllBridgeState(ctx context.Context) ([]db.Brid
 	}
 	return nil, m.err
 }
-func (m *granularMockDatabase) GetLatestDeferredReason(ctx context.Context) (string, bool, error) {
-	if m.getLatestDeferredReasonErr != nil {
-		return "", false, m.getLatestDeferredReasonErr
-	}
-	return "", false, m.err
+func (m *granularMockDatabase) ListPublishedMessagesGlobal(ctx context.Context, limit int) ([]db.Message, error) {
+	return nil, m.err
+}
+func (m *granularMockDatabase) GetBlobBySSBRef(ctx context.Context, ssbBlobRef string) (*db.Blob, error) {
+	return nil, m.err
 }
 
 func TestUIHandlerDashboardAllErrors(t *testing.T) {
@@ -1720,7 +1744,7 @@ func TestUIHandlerDashboardAllErrors(t *testing.T) {
 			case "ListTopIssueAccounts":
 				m.listTopIssueAccountsErr = errBoom
 			}
-			h := NewUIHandler(m, nil)
+			h := NewUIHandler(m, nil, nil, nil)
 			req := httptest.NewRequest(http.MethodGet, "/", nil)
 			rr := httptest.NewRecorder()
 			h.handleDashboard(rr, req)
@@ -1741,7 +1765,7 @@ func TestUIHandlerMoreErrors(t *testing.T) {
 
 	t.Run("handleMessages_ListMessagesPageError", func(t *testing.T) {
 		m := &granularMockDatabase{listMessagesPageErr: errBoom}
-		h := NewUIHandler(m, nil)
+		h := NewUIHandler(m, nil, nil, nil)
 		req := httptest.NewRequest(http.MethodGet, "/messages", nil)
 		rr := httptest.NewRecorder()
 		h.handleMessages(rr, req)
@@ -1752,7 +1776,7 @@ func TestUIHandlerMoreErrors(t *testing.T) {
 
 	t.Run("handleMessages_ListMessageTypesError", func(t *testing.T) {
 		m := &granularMockDatabase{listMessageTypesErr: errBoom}
-		h := NewUIHandler(m, nil)
+		h := NewUIHandler(m, nil, nil, nil)
 		req := httptest.NewRequest(http.MethodGet, "/messages", nil)
 		rr := httptest.NewRecorder()
 		h.handleMessages(rr, req)
@@ -1763,7 +1787,7 @@ func TestUIHandlerMoreErrors(t *testing.T) {
 
 	t.Run("handleAccounts_Error", func(t *testing.T) {
 		m := &granularMockDatabase{listBridgedAccountsWithStatsErr: errBoom}
-		h := NewUIHandler(m, nil)
+		h := NewUIHandler(m, nil, nil, nil)
 		req := httptest.NewRequest(http.MethodGet, "/accounts", nil)
 		rr := httptest.NewRecorder()
 		h.handleAccounts(rr, req)
@@ -1774,7 +1798,7 @@ func TestUIHandlerMoreErrors(t *testing.T) {
 
 	t.Run("handleFailures_Error", func(t *testing.T) {
 		m := &granularMockDatabase{getPublishFailuresErr: errBoom}
-		h := NewUIHandler(m, nil)
+		h := NewUIHandler(m, nil, nil, nil)
 		req := httptest.NewRequest(http.MethodGet, "/failures", nil)
 		rr := httptest.NewRecorder()
 		h.handleFailures(rr, req)
@@ -1785,7 +1809,7 @@ func TestUIHandlerMoreErrors(t *testing.T) {
 
 	t.Run("handleBlobs_Error", func(t *testing.T) {
 		m := &granularMockDatabase{getRecentBlobsErr: errBoom}
-		h := NewUIHandler(m, nil)
+		h := NewUIHandler(m, nil, nil, nil)
 		req := httptest.NewRequest(http.MethodGet, "/blobs", nil)
 		rr := httptest.NewRecorder()
 		h.handleBlobs(rr, req)
@@ -1796,7 +1820,7 @@ func TestUIHandlerMoreErrors(t *testing.T) {
 
 	t.Run("handleState_Error", func(t *testing.T) {
 		m := &granularMockDatabase{getAllBridgeStateErr: errBoom}
-		h := NewUIHandler(m, nil)
+		h := NewUIHandler(m, nil, nil, nil)
 		req := httptest.NewRequest(http.MethodGet, "/state", nil)
 		rr := httptest.NewRecorder()
 		h.handleState(rr, req)
@@ -1892,5 +1916,39 @@ func TestMessageTypeLabelMore(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("messageTypeLabel(%q) = %q, want %q", tt.typ, got, tt.want)
 		}
+	}
+}
+
+func TestGlobalFeed(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	ctx := context.Background()
+	// Add a published message
+	if err := database.AddMessage(ctx, db.Message{
+		ATURI:        "at://did:plc:alice/app.bsky.feed.post/feed1",
+		ATCID:        "cid1",
+		ATDID:        "did:plc:alice",
+		Type:         mapper.RecordTypePost,
+		MessageState: db.MessageStatePublished,
+		RawSSBJson:   `{"text":"hello feed","content":{"text":"hello feed"}}`,
+		SSBMsgRef:    "%msg1.sha256",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	body := fetchUI(t, database, "/feed")
+	if !strings.Contains(body, "Global Feed") || !strings.Contains(body, "hello feed") || !strings.Contains(body, "did:plc:alice") {
+		t.Fatalf("global feed missing content: %s", body)
+	}
+}
+
+func TestBreadcrumbs(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	body := fetchUI(t, database, "/accounts")
+	if !strings.Contains(body, "Dashboard") || !strings.Contains(body, "Accounts") || !strings.Contains(body, "aria-label=\"Breadcrumb\"") {
+		t.Fatalf("breadcrumbs missing on accounts page: %s", body)
 	}
 }

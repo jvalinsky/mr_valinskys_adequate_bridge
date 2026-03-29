@@ -186,7 +186,7 @@ func TestBridgeSmoke(t *testing.T) {
 
 	router := chi.NewRouter()
 	router.Use(websecurity.BasicAuthMiddleware("admin", "smoke-pass"))
-	ui := handlers.NewUIHandler(database, log.New(io.Discard, "", 0))
+	ui := handlers.NewUIHandler(database, log.New(io.Discard, "", 0), nil, nil)
 	ui.Mount(router)
 
 	fetch := func(path string) string {

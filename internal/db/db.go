@@ -655,6 +655,57 @@ func (db *DB) ListRecentPublishedMessagesByDID(ctx context.Context, atDID string
 	return messages, nil
 }
 
+// ResetMessageForRetry resets a message state to pending and clears errors.
+func (db *DB) ResetMessageForRetry(ctx context.Context, atURI string) error {
+	_, err := db.conn.ExecContext(
+		ctx,
+		`UPDATE messages
+		 SET message_state = ?,
+		     publish_error = '',
+		     publish_attempts = 0,
+		     last_publish_attempt_at = NULL,
+		     defer_reason = '',
+		     defer_attempts = 0,
+		     last_defer_attempt_at = NULL
+		 WHERE at_uri = ?`,
+		MessageStatePending,
+		atURI,
+	)
+	if err != nil {
+		return fmt.Errorf("reset message %s: %w", atURI, err)
+	}
+	return nil
+}
+
+// ListPublishedMessagesGlobal returns the newest published messages across all bots.
+func (db *DB) ListPublishedMessagesGlobal(ctx context.Context, limit int) ([]Message, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+
+	rows, err := db.conn.QueryContext(
+		ctx,
+		messageSelectColumns+`
+		 FROM messages
+		 WHERE message_state = ?
+		   AND TRIM(COALESCE(ssb_msg_ref, '')) <> ''
+		 ORDER BY COALESCE(published_at, created_at) DESC, created_at DESC, at_uri DESC
+		 LIMIT ?`,
+		MessageStatePublished,
+		limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query global published messages: %w", err)
+	}
+	defer rows.Close()
+
+	messages, err := scanMessagesRows(rows)
+	if err != nil {
+		return nil, fmt.Errorf("scan global published messages: %w", err)
+	}
+	return messages, nil
+}
+
 const messageSelectColumns = `SELECT at_uri, at_cid, ssb_msg_ref, at_did, type, message_state, raw_at_json, raw_ssb_json, published_at, publish_error, publish_attempts, last_publish_attempt_at, defer_reason, defer_attempts, last_defer_attempt_at, deleted_at, deleted_seq, deleted_reason, created_at`
 
 // ListMessages returns messages filtered and sorted for interactive UI browsing.
@@ -1064,6 +1115,27 @@ func (db *DB) GetBlob(ctx context.Context, atCID string) (*Blob, error) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("get blob %s: %w", atCID, err)
+	}
+	blob.MimeType = mimeType.String
+	return &blob, nil
+}
+
+// GetBlobBySSBRef returns the blob row for ssbBlobRef, or nil when absent.
+func (db *DB) GetBlobBySSBRef(ctx context.Context, ssbBlobRef string) (*Blob, error) {
+	var blob Blob
+	var mimeType sql.NullString
+	err := db.conn.QueryRowContext(
+		ctx,
+		`SELECT at_cid, ssb_blob_ref, COALESCE(size, 0), mime_type, downloaded_at
+		 FROM blobs
+		 WHERE ssb_blob_ref = ?`,
+		ssbBlobRef,
+	).Scan(&blob.ATCID, &blob.SSBBlobRef, &blob.Size, &mimeType, &blob.DownloadedAt)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get blob by ssb ref %s: %w", ssbBlobRef, err)
 	}
 	blob.MimeType = mimeType.String
 	return &blob, nil

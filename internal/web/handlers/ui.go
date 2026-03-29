@@ -3,7 +3,11 @@ package handlers
 
 import (
 	"context"
+	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -12,10 +16,12 @@ import (
 	"strings"
 	"time"
 
+	lexutil "github.com/bluesky-social/indigo/lex/util"
 	"github.com/go-chi/chi/v5"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/presentation"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/web/templates"
 )
 
@@ -40,19 +46,32 @@ type Database interface {
 	GetRecentBlobs(ctx context.Context, limit int) ([]db.Blob, error)
 	GetAllBridgeState(ctx context.Context) ([]db.BridgeState, error)
 	GetLatestDeferredReason(ctx context.Context) (string, bool, error)
+	ResetMessageForRetry(ctx context.Context, atURI string) error
+	GetBridgedAccount(ctx context.Context, atDID string) (*db.BridgedAccount, error)
+	ListPublishedMessagesGlobal(ctx context.Context, limit int) ([]db.Message, error)
+	GetBlobBySSBRef(ctx context.Context, ssbBlobRef string) (*db.Blob, error)
+}
+
+// BlobStore defines the blob retrieval surface for the UI.
+type BlobStore interface {
+	Get(hash []byte) (io.ReadCloser, error)
 }
 
 // UIHandler serves admin pages backed by bridge database state.
 type UIHandler struct {
-	db     Database
-	logger *log.Logger
+	db        Database
+	logger    *log.Logger
+	atpClient *PDSClient
+	blobStore BlobStore
 }
 
 // NewUIHandler creates a UIHandler bound to database.
-func NewUIHandler(database Database, logger *log.Logger) *UIHandler {
+func NewUIHandler(database Database, logger *log.Logger, atpClient *PDSClient, blobStore BlobStore) *UIHandler {
 	return &UIHandler{
-		db:     database,
-		logger: logutil.Ensure(logger),
+		db:        database,
+		logger:    logutil.Ensure(logger),
+		atpClient: atpClient,
+		blobStore: blobStore,
 	}
 }
 
@@ -66,6 +85,11 @@ func (h *UIHandler) Mount(r chi.Router) {
 	r.Get("/failures", h.handleFailures)
 	r.Get("/blobs", h.handleBlobs)
 	r.Get("/state", h.handleState)
+	r.Post("/messages/retry", h.handleMessageRetry)
+	r.Get("/post", h.handlePost)
+	r.Post("/post", h.handlePostAction)
+	r.Get("/feed", h.handleFeed)
+	r.Get("/blobs/view", h.handleBlobView)
 }
 
 func (h *UIHandler) writeInternalError(w http.ResponseWriter, handler, message string, err error) {
@@ -201,6 +225,9 @@ func (h *UIHandler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	data := templates.DashboardData{
 		Chrome: templates.PageChrome{
 			ActiveNav: "dashboard",
+			Breadcrumbs: []templates.Breadcrumb{
+				{Label: "Dashboard", Href: ""},
+			},
 			Status: templates.PageStatus{
 				Visible: true,
 				Tone:    healthTone,
@@ -249,7 +276,13 @@ func (h *UIHandler) handleAccounts(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/html")
 	if err := templates.RenderAccounts(w, templates.AccountsData{
-		Chrome:   templates.PageChrome{ActiveNav: "accounts"},
+		Chrome: templates.PageChrome{
+			ActiveNav: "accounts",
+			Breadcrumbs: []templates.Breadcrumb{
+				{Label: "Dashboard", Href: "/"},
+				{Label: "Accounts", Href: ""},
+			},
+		},
 		Accounts: rows,
 	}); err != nil {
 		h.writeInternalError(w, "accounts", "Template error", err)
@@ -311,7 +344,13 @@ func (h *UIHandler) handleMessages(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/html")
 	if err := templates.RenderMessages(w, templates.MessagesData{
-		Chrome:   templates.PageChrome{ActiveNav: "messages"},
+		Chrome: templates.PageChrome{
+			ActiveNav: "messages",
+			Breadcrumbs: []templates.Breadcrumb{
+				{Label: "Dashboard", Href: "/"},
+				{Label: "Messages", Href: ""},
+			},
+		},
 		Messages: rows,
 		Filters: templates.MessagesFilterState{
 			Search:   query.Search,
@@ -353,7 +392,14 @@ func (h *UIHandler) handleMessageDetail(w http.ResponseWriter, r *http.Request) 
 	}
 
 	data := templates.MessageDetailData{
-		Chrome:                templates.PageChrome{ActiveNav: "messages"},
+		Chrome: templates.PageChrome{
+			ActiveNav: "messages",
+			Breadcrumbs: []templates.Breadcrumb{
+				{Label: "Dashboard", Href: "/"},
+				{Label: "Messages", Href: "/messages"},
+				{Label: "Message Detail", Href: ""},
+			},
+		},
 		ATURI:                 message.ATURI,
 		ATCID:                 message.ATCID,
 		ATDID:                 message.ATDID,
@@ -375,6 +421,8 @@ func (h *UIHandler) handleMessageDetail(w http.ResponseWriter, r *http.Request) 
 		BridgedMessageFields:  presentation.SummarizeSSBMessage(*message),
 		RawATProtoJSON:        presentation.PrettyJSON(message.RawATJson),
 		RawSSBJSON:            presentation.PrettyJSON(message.RawSSBJson),
+		RawWireFormat:         formatMuxRPCHex(message.RawSSBJson),
+		ShowRawWire:           true,
 		FilterByDIDURL:        "/messages?did=" + url.QueryEscape(message.ATDID),
 		FilterByStateURL:      "/messages?state=" + url.QueryEscape(message.MessageState),
 		FilterByTypeURL:       "/messages?type=" + url.QueryEscape(message.Type),
@@ -443,7 +491,13 @@ func (h *UIHandler) handleFailures(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/html")
 	if err := templates.RenderFailures(w, templates.FailuresData{
-		Chrome:        templates.PageChrome{ActiveNav: "failures"},
+		Chrome: templates.PageChrome{
+			ActiveNav: "failures",
+			Breadcrumbs: []templates.Breadcrumb{
+				{Label: "Dashboard", Href: "/"},
+				{Label: "Failures", Href: ""},
+			},
+		},
 		FailedRows:    failedRows,
 		DeferredRows:  deferredRows,
 		ReasonGroups:  reasonGroups,
@@ -452,6 +506,21 @@ func (h *UIHandler) handleFailures(w http.ResponseWriter, r *http.Request) {
 	}); err != nil {
 		h.writeInternalError(w, "failures", "Template error", err)
 	}
+}
+
+func (h *UIHandler) handleMessageRetry(w http.ResponseWriter, r *http.Request) {
+	atURI := strings.TrimSpace(r.FormValue("at_uri"))
+	if atURI == "" {
+		http.Error(w, "Missing at_uri", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.db.ResetMessageForRetry(r.Context(), atURI); err != nil {
+		h.writeInternalError(w, "message_retry", "Failed to reset message", err)
+		return
+	}
+
+	http.Redirect(w, r, fmt.Sprintf("/messages/detail?at_uri=%s", url.QueryEscape(atURI)), http.StatusSeeOther)
 }
 
 func (h *UIHandler) handleBlobs(w http.ResponseWriter, r *http.Request) {
@@ -474,10 +543,64 @@ func (h *UIHandler) handleBlobs(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/html")
 	if err := templates.RenderBlobs(w, templates.BlobsData{
-		Chrome: templates.PageChrome{ActiveNav: "blobs"},
-		Blobs:  rows,
+		Chrome: templates.PageChrome{
+			ActiveNav: "blobs",
+			Breadcrumbs: []templates.Breadcrumb{
+				{Label: "Dashboard", Href: "/"},
+				{Label: "Blobs", Href: ""},
+			},
+		},
+		Blobs: rows,
 	}); err != nil {
 		h.writeInternalError(w, "blobs", "Template error", err)
+	}
+}
+
+func (h *UIHandler) handleBlobView(w http.ResponseWriter, r *http.Request) {
+	refStr := r.URL.Query().Get("ref")
+	if refStr == "" {
+		http.Error(w, "Missing ref parameter", http.StatusBadRequest)
+		return
+	}
+
+	blobMeta, err := h.db.GetBlobBySSBRef(r.Context(), refStr)
+	if err != nil {
+		h.writeInternalError(w, "blob_view", "Failed to lookup blob metadata", err)
+		return
+	}
+	if blobMeta == nil {
+		http.Error(w, "Blob metadata not found", http.StatusNotFound)
+		return
+	}
+
+	if h.blobStore == nil {
+		http.Error(w, "Blob store not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	ref, err := refs.ParseBlobRef(refStr)
+	if err != nil {
+		http.Error(w, "Invalid SSB blob reference", http.StatusBadRequest)
+		return
+	}
+
+	rc, err := h.blobStore.Get(ref.Hash())
+	if err != nil {
+		http.Error(w, "Blob data not found in store", http.StatusNotFound)
+		return
+	}
+	defer rc.Close()
+
+	if blobMeta.MimeType != "" {
+		w.Header().Set("Content-Type", blobMeta.MimeType)
+	} else {
+		w.Header().Set("Content-Type", "application/octet-stream")
+	}
+	w.Header().Set("Content-Length", strconv.FormatInt(blobMeta.Size, 10))
+	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+
+	if _, err := io.Copy(w, rc); err != nil {
+		h.logger.Printf("event=blob_serve_error ref=%s error=%v", refStr, err)
 	}
 }
 
@@ -540,6 +663,10 @@ func (h *UIHandler) handleState(w http.ResponseWriter, r *http.Request) {
 	if err := templates.RenderState(w, templates.StateData{
 		Chrome: templates.PageChrome{
 			ActiveNav: "state",
+			Breadcrumbs: []templates.Breadcrumb{
+				{Label: "Dashboard", Href: "/"},
+				{Label: "State", Href: ""},
+			},
 			Status: templates.PageStatus{
 				Visible: true,
 				Tone:    statusTone,
@@ -558,6 +685,221 @@ func (h *UIHandler) handleState(w http.ResponseWriter, r *http.Request) {
 	}); err != nil {
 		h.writeInternalError(w, "state", "Template error", err)
 	}
+}
+
+func (h *UIHandler) handlePost(w http.ResponseWriter, r *http.Request) {
+	accounts, err := h.db.ListBridgedAccountsWithStats(r.Context())
+	if err != nil {
+		h.writeInternalError(w, "handlePost", "Failed to get accounts", err)
+		return
+	}
+
+	var accountRows []templates.AccountRow
+	for _, account := range accounts {
+		accountRows = append(accountRows, templates.AccountRow{
+			ATDID:             account.ATDID,
+			SSBFeedID:         account.SSBFeedID,
+			Active:            account.Active,
+			TotalMessages:     account.TotalMessages,
+			PublishedMessages: account.PublishedMessages,
+			FailedMessages:    account.FailedMessages,
+			DeferredMessages:  account.DeferredMessages,
+			LastPublishedAt:   formatOptionalTime(account.LastPublishedAt),
+			CreatedAt:         account.CreatedAt,
+			MessagesURL:       "/messages?did=" + url.QueryEscape(account.ATDID),
+		})
+	}
+
+	data := templates.PostData{
+		Chrome: templates.PageChrome{
+			ActiveNav: "post",
+			Breadcrumbs: []templates.Breadcrumb{
+				{Label: "Dashboard", Href: "/"},
+				{Label: "Compose Post", Href: ""},
+			},
+		},
+		Accounts: accountRows,
+	}
+
+	w.Header().Set("Content-Type", "text/html")
+	if err := templates.RenderPost(w, data); err != nil {
+		h.writeInternalError(w, "handlePost", "Template error", err)
+	}
+}
+
+func (h *UIHandler) handlePostAction(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseMultipartForm(10 << 20); err != nil { // 10MB limit
+		http.Error(w, "Unable to parse form", http.StatusBadRequest)
+		return
+	}
+
+	atDID := strings.TrimSpace(r.FormValue("at_did"))
+	text := strings.TrimSpace(r.FormValue("text"))
+
+	if atDID == "" {
+		http.Error(w, "Author DID is required", http.StatusBadRequest)
+		return
+	}
+
+	if text == "" {
+		http.Error(w, "Message text is required", http.StatusBadRequest)
+		return
+	}
+
+	account, err := h.db.GetBridgedAccount(r.Context(), atDID)
+	if err != nil {
+		h.writeInternalError(w, "handlePostAction", "Failed to get bridged account", err)
+		return
+	}
+	if account == nil || !account.Active {
+		http.Error(w, "Invalid or inactive account", http.StatusBadRequest)
+		return
+	}
+
+	var imageBlob *lexutil.LexBlob
+
+	if len(r.MultipartForm.File["image"]) > 0 {
+		fh := r.MultipartForm.File["image"][0]
+		file, err := fh.Open()
+		if err != nil {
+			h.writeInternalError(w, "handlePostAction", "Failed to open uploaded file", err)
+			return
+		}
+		defer file.Close()
+
+		buffer := make([]byte, 512)
+		_, err = file.Read(buffer)
+		if err != nil {
+			h.writeInternalError(w, "handlePostAction", "Failed to read uploaded file", err)
+			return
+		}
+
+		file.Seek(0, io.SeekStart)
+		mimeType := http.DetectContentType(buffer)
+
+		if !strings.HasPrefix(mimeType, "image/") {
+			http.Error(w, "Uploaded file must be an image", http.StatusBadRequest)
+			return
+		}
+
+		blob, err := h.atpClient.UploadBlob(r.Context(), atDID, file, mimeType)
+		if err != nil {
+			h.writeInternalError(w, "handlePostAction", "Failed to upload blob", err)
+			return
+		}
+
+		imageBlob = blob
+	}
+
+	postURI, err := h.atpClient.CreatePost(r.Context(), atDID, text, imageBlob)
+	if err != nil {
+		h.writeInternalError(w, "handlePostAction", "Failed to create post", err)
+		return
+	}
+
+	http.Redirect(w, r, fmt.Sprintf("/messages/detail?at_uri=%s", url.QueryEscape(postURI)), http.StatusSeeOther)
+}
+
+func (h *UIHandler) handleFeed(w http.ResponseWriter, r *http.Request) {
+	limitStr := r.URL.Query().Get("limit")
+	limit := 50
+	if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+		limit = l
+	}
+
+	messages, err := h.db.ListPublishedMessagesGlobal(r.Context(), limit)
+	if err != nil {
+		h.writeInternalError(w, "handleFeed", "Failed to get global feed", err)
+		return
+	}
+
+	rows := make([]templates.FeedRow, 0, len(messages))
+	for _, msg := range messages {
+		rows = append(rows, templates.FeedRow{
+			ATURI:     msg.ATURI,
+			ATDID:     msg.ATDID,
+			Type:      msg.Type,
+			CreatedAt: msg.CreatedAt,
+			Text:      extractSSBText(msg.RawSSBJson),
+			HasImage:  hasSSBImage(msg.RawSSBJson),
+			ImageRef:  getSSBImageRef(msg.RawSSBJson),
+		})
+	}
+
+	data := templates.FeedData{
+		Chrome: templates.PageChrome{
+			ActiveNav: "feed",
+			Breadcrumbs: []templates.Breadcrumb{
+				{Label: "Dashboard", Href: "/"},
+				{Label: "Global Feed", Href: ""},
+			},
+		},
+		Feed: rows,
+	}
+
+	w.Header().Set("Content-Type", "text/html")
+	if err := templates.RenderFeed(w, data); err != nil {
+		h.writeInternalError(w, "handleFeed", "Template error", err)
+	}
+}
+
+func extractSSBText(rawJSON string) string {
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(rawJSON), &m); err != nil {
+		return ""
+	}
+	text, _ := m["text"].(string)
+	if text == "" {
+		// Check for legacy SSB content object
+		if content, ok := m["content"].(map[string]interface{}); ok {
+			text, _ = content["text"].(string)
+		}
+	}
+	return text
+}
+
+func hasSSBImage(rawJSON string) bool {
+	return getSSBImageRef(rawJSON) != ""
+}
+
+func getSSBImageRef(rawJSON string) string {
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(rawJSON), &m); err != nil {
+		return ""
+	}
+	content, _ := m["content"].(map[string]interface{})
+	if content == nil {
+		content = m // Flat format
+	}
+
+	mentions, _ := content["mentions"].([]interface{})
+	for _, item := range mentions {
+		mi, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		link, _ := mi["link"].(string)
+		if strings.HasPrefix(link, "&") {
+			return link
+		}
+	}
+	return ""
+}
+
+func formatMuxRPCHex(rawJSON string) string {
+	if strings.TrimSpace(rawJSON) == "" {
+		return ""
+	}
+	body := []byte(rawJSON)
+	l := uint32(len(body))
+
+	header := make([]byte, 9)
+	header[0] = 0x0a // Flag (JSON + Stream)
+	binary.BigEndian.PutUint32(header[1:], l)
+	binary.BigEndian.PutUint32(header[5:], 1) // ReqID=1
+
+	full := append(header, body...)
+	return hex.Dump(full)
 }
 
 func issueReason(message db.Message) string {
