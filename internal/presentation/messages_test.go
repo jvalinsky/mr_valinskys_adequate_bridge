@@ -273,3 +273,48 @@ func TestDetailCollectorSkipsEmpty(t *testing.T) {
 		t.Errorf("got %d fields, want 0 (skip empty values)", len(c.fields))
 	}
 }
+
+func TestJsonScalar(t *testing.T) {
+	if s := jsonScalar(nil); s != "" {
+		t.Errorf("Expected empty string for nil, got: %s", s)
+	}
+	if s := jsonScalar(float64(42)); s != "42" {
+		t.Errorf("Expected '42' for int, got: %s", s)
+	}
+	if s := jsonScalar(float64(42.5)); s != "42.5" {
+		t.Errorf("Expected '42.5' for float, got: %s", s)
+	}
+	if s := jsonScalar(true); s != "true" {
+		t.Errorf("Expected 'true' for bool, got: %s", s)
+	}
+}
+
+func TestStringAt(t *testing.T) {
+	m := map[string]interface{}{
+		"nested": map[string]interface{}{
+			"key": "value",
+		},
+	}
+	if s := stringAt(m, "nested.key"); s != "" { // stringAt only works on top level
+		t.Errorf("stringAt only works on top level, expected empty, got: %s", s)
+	}
+	if s := stringAt(m, "notfound"); s != "" {
+		t.Errorf("Expected empty string, got: %s", s)
+	}
+}
+
+func TestPrettyJSONInvalid(t *testing.T) {
+	if s := PrettyJSON("invalid json {"); s != "invalid json {" {
+		t.Errorf("Expected original string for invalid json, got: %s", s)
+	}
+}
+
+func TestSummarizeSSBMessageFallback(t *testing.T) {
+	msg := db.Message{
+		RawSSBJson: `{"unknown": "format"}`,
+	}
+	fields := SummarizeSSBMessage(msg)
+	if len(fields) == 0 {
+		t.Errorf("Expected fallback fields for unknown message format")
+	}
+}

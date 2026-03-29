@@ -194,3 +194,21 @@ func TestGetPublisherWithError(t *testing.T) {
 		t.Fatalf("expected error when user log returns error")
 	}
 }
+
+func TestGetFeedIDWithInvalidDID(t *testing.T) {
+	m := NewManager([]byte("00000000000000000000000000000000"), &mockLog{}, &mockMultiLog{}, nil)
+
+	_, err := m.GetFeedID("")
+	if err == nil {
+		t.Errorf("Expected error for empty DID")
+	}
+}
+
+func TestGetPublisherWithInvalidDID(t *testing.T) {
+	m := NewManager([]byte("00000000000000000000000000000000"), &mockLog{}, &mockMultiLog{}, nil)
+
+	_, err := m.GetPublisher("")
+	if err == nil {
+		t.Errorf("Expected error for empty DID")
+	}
+}

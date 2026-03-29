@@ -271,3 +271,70 @@ func anyValueString(v *commonv1.AnyValue) string {
 		return ""
 	}
 }
+
+func TestIsLoopbackBindAddr(t *testing.T) {
+	tests := []struct {
+		addr     string
+		expected bool
+	}{
+		{"127.0.0.1", false}, // SplitHostPort fails without port
+		{"127.0.0.1:8080", true},
+		{"localhost", false}, // SplitHostPort fails without port
+		{"localhost:8080", true},
+		{"[::1]", false}, // SplitHostPort fails without port
+		{"[::1]:8080", true},
+		{"0.0.0.0:8080", false},
+		{"192.168.1.1:8080", false},
+		{":8080", false}, // All interfaces
+		{"invalid", false},
+	}
+
+	for _, test := range tests {
+		result := IsLoopbackBindAddr(test.addr)
+		if result != test.expected {
+			t.Errorf("IsLoopbackBindAddr(%q) = %v, want %v", test.addr, result, test.expected)
+		}
+	}
+}
+
+func TestSanitizedPathWithQuery(t *testing.T) {
+	req, _ := http.NewRequest("GET", "http://example.com/path?key=value&password=secret&token=abc&other=123", nil)
+	result := sanitizedPathWithQuery(req.URL)
+
+	if !strings.Contains(result, "/path") {
+		t.Errorf("Expected path, got %v", result)
+	}
+	if strings.Contains(result, "secret") {
+		t.Errorf("Expected password to be redacted, got %v", result)
+	}
+	if strings.Contains(result, "abc") {
+		t.Errorf("Expected token to be redacted, got %v", result)
+	}
+	if !strings.Contains(result, "other=123") {
+		t.Errorf("Expected other param to be present, got %v", result)
+	}
+
+	// Test request with nil URL
+	reqNil := &http.Request{}
+	resultNil := sanitizedPathWithQuery(reqNil.URL)
+	if resultNil != "" {
+		t.Errorf("Expected empty string for nil URL, got %v", resultNil)
+	}
+}
+
+func TestSanitizedPathWithQueryEdgeCases(t *testing.T) {
+	// Test empty path gets converted to "/"
+	u1, _ := url.Parse("http://example.com")
+	u1.Path = ""
+	result1 := sanitizedPathWithQuery(u1)
+	if result1 != "/" {
+		t.Errorf("Expected '/', got %q", result1)
+	}
+
+	// Test no query string returns just path
+	u2, _ := url.Parse("http://example.com/just-path")
+	result2 := sanitizedPathWithQuery(u2)
+	if result2 != "/just-path" {
+		t.Errorf("Expected '/just-path', got %q", result2)
+	}
+}

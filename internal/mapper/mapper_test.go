@@ -537,3 +537,175 @@ func TestReplaceATProtoRefsResolvesQuoteAndDropsUnresolvedMentionDIDs(t *testing
 		t.Fatalf("expected no unresolved placeholders, got %v", unresolved)
 	}
 }
+
+func TestMapPostWithInvalidEmbed(t *testing.T) {
+	// Need to test the code paths in mapPost and appendFacetMentions that aren't fully covered
+	rawJSON := []byte(`{
+		"$type": "app.bsky.feed.post",
+		"text": "Hello world",
+		"createdAt": "2023-01-01T00:00:00Z",
+		"embed": {
+			"$type": "app.bsky.embed.recordWithMedia",
+			"record": {
+				"record": {
+					"uri": "at://did:plc:alice/app.bsky.feed.post/3"
+				}
+			}
+		}
+	}`)
+	res, err := MapRecord(RecordTypePost, "did:plc:alice", rawJSON)
+	if err != nil {
+		t.Fatalf("MapRecord failed: %v", err)
+	}
+	if quoteURI := res["_atproto_quote_subject"]; quoteURI != "at://did:plc:alice/app.bsky.feed.post/3" {
+		t.Errorf("Expected quote_subject to be at://did:plc:alice/app.bsky.feed.post/3, got %v", quoteURI)
+	}
+}
+
+func TestAppendFacetMentionsWithInvalidDID(t *testing.T) {
+	// Test the fallback paths in appendFacetMentions and rewriteRichText
+	rawJSON := []byte(`{
+		"$type": "app.bsky.feed.post",
+		"text": "Hello @unknown",
+		"createdAt": "2023-01-01T00:00:00Z",
+		"facets": [
+			{
+				"features": [
+					{
+						"$type": "app.bsky.richtext.facet#mention",
+						"did": ""
+					}
+				],
+				"index": {
+					"byteStart": 6,
+					"byteEnd": 14
+				}
+			}
+		]
+	}`)
+	res, err := MapRecord(RecordTypePost, "did:plc:alice", rawJSON)
+	if err != nil {
+		t.Fatalf("MapRecord failed: %v", err)
+	}
+	// The text should be unchanged if the feature doesn't have a valid DID
+	if res["text"] != "Hello @unknown" {
+		t.Errorf("Expected text to be unchanged, got %v", res["text"])
+	}
+}
+
+func TestReplaceATProtoRefsEdgeCases(t *testing.T) {
+	lookupURI := func(uri string) string { return "%msg.sha256" }
+	lookupDID := func(did string) string { return "@alice.ed25519" }
+	
+	msg := map[string]interface{}{
+		"type": "post",
+		"_atproto_quote_subject": "at://did:plc:alice/app.bsky.feed.post/1",
+		// Test vote without map structure
+		"vote": "not-a-map",
+		"_atproto_subject": "at://did:plc:alice/app.bsky.feed.post/1",
+	}
+	
+	ReplaceATProtoRefs(msg, lookupURI, lookupDID)
+	
+	// Vote shouldn't be touched if it's not a map
+	if msg["vote"] != "not-a-map" {
+		t.Errorf("Expected vote to be unchanged, got %v", msg["vote"])
+	}
+	
+	// Test mentions processing
+	msg2 := map[string]interface{}{
+		"type": "post",
+		"_atproto_quote_subject": "at://did:plc:alice/app.bsky.feed.post/1",
+		"mentions": "not-a-slice", // invalid mentions type
+	}
+	ReplaceATProtoRefs(msg2, lookupURI, lookupDID)
+	
+	mentions, ok := msg2["mentions"].([]map[string]interface{})
+	if !ok || len(mentions) != 1 {
+		t.Errorf("Expected mentions to be replaced with new slice containing quote link")
+	}
+}
+
+func TestAppendFacetMentionsWithLink(t *testing.T) {
+	rawJSON := []byte(`{
+		"$type": "app.bsky.feed.post",
+		"text": "Check out this link",
+		"createdAt": "2023-01-01T00:00:00Z",
+		"facets": [
+			{
+				"features": [
+					{
+						"$type": "app.bsky.richtext.facet#link",
+						"uri": "https://example.com"
+					}
+				],
+				"index": {
+					"byteStart": 15,
+					"byteEnd": 19
+				}
+			}
+		]
+	}`)
+	res, err := MapRecord(RecordTypePost, "did:plc:alice", rawJSON)
+	if err != nil {
+		t.Fatalf("MapRecord failed: %v", err)
+	}
+	
+	// Text should have markdown link injected
+	if res["text"] != "Check out this [link](https://example.com)" {
+		t.Errorf("Expected markdown link, got %v", res["text"])
+	}
+}
+
+func TestAppendFacetMentionsWithTag(t *testing.T) {
+	rawJSON := []byte(`{
+		"$type": "app.bsky.feed.post",
+		"text": "Hello #tag",
+		"createdAt": "2023-01-01T00:00:00Z",
+		"facets": [
+			{
+				"features": [
+					{
+						"$type": "app.bsky.richtext.facet#tag",
+						"tag": "tag"
+					}
+				],
+				"index": {
+					"byteStart": 6,
+					"byteEnd": 10
+				}
+			}
+		]
+	}`)
+	res, err := MapRecord(RecordTypePost, "did:plc:alice", rawJSON)
+	if err != nil {
+		t.Fatalf("MapRecord failed: %v", err)
+	}
+	// Tags don't alter text or create mentions for SSB
+	if res["text"] != "Hello #tag" {
+		t.Errorf("Expected tags to leave text alone, got %v", res["text"])
+	}
+}
+
+func TestReplaceATProtoRefsAdditionalBranches(t *testing.T) {
+	lookupURI := func(uri string) string { return "" } // return empty to test branch
+	lookupDID := func(did string) string { return "" }
+	
+	msg := map[string]interface{}{
+		"type": "post",
+		"_atproto_quote_subject": "at://did:plc:alice/app.bsky.feed.post/1",
+		"_atproto_reply_root": "at://did:plc:alice/app.bsky.feed.post/1",
+		"_atproto_reply_parent": "at://did:plc:alice/app.bsky.feed.post/1",
+		"_atproto_subject": "at://did:plc:alice/app.bsky.feed.post/1",
+	}
+	
+	ReplaceATProtoRefs(msg, lookupURI, lookupDID)
+	
+	// Should remain when resolution fails
+	if _, ok := msg["_atproto_reply_root"]; !ok {
+		t.Errorf("Expected unresolved root to remain")
+	}
+	if _, ok := msg["_atproto_reply_parent"]; !ok {
+		t.Errorf("Expected unresolved parent to remain")
+	}
+}
