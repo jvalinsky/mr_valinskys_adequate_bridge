@@ -469,3 +469,70 @@ func TestRuntimeResetPasswordPostWithInvalidToken(t *testing.T) {
 		t.Fatalf("expected 400 for invalid token, got %d", resp.StatusCode)
 	}
 }
+
+func TestRuntimeCreateInviteRequiresJSONAccept(t *testing.T) {
+	rt := startTestRuntime(t, "open", nil)
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	resp, err := client.Post("http://"+rt.HTTPAddr()+"/create-invite", "", nil)
+	if err != nil {
+		t.Fatalf("create invite request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 even without JSON Accept header, got %d", resp.StatusCode)
+	}
+}
+
+func TestRuntimeJoinPageWithUsedToken(t *testing.T) {
+	rt := startTestRuntime(t, "open", nil)
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	createReq, _ := http.NewRequest(http.MethodPost, "http://"+rt.HTTPAddr()+"/create-invite", nil)
+	createReq.Header.Set("Accept", "application/json")
+	createResp, err := client.Do(createReq)
+	if err != nil {
+		t.Fatalf("create invite failed: %v", err)
+	}
+	defer createResp.Body.Close()
+
+	var invitePayload map[string]string
+	if err := json.NewDecoder(createResp.Body).Decode(&invitePayload); err != nil {
+		t.Fatalf("decode invite response: %v", err)
+	}
+
+	token := ""
+	if idx := strings.Index(invitePayload["url"], "token="); idx != -1 {
+		token = invitePayload["url"][idx+6:]
+	}
+
+	joinResp, err := client.Get("http://" + rt.HTTPAddr() + "/join?token=" + token)
+	if err != nil {
+		t.Fatalf("join page request failed: %v", err)
+	}
+	defer joinResp.Body.Close()
+
+	if joinResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(joinResp.Body)
+		t.Fatalf("expected 200 for valid token, got %d\nbody: %s", joinResp.StatusCode, string(body))
+	}
+}
+
+func TestRuntimeLoginPostWithMissingFields(t *testing.T) {
+	rt := startTestRuntime(t, "open", nil)
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	resp, err := client.PostForm("http://"+rt.HTTPAddr()+"/login", url.Values{
+		"username": {""},
+		"password": {""},
+	})
+	if err != nil {
+		t.Fatalf("login request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for missing fields, got %d", resp.StatusCode)
+	}
+}
