@@ -1,0 +1,17 @@
+<!--
+SPDX-FileCopyrightText: 2021 The NGI Pointer Secure-Scuttlebutt Team of 2020/2021
+
+SPDX-License-Identifier: CC-BY-4.0
+-->
+
+{{ define "flashes" }}
+{{if .Flashes}}
+<ul id="flashes-list">
+{{range .Flashes}}
+    <li
+    class="{{if eq .Kind 1}}text-red-600{{else}}text-green-600{{end}}"
+    >{{.Message}}</li>
+{{end}}
+</ul>
+{{end}}
+{{ end }}

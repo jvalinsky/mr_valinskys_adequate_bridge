@@ -1,0 +1,64 @@
+<!--
+SPDX-FileCopyrightText: 2021 The NGI Pointer Secure-Scuttlebutt Team of 2020/2021
+
+SPDX-License-Identifier: CC-BY-4.0
+-->
+
+{{ define "title" }}{{i18n "NoticeEditTitle"}}{{ end }}
+{{ define "content" }}
+
+ {{ template "flashes" . }}
+
+  <form method="POST" action={{urlTo .SubmitAction}} class="flex flex-col items-stretch">
+    {{.csrfField}}
+
+    {{if .PinnedName}}
+      <input
+        type="hidden"
+        name="name"
+        value="{{.PinnedName}}">
+      <input
+        type="hidden"
+        name="redirect"
+        value="{{urlTo "notice:list"}}">
+    {{else}}
+      <input
+        type="hidden"
+        name="id"
+        value="{{.Notice.ID}}">
+      <input
+        type="hidden"
+        name="redirect"
+        value="{{urlTo "complete:notice:show" "id" .Notice.ID}}">
+    {{end}}
+
+    <input
+      type="text"
+      name="title"
+      value="{{.Notice.Title}}"
+      class="text-3xl tracking-tight shadow-sm font-black text-black py-2 mb-2 focus:outline-none focus:ring-1 focus:ring-pink-300 focus:border-transparent placeholder-gray-300"
+    >
+    <textarea
+      id="notice-content"
+      name="content"
+      rows="10"
+      cols="20"
+      class="resize-y shadow-sm focus:outline-none focus:ring-1 focus:ring-pink-300 focus:border-transparent placeholder-gray-300"
+    >{{.Notice.Content}}</textarea>
+
+    <div class="my-4 flex flex-row items-center justify-start">
+      <label class="mr-2">{{i18n "GenericLanguage"}}</label>
+      <input
+        type="text"
+        name="language"
+        value="{{if not .PinnedName}}{{.Notice.Language}}{{end}}"
+        class="shadow rounded border border-transparent h-8 p-1 focus:outline-none focus:ring-2 focus:ring-pink-400 focus:border-transparent">
+      <span class="ml-2 text-red-400">TODO: make this a dropdown</span>
+    </div>
+
+    <button
+      type="submit"
+      class="self-start shadow rounded px-4 h-8 text-gray-100 bg-pink-600 hover:bg-pink-700 focus:outline-none focus:ring-2 focus:ring-pink-600 focus:ring-opacity-50"
+    >{{i18n "GenericSave"}}</button>
+  </form>
+{{end}}

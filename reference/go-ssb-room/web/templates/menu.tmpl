@@ -1,0 +1,73 @@
+<!--
+SPDX-FileCopyrightText: 2021 The NGI Pointer Secure-Scuttlebutt Team of 2020/2021
+
+SPDX-License-Identifier: CC-BY-4.0
+-->
+
+{{ define "menu" }}
+<!-- Icons are taken from https://materialdesignicons.com/ -->
+<div class="flex flex-col my-4 w-40 px-2 sm:pl-0">
+  <a
+    href="{{urlTo "complete:index"}}"
+    class="{{if current_page_is "complete:index"}}bg-gray-300 {{else}}hover:bg-gray-200 {{end}}pr-1 pl-2 py-3 sm:py-1 rounded-md flex flex-row items-center font-semibold text-sm text-gray-700 hover:text-gray-800 truncate"
+  >
+    <svg class="text-pink-600 w-4 h-4 mr-1" viewBox="0 0 24 24">
+      <path fill="currentColor" d="M10,20V14H14V20H19V12H22L12,3L2,12H5V20H10Z" />
+    </svg>{{i18n "NavAdminLanding"}}
+  </a>
+
+  <a
+    href="{{urlTo "admin:dashboard"}}"
+    class="{{if current_page_is "admin:dashboard"}}bg-gray-300 {{else}}hover:bg-gray-200 {{end}}pr-1 pl-2 py-3 sm:py-1 rounded-md flex flex-row items-center font-semibold text-sm text-gray-700 hover:text-gray-800 truncate"
+  >
+    <svg class="text-blue-600 w-4 h-4 mr-1" viewBox="0 0 24 24">
+      <path fill="currentColor" d="M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2M12,4A8,8 0 0,1 20,12C20,14.4 19,16.5 17.3,18C15.9,16.7 14,16 12,16C10,16 8.2,16.7 6.7,18C5,16.5 4,14.4 4,12A8,8 0 0,1 12,4M14,5.89C13.62,5.9 13.26,6.15 13.1,6.54L11.81,9.77L11.71,10C11,10.13 10.41,10.6 10.14,11.26C9.73,12.29 10.23,13.45 11.26,13.86C12.29,14.27 13.45,13.77 13.86,12.74C14.12,12.08 14,11.32 13.57,10.76L13.67,10.5L14.96,7.29L14.97,7.26C15.17,6.75 14.92,6.17 14.41,5.96C14.28,5.91 14.15,5.89 14,5.89M10,6A1,1 0 0,0 9,7A1,1 0 0,0 10,8A1,1 0 0,0 11,7A1,1 0 0,0 10,6M7,9A1,1 0 0,0 6,10A1,1 0 0,0 7,11A1,1 0 0,0 8,10A1,1 0 0,0 7,9M17,9A1,1 0 0,0 16,10A1,1 0 0,0 17,11A1,1 0 0,0 18,10A1,1 0 0,0 17,9Z" />
+    </svg>{{i18n "NavAdminDashboard"}}
+  </a>
+
+  <a
+    href="{{urlTo "admin:members:overview"}}"
+    class="{{if current_page_is "admin:members:overview"}}bg-gray-300 {{else}}hover:bg-gray-200 {{end}}pr-1 pl-2 py-3 sm:py-1 rounded-md flex flex-row items-center font-semibold text-sm text-gray-700 hover:text-gray-800 truncate"
+  >
+    <svg class="text-purple-600 w-4 h-4 mr-1" viewBox="0 0 24 24">
+      <path fill="currentColor" d="M12,4A4,4 0 0,1 16,8A4,4 0 0,1 12,12A4,4 0 0,1 8,8A4,4 0 0,1 12,4M12,6A2,2 0 0,0 10,8A2,2 0 0,0 12,10A2,2 0 0,0 14,8A2,2 0 0,0 12,6M12,13C14.67,13 20,14.33 20,17V20H4V17C4,14.33 9.33,13 12,13M12,14.9C9.03,14.9 5.9,16.36 5.9,17V18.1H18.1V17C18.1,16.36 14.97,14.9 12,14.9Z" />
+    </svg>{{i18n "AdminMembersTitle"}}
+  </a>
+
+  <a
+    href="{{urlTo "admin:invites:overview"}}"
+    class="{{if current_page_is "admin:invites:overview"}}bg-gray-300 {{else}}hover:bg-gray-200 {{end}}pr-1 pl-2 py-3 sm:py-1 rounded-md flex flex-row items-center font-semibold text-sm text-gray-700 hover:text-gray-800 truncate"
+  >
+    <svg class="text-purple-600 w-4 h-4 mr-1" viewBox="0 0 24 24">
+      <path fill="currentColor" d="M15,4A4,4 0 0,0 11,8A4,4 0 0,0 15,12A4,4 0 0,0 19,8A4,4 0 0,0 15,4M15,5.9C16.16,5.9 17.1,6.84 17.1,8C17.1,9.16 16.16,10.1 15,10.1A2.1,2.1 0 0,1 12.9,8A2.1,2.1 0 0,1 15,5.9M4,7V10H1V12H4V15H6V12H9V10H6V7H4M15,13C12.33,13 7,14.33 7,17V20H23V17C23,14.33 17.67,13 15,13M15,14.9C17.97,14.9 21.1,16.36 21.1,17V18.1H8.9V17C8.9,16.36 12,14.9 15,14.9Z" />
+    </svg>‍{{i18n "NavAdminInvites"}}
+  </a>
+
+  <a
+    href="{{urlTo "admin:denied-keys:overview"}}"
+    class="{{if current_page_is "admin:denied-keys:overview"}}bg-gray-300 {{else}}hover:bg-gray-200 {{end}}pr-1 pl-2 py-3 sm:py-1 rounded-md flex flex-row items-center font-semibold text-sm text-gray-700 hover:text-gray-800 truncate"
+  >
+    <svg class="text-red-600 w-4 h-4 mr-1" viewBox="0 0 24 24">
+      <path fill="currentColor" d="M12,0A12,12 0 0,1 24,12A12,12 0 0,1 12,24A12,12 0 0,1 0,12A12,12 0 0,1 12,0M12,2A10,10 0 0,0 2,12C2,14.4 2.85,16.6 4.26,18.33L18.33,4.26C16.6,2.85 14.4,2 12,2M12,22A10,10 0 0,0 22,12C22,9.6 21.15,7.4 19.74,5.67L5.67,19.74C7.4,21.15 9.6,22 12,22Z" />
+    </svg>{{i18n "AdminDeniedKeysTitle"}}
+  </a>
+
+  <a
+    href="{{urlTo "admin:settings:overview"}}"
+    class="{{if current_page_is "admin:settings:overview"}}bg-gray-300 {{else}}hover:bg-gray-200 {{end}}pr-1 pl-2 py-3 sm:py-1 rounded-md flex flex-row items-center font-semibold text-sm text-gray-700 hover:text-gray-800 truncate"
+  >
+    <svg class="text-green-600 w-4 h-4 mr-1" viewBox="0 0 24 24">
+      <path fill="currentColor" d="M13 3C16.88 3 20 6.14 20 10C20 12.8 18.37 15.19 16 16.31V21H9V18H8C6.89 18 6 17.11 6 16V13H4.5C4.08 13 3.84 12.5 4.08 12.19L6 9.66C6.19 5.95 9.23 3 13 3M13 1C8.42 1 4.61 4.43 4.06 8.91L2.5 11C1.92 11.72 1.82 12.72 2.24 13.59C2.6 14.31 3.24 14.8 4 14.95V16C4 17.86 5.28 19.43 7 19.87V23H18V17.47C20.5 15.83 22 13.06 22 10C22 5.04 17.96 1 13 1M16.1 9.42V9C16.1 8.85 16.1 8.76 16.04 8.62L16.93 7.96C17 7.92 17 7.78 17 7.68L16.18 6.32C16.13 6.23 16 6.18 15.9 6.23L14.91 6.65C14.73 6.46 14.5 6.32 14.26 6.23L14.1 5.2C14.07 5.06 14 5 13.88 5H12.29C12.19 5 12.1 5.06 12.1 5.2L11.96 6.23C11.73 6.32 11.5 6.46 11.3 6.65L10.27 6.23C10.18 6.18 10.1 6.23 10.04 6.32L9.24 7.68C9.19 7.82 9.19 7.92 9.29 7.96L10.13 8.62C10.13 8.76 10.1 8.9 10.1 9C10.1 9.14 10.13 9.28 10.13 9.42L9.29 10.07C9.19 10.12 9.19 10.21 9.24 10.31L10.04 11.71C10.1 11.81 10.18 11.81 10.27 11.81L11.26 11.38C11.5 11.57 11.68 11.67 11.96 11.76L12.1 12.84C12.1 12.93 12.19 13 12.29 13H13.88C14 13 14.07 12.93 14.1 12.84L14.26 11.76C14.5 11.67 14.73 11.57 14.91 11.39L15.9 11.81C16 11.81 16.13 11.81 16.18 11.71L17 10.31C17 10.21 17 10.12 16.93 10.07L16.1 9.42M13.1 10.45C12.32 10.45 11.68 9.79 11.68 9S12.29 7.59 13.1 7.59C13.88 7.59 14.54 8.2 14.54 9S13.88 10.45 13.1 10.45Z" />
+    </svg>{{i18n "Settings"}}
+  </a>
+
+  <a
+    href="{{urlTo "complete:notice:list"}}"
+    class="{{if current_page_is "complete:notice:list"}}bg-gray-300 {{else}}hover:bg-gray-200 {{end}}pr-1 pl-2 py-3 sm:py-1 rounded-md flex flex-row items-center font-semibold text-sm text-gray-700 hover:text-gray-800 truncate"
+  >
+    <svg class="text-yellow-600 w-4 h-4 mr-1" viewBox="0 0 24 24">
+      <path fill="currentColor" d="M20 5L20 19L4 19L4 5H20M20 3H4C2.89 3 2 3.89 2 5V19C2 20.11 2.89 21 4 21H20C21.11 21 22 20.11 22 19V5C22 3.89 21.11 3 20 3M18 15H6V17H18V15M10 7H6V13H10V7M12 9H18V7H12V9M18 11H12V13H18V11Z" />
+    </svg>‍{{i18n "NavAdminNotices"}}
+  </a>
+</div>
+{{end}}

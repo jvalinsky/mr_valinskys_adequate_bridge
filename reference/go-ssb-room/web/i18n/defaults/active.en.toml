@@ -1,0 +1,248 @@
+# SPDX-FileCopyrightText: 2021 The NGI Pointer Secure-Scuttlebutt Team of 2020/2021
+#
+# SPDX-License-Identifier: CC0-1.0
+
+# default localiztion file for english
+
+# the name of this language, in its language. Used for language picking
+LanguageName = "English"
+
+# generic terms
+GenericConfirm = "Yes"
+GenericGoBack = "Back"
+GenericSave = "Save"
+GenericCreate = "Create"
+GenericSubmit = "Submit"
+GenericPreview = "Preview"
+GenericLanguage = "Language"
+GenericOpenLink = "Open Link"
+
+PageNotFound = "The requested page was not found."
+
+PubKeyRefPlaceholder = "@                                            .ed25519"
+
+# roles
+RoleMember = "Member"
+RoleModerator = "Moderator"
+RoleAdmin = "Admin"
+
+# navigation labels (should be single words or as short as possible)
+NavAdminLanding = "Home"
+NavAdminDashboard = "Dashboard"
+NavAdminInvites = "Invites"
+NavAdminNotices = "Notices"
+
+# Error messages
+ErrorAuthBadLogin = "The supplied authentication credentials (SSB-ID or password) are incorrect."
+ErrorNotFound = "The database couldn't find the item in question."
+ErrorAlreadyAdded = "The SSB-ID <strong>{{.Key}}</strong> already is on the list"
+ErrorPageNotFound = "The requested page <strong>({{.Path}})</strong> is not there."
+ErrorNotAuthorized = "You are not authorized to access this page."
+ErrorForbidden = "The request could not be executed because of lacking privileges ({{.Details}})"
+ErrorBadRequest = "There was a problem with your Request: {{.Where}} ({{.Details}})"
+ErrorPasswordDidntMatch = "The passwords you entered did not match."
+ErrorPasswordTooShort = "The new password is to short. Need at least 10 characters."
+ErrorPasswordLeaked = "The new password was found on the insecure password list of have-i-been-pwned. You need to choose a different one."
+
+# TODO: might be obsolete with notices
+LandingTitle = "ohai my room"
+LandingWelcome = "Landing welcome here"
+
+# authentication
+################
+
+AuthTitle = "Member Authentication"
+AuthWelcome = "If you are a member of this room, you can access the internal dashboard. Click on your preferred sign-in method below:"
+
+AuthSignIn = "Sign in"
+AuthSignOut = "Sign out"
+
+# auth with ssb
+AuthWithSSBTitle = "Sign in with SSB"
+AuthWithSSBInstruct = "Easy and secure method, if your SSB app supports it."
+AuthWithSSBWelcome = "To sign-in with your SSB identity stored on this device, press the button below which will open a compatible SSB app, if it's installed."
+AuthWithSSBInstructQR = "If your SSB app is on another device, you can scan the following QR code to sign-in with that device's SSB identity."
+AuthWithSSBError = "Sign-in failed. Please make sure you use an SSB app that supports this method of login, and click the button above within a minute after this page was opened."
+
+# auth with password
+AuthFallbackTitle = "Password sign-in"
+AuthFallbackWelcome = "Signing in with SSB-ID and password is only possible if the administrator has given you one, because we do not support user registration."
+AuthFallbackInstruct = "This method is an acceptable fallback, if you have a SSB-ID and password."
+
+AuthFallbackNewPassword="New Password"
+AuthFallbackRepeatPassword="Repeat Password"
+AuthFallbackPasswordChangeFormTitle = "Change Password"
+AuthFallbackPasswordChangeWelcome = "Here you can change your fallback password. Please make sure it's longer then 10 characters. Via the repetition we make sure that you don't accidentally mistype it. Additionally we use the lookup from <a href='https://haveibeenpwned.com'>haveibeenpwned.com</a> to make sure you don't accidentally use a weak password."
+AuthFallbackPasswordUpdated = "The password was updated. You can now use it to sign in."
+AdminMemberPasswordResetLinkCreatedTitle = "Password reset token created"
+AdminMemberPasswordResetLinkCreatedInstruct = "The reset token was created. Please send it to the member via some means (like E-Mail or another suitable side-channel). When they open it, they will be able to choose a new password for themselves."
+
+# general dashboard stuff
+#########################
+
+AdminDashboardTitle = "Dashboard"
+AdminDashboardRoomID = "This room's ID is"
+
+# privacy modes
+###############
+
+ModeOpen = "Open"
+ModeCommunity = "Community"
+ModeRestricted = "Restricted"
+
+SetPrivacyModeTitle = "Set Privacy Mode"
+PrivacyModesTitle = "Privacy Modes"
+RoomsSpecification = "rooms 2 specification"
+ExplanationPrivacyModes = "The privacy mode of this room determines who can create invites and who can connect to the room. For more information, see the"
+ExplanationOpen = "Open invite codes, anyone may connect"
+ExplanationCommunity = "Members can create invites, anyone may connect"
+ExplanationRestricted = "Only admins/mods can create invites, only members may connect"
+
+DefaultLanguageTitle = "Default Language"
+ExplanationDefaultLanguage = "The default language option controls the room web interface language displayed for first time visitors. The available languages options are defined by the installed translation files."
+SetDefaultLanguageTitle = "Set Default Language"
+
+Settings = "Settings"
+
+# banned dashboard
+##################
+
+AdminDeniedKeysTitle = "Banned"
+AdminDeniedKeysWelcome = "This page can be used to ban SSB IDs so that they can't access the room any more."
+AdminDeniedKeysAdd = "Add"
+AdminDeniedKeysAdded = "Key was added to the list."
+AdminDeniedKeysRemove = "Remove"
+AdminDeniedKeysComment = "Comment"
+AdminDeniedKeysCommentDescription = "The person who added this ban, added the following comment"
+AdminDeniedKeysRemoveConfirmWelcome = "Are you sure you want to remove this ban? They will will be able to access the room again."
+AdminDeniedKeysRemoveConfirmTitle = "Confirm member removal"
+AdminDeniedKeysRemoved = "The key was removed from the list and is thus no longer banned."
+
+# members dashboard
+###################
+
+AdminMembersTitle = "Members"
+AdminMembersWelcome = "Here you can see all the members of the room and ways to add new ones (by their SSB ID) or remove exising ones."
+AdminMembersAdd = "Add"
+AdminMembersSelf = "This is you"
+
+AdminMembersRemoveConfirmTitle = "Confirm member removal"
+AdminMembersRemoveConfirmWelcome = "Are you sure you want to remove this member? They will lose their alias, if they have one."
+
+AdminMemberDetailsTitle = "Member details"
+AdminMemberDetailsSSBID = "SSB Identifier"
+AdminMemberDetailsRole = "Permission level"
+AdminMemberDetailsAliases = "Aliases"
+AdminMemberDetailsAliasRevoke = "Revoke"
+AdminMemberDetailsAliasRevoked = "Alias was revoked"
+AdminMemberDetailsInitiatePasswordChange = "Re-set Fallback password"
+AdminMemberDetailsChangePassword = "Change password"
+AdminMemberDetailsCreatePasswordResetLink = "Create password reset link"
+AdminMemberDetailsExclusion = "Exclusion from this room"
+AdminMemberDetailsRemove = "Remove member"
+
+AdminMemberAdded = "Member added successfully."
+AdminMemberUpdated = "Member updated."
+AdminMemberRemoved = "Member removed."
+AdminAddNewMemberTitle = "Add a new member"
+
+AdminAliasesRevoke = "Revoke"
+AdminAliasesRevokeConfirmTitle = "Revoke Alias"
+AdminAliasesRevokeConfirmWelcome = "Are you sure you want to revoke this alias?"
+
+# invite dashboard
+##################
+
+AdminInvitesTitle = "Invites"
+AdminInvitesWelcome = "Create invite tokens for people who are not yet members of this room. On this page you can also see previously created invites that are still unclaimed by new members."
+AdminInvitesCreate = "Create new invite"
+AdminInvitesCreatedAtColumn = "Created at"
+AdminInvitesCreatorColumn = "Created by"
+AdminInvitesActionColumn = "Action"
+AdminInviteRevoke = "Revoke"
+
+InviteRevoked = "Invite Revoked."
+
+AdminInviteRevokeConfirmTitle = "Confirm invite revocation"
+AdminInviteRevokeConfirmWelcome = "Are you sure you want to remove this invite? If you already sent it out, they will not be able to use it."
+
+# TODO: add placeholder support to the template helpers (https://github.com/ssb-ngi-pointer/go-ssb-room/issues/60)
+AdminInviteCreatedBy = "Created by:"
+AdminInviteSuggestedAliasIs = "The suggested alias is:"
+AdminInviteSuggestedAliasIsShort = "Alias:"
+
+AdminInviteCreatedTitle = "Invite created successfully!"
+AdminInviteCreatedInstruct = "Now, copy the link below and paste it to a friend who you want to invite to this room."
+
+# public invites
+################
+
+InviteFacade = "Join Room"
+InviteFacadeTitle = "Join Room"
+InviteFacadeWelcome = "Welcome to {{.RoomTitle}}! You have permission to become a member of this room because someone has shared this invite with you."
+InviteFacadeInstruct = "To claim the invite, press the button below which will open a compatible SSB app, if it's installed."
+InviteFacadeJoin = "Join this room"
+InviteFacadeInstructQR = "If your SSB app is on another device, you can scan the following QR code to claim your invite on that device:"
+
+InviteFacadeFallbackInsertID = "Insert SSB ID"
+
+InviteInsertWelcome = "You can claim your invite by inserting your SSB ID below. After that, you'll be able to connect to the room in your SSB app."
+
+InviteConsumedTitle = "Invite accepted!"
+InviteConsumedWelcome = "You are now a member of this room. If you need a multiserver address to connect to the room, you can copy-paste the one below:"
+InviteConsumedSetPassword = "You can now create an account fallback password:"
+InviteConsumedSetPasswordButton = "Create password"
+
+# alias resolution
+##################
+
+AliasResolutionInstruct = "To connect with them, press the button below which will open a compatible SSB app, if it's installed."
+AliasResolutionConnect = "Connect with"
+
+# ssb uri links
+###############
+
+SSBURIOpening = "Opening SSB app"
+SSBURIFailureWelcome = "Are you new to SSB? It seems you don't have an SSB app capable of understanding that link. You can install one of these apps:"
+SSBURIFailureInstallManyverse = "Install Manyverse"
+
+# notices (mini-CMS)
+####################
+
+NoticeEditTitle = "Edit Notice"
+NoticeList = "Notices"
+NoticeListWelcome = "Here you can manage the contents of the landing page and other important documents such as code of conduct and privacy policy."
+NoticeAddTranslation = "Add"
+NoticeUpdated = "Notice updated"
+
+NoticeCodeOfConduct = "Code of Conduct"
+NoticeNews = "News"
+NoticeDescription = "Description"
+NoticePrivacyPolicy = "Privacy Policy"
+
+# Plurals
+#########
+# These need to use this form and get {{.Count}}
+#   [Label]
+#   one = "singular"
+#   other = "{{.Count}} things"
+
+[MemberCount]
+description = "Number of members"
+one = "1 member"
+other =  "{{.Count}} members"
+
+[ListCount]
+description = "generic list"
+one = "There is one item on the List"
+other =  "There are {{.Count}} items on the List"
+
+[AdminRoomCount]
+description = "The number of people in a room"
+one = "There is one person in the Room"
+other =  "There are {{.Count}} people in the Room"
+
+[AdminInvitesCount]
+description = "the number of invites that are not yet claimed"
+one = "1 invite still unclaimed"
+other = "{{.Count}} invites still unclaimed"
