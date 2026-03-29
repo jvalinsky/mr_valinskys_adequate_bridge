@@ -20,10 +20,10 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/mapper"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/publishqueue"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/room"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssbruntime"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/web/handlers"
 	websecurity "github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/web/security"
-	refs "github.com/ssbc/go-ssb-refs"
 )
 
 func TestBridgeSmoke(t *testing.T) {
@@ -239,7 +239,7 @@ func TestRoomHTTPSmoke(t *testing.T) {
 	}
 	defer database.Close()
 
-	feedRef, err := refs.NewFeedRefFromBytes(bytes.Repeat([]byte{9}, 32), refs.RefAlgoFeedSSB1)
+	feedRef, err := refs.NewFeedRef(bytes.Repeat([]byte{9}, 32), refs.RefAlgoFeedSSB1)
 	if err != nil {
 		t.Fatalf("create feed ref: %v", err)
 	}
@@ -304,7 +304,7 @@ func TestRoomHTTPSmoke(t *testing.T) {
 	}
 
 	botDetail := fetch("/bots/did:plc:room-smoke-bot")
-	for _, want := range []string{"did:plc:room-smoke-bot", feedRef.String(), feedRef.URI()} {
+	for _, want := range []string{"did:plc:room-smoke-bot", feedRef.String(), (&refs.FeedURI{Ref: feedRef}).String()} {
 		if !strings.Contains(botDetail, want) {
 			t.Fatalf("bot detail page missing %q", want)
 		}

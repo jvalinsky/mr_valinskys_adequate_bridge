@@ -2,6 +2,7 @@ package room
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -12,9 +13,8 @@ import (
 	"time"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
-	refs "github.com/ssbc/go-ssb-refs"
-	"github.com/ssbc/go-ssb-room/v2/roomdb"
-	roommockdb "github.com/ssbc/go-ssb-room/v2/roomdb/mockdb"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomdb"
 )
 
 func TestBridgeRoomHandlerLandingPageOpenMode(t *testing.T) {
@@ -271,18 +271,18 @@ func TestBridgeRoomHandlerBotDetailPage(t *testing.T) {
 
 	body := recorder.Body.String()
 	for _, want := range []string{
-		"did:plc:detail-test-bot", // full DID on detail page
-		activeFeed.String(),       // full feed ID
-		activeFeed.URI(),          // canonical feed URI
-		"Copy DID",                // copy button
-		"Copy feed ID",            // copy button
-		"Copy feed URI",           // copy button
-		"Open feed URI",           // action button
-		"← Back to directory",     // back nav
-		"Bot detail",              // eyebrow
-		"Published messages",      // published message section
-		"hello from atproto",      // rendered source text
-		"hello from ssb bridge",   // rendered bridged text
+		"did:plc:detail-test-bot",                 // full DID on detail page
+		activeFeed.String(),                       // full feed ID
+		(&refs.FeedURI{Ref: activeFeed}).String(), // canonical feed URI
+		"Copy DID",              // copy button
+		"Copy feed ID",          // copy button
+		"Copy feed URI",         // copy button
+		"Open feed URI",         // action button
+		"← Back to directory",   // back nav
+		"Bot detail",            // eyebrow
+		"Published messages",    // published message section
+		"hello from atproto",    // rendered source text
+		"hello from ssb bridge", // rendered bridged text
 		"%detail-test-message.sha256",
 		"Show stored payloads",
 		"page-title-wide",
@@ -497,17 +497,35 @@ func TestBridgeRoomHandlerBotDetailRejectsInvalidDID(t *testing.T) {
 	}
 }
 
-func newTestRoomConfig(mode roomdb.PrivacyMode) *roommockdb.FakeRoomConfig {
-	cfg := &roommockdb.FakeRoomConfig{}
-	cfg.GetPrivacyModeReturns(mode, nil)
-	cfg.GetDefaultLanguageReturns("en", nil)
-	return cfg
+type fakeRoomConfig struct {
+	mode roomdb.PrivacyMode
 }
 
-func mustTestFeedRef(t *testing.T, fill byte) refs.FeedRef {
+func newTestRoomConfig(mode roomdb.PrivacyMode) *fakeRoomConfig {
+	return &fakeRoomConfig{mode: mode}
+}
+
+func (f *fakeRoomConfig) GetPrivacyMode(ctx context.Context) (roomdb.PrivacyMode, error) {
+	return f.mode, nil
+}
+
+func (f *fakeRoomConfig) SetPrivacyMode(ctx context.Context, mode roomdb.PrivacyMode) error {
+	f.mode = mode
+	return nil
+}
+
+func (f *fakeRoomConfig) GetDefaultLanguage(ctx context.Context) (string, error) {
+	return "en", nil
+}
+
+func (f *fakeRoomConfig) SetDefaultLanguage(ctx context.Context, lang string) error {
+	return nil
+}
+
+func mustTestFeedRef(t *testing.T, fill byte) *refs.FeedRef {
 	t.Helper()
 
-	ref, err := refs.NewFeedRefFromBytes(bytes.Repeat([]byte{fill}, 32), refs.RefAlgoFeedSSB1)
+	ref, err := refs.NewFeedRef(bytes.Repeat([]byte{fill}, 32), refs.RefAlgoFeedSSB1)
 	if err != nil {
 		t.Fatalf("create test feed ref: %v", err)
 	}

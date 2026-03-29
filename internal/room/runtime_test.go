@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
-	refs "github.com/ssbc/go-ssb-refs"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 )
 
 func TestRuntimeConfigValidationRejectsInvalidMode(t *testing.T) {
@@ -176,6 +176,78 @@ func TestRuntimeCreateInviteJSONOpenMode(t *testing.T) {
 	}
 }
 
+func TestRuntimeJoinPageWithValidToken(t *testing.T) {
+	rt := startTestRuntime(t, "open", nil)
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	createReq, _ := http.NewRequest(http.MethodPost, "http://"+rt.HTTPAddr()+"/create-invite", nil)
+	createReq.Header.Set("Accept", "application/json")
+	createResp, err := client.Do(createReq)
+	if err != nil {
+		t.Fatalf("create invite failed: %v", err)
+	}
+	defer createResp.Body.Close()
+
+	var invitePayload map[string]string
+	if err := json.NewDecoder(createResp.Body).Decode(&invitePayload); err != nil {
+		t.Fatalf("decode invite response: %v", err)
+	}
+
+	token := ""
+	if idx := strings.Index(invitePayload["url"], "token="); idx != -1 {
+		token = invitePayload["url"][idx+6:]
+	}
+	if token == "" {
+		t.Fatalf("no token in invite url: %s", invitePayload["url"])
+	}
+
+	joinResp, err := client.Get("http://" + rt.HTTPAddr() + "/join?token=" + token)
+	if err != nil {
+		t.Fatalf("join page request failed: %v", err)
+	}
+	defer joinResp.Body.Close()
+
+	if joinResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(joinResp.Body)
+		t.Fatalf("expected 200 for valid token, got %d\nbody: %s", joinResp.StatusCode, string(body))
+	}
+
+	body, _ := io.ReadAll(joinResp.Body)
+	if !strings.Contains(string(body), "Join Room") {
+		t.Fatalf("join page missing expected content\nbody:\n%s", string(body))
+	}
+}
+
+func TestRuntimeJoinPageWithInvalidToken(t *testing.T) {
+	rt := startTestRuntime(t, "open", nil)
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	joinResp, err := client.Get("http://" + rt.HTTPAddr() + "/join?token=invalid-token-12345")
+	if err != nil {
+		t.Fatalf("join page request failed: %v", err)
+	}
+	defer joinResp.Body.Close()
+
+	if joinResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for invalid token, got %d", joinResp.StatusCode)
+	}
+}
+
+func TestRuntimeJoinPageWithNoToken(t *testing.T) {
+	rt := startTestRuntime(t, "open", nil)
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	joinResp, err := client.Get("http://" + rt.HTTPAddr() + "/join")
+	if err != nil {
+		t.Fatalf("join page request failed: %v", err)
+	}
+	defer joinResp.Body.Close()
+
+	if joinResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for no token, got %d", joinResp.StatusCode)
+	}
+}
+
 func TestRuntimeCreateInviteJSONFailsOutsideOpenMode(t *testing.T) {
 	rt := startTestRuntime(t, "community", nil)
 	client := &http.Client{Timeout: 2 * time.Second}
@@ -308,10 +380,10 @@ func openTestBridgeAccountsDB(t *testing.T, accounts []db.BridgedAccount) *db.DB
 	return database
 }
 
-func mustRuntimeTestFeedRef(t *testing.T, fill byte) refs.FeedRef {
+func mustRuntimeTestFeedRef(t *testing.T, fill byte) *refs.FeedRef {
 	t.Helper()
 
-	ref, err := refs.NewFeedRefFromBytes(bytes.Repeat([]byte{fill}, 32), refs.RefAlgoFeedSSB1)
+	ref, err := refs.NewFeedRef(bytes.Repeat([]byte{fill}, 32), refs.RefAlgoFeedSSB1)
 	if err != nil {
 		t.Fatalf("create test feed ref: %v", err)
 	}
