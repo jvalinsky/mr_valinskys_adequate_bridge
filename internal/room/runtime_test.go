@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"path/filepath"
 	"strings"
@@ -559,5 +562,192 @@ func TestAddMemberError(t *testing.T) {
 	err := rt.AddMember(context.Background(), refs.FeedRef{}, roomdb.RoleMember)
 	if err == nil {
 		t.Fatal("expected error for uninitialized DB")
+	}
+}
+
+func TestHandleJoinSubmit(t *testing.T) {
+	h := &inviteHandler{}
+	req := httptest.NewRequest(http.MethodPost, "/join?token=test", nil)
+	rr := httptest.NewRecorder()
+	h.handleJoinSubmit(rr, req, "test")
+	if rr.Code != http.StatusNotImplemented {
+		t.Errorf("expected 501, got %d", rr.Code)
+	}
+}
+
+func TestWithContext(t *testing.T) {
+	errBoom := fmt.Errorf("boom")
+	h := withContext(func(ctx context.Context) error {
+		return errBoom
+	})
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500, got %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "boom") {
+		t.Errorf("expected boom in body, got %q", rr.Body.String())
+	}
+}
+
+func TestJoinErrors(t *testing.T) {
+	if joinErrors(nil) != nil {
+		t.Error("expected nil for nil input")
+	}
+	e1 := fmt.Errorf("err1")
+	if joinErrors([]error{e1}) != e1 {
+		t.Error("expected e1 for single error")
+	}
+	e2 := fmt.Errorf("err2")
+	joined := joinErrors([]error{e1, e2})
+	if joined == nil || !strings.Contains(joined.Error(), "multiple errors") {
+		t.Error("expected multiple errors message")
+	}
+}
+
+func TestAuthHandlersSubmit(t *testing.T) {
+	// 1. handleLoginSubmit invalid credentials
+	h := &authHandler{authFallback: &mockAuthFallback{}}
+	req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader("username=foo&password=bar"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	h.handleLogin(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", rr.Code)
+	}
+
+	// 2. handleResetPasswordSubmit invalid token
+	req2 := httptest.NewRequest(http.MethodPost, "/reset-password", strings.NewReader("token=bad&password=new"))
+	req2.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr2 := httptest.NewRecorder()
+	h.handleResetPassword(rr2, req2)
+	if rr2.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", rr2.Code)
+	}
+}
+
+type mockAuthFallback struct{}
+
+func (m *mockAuthFallback) Check(ctx context.Context, u, p string) (int64, error) {
+	return 0, fmt.Errorf("fail")
+}
+func (m *mockAuthFallback) SetPassword(ctx context.Context, id int64, p string) error { return nil }
+func (m *mockAuthFallback) CreateResetToken(ctx context.Context, c, f int64) (string, error) {
+	return "", nil
+}
+func (m *mockAuthFallback) SetPasswordWithToken(ctx context.Context, t, p string) error {
+	return fmt.Errorf("fail")
+}
+
+func TestInviteHandlersErrors(t *testing.T) {
+	h := &inviteHandler{config: &mockRoomConfig{err: fmt.Errorf("mode fail")}}
+	req := httptest.NewRequest(http.MethodGet, "/create-invite", nil)
+	rr := httptest.NewRecorder()
+	h.handleCreateInvite(rr, req)
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500, got %d", rr.Code)
+	}
+}
+
+type mockRoomConfig struct {
+	err error
+}
+
+func (m *mockRoomConfig) GetPrivacyMode(ctx context.Context) (roomdb.PrivacyMode, error) {
+	return roomdb.ModeUnknown, m.err
+}
+func (m *mockRoomConfig) SetPrivacyMode(ctx context.Context, mode roomdb.PrivacyMode) error {
+	return nil
+}
+func (m *mockRoomConfig) GetDefaultLanguage(ctx context.Context) (string, error)    { return "", nil }
+func (m *mockRoomConfig) SetDefaultLanguage(ctx context.Context, lang string) error { return nil }
+
+func TestRuntimeHandleMUXRPCConn(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	rt, err := Start(ctx, Config{
+		ListenAddr:     "127.0.0.1:0",
+		HTTPListenAddr: "127.0.0.1:0",
+		RepoPath:       t.TempDir(),
+		Mode:           "community",
+	}, log.New(io.Discard, "", 0))
+	if err != nil {
+		if strings.Contains(err.Error(), "operation not permitted") {
+			t.Skipf("sandbox does not allow local listen sockets: %v", err)
+		}
+		t.Fatalf("start runtime: %v", err)
+	}
+	defer rt.Close()
+
+	// Dial the muxrpc listener
+	conn, err := net.Dial("tcp", rt.Addr())
+	if err != nil {
+		t.Fatalf("dial muxrpc: %v", err)
+	}
+	defer conn.Close()
+
+	// Give it a moment to accept
+	time.Sleep(100 * time.Millisecond)
+
+	// Closing the context should cause handleMUXRPCConn to exit
+	cancel()
+
+	// Give it a moment to close the conn
+	time.Sleep(100 * time.Millisecond)
+}
+
+func TestRuntimeHandleMUXRPCConnExit(t *testing.T) {
+	rt := &Runtime{}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	defer ln.Close()
+	conn, _ := net.Dial("tcp", ln.Addr().String())
+	defer conn.Close()
+	// This will just return immediately because ctx is done
+	rt.handleMUXRPCConn(ctx, conn)
+}
+
+func TestStartListenErrors(t *testing.T) {
+	ctx := context.Background()
+
+	// 1. Invalid HTTP listen addr
+	_, err := Start(ctx, Config{
+		HTTPListenAddr: "invalid",
+		ListenAddr:     "127.0.0.1:0",
+		RepoPath:       t.TempDir(),
+		Mode:           "community",
+	}, nil)
+	if err == nil || !strings.Contains(err.Error(), "invalid room HTTP listen addr") {
+		t.Errorf("expected validation error for bad http addr, got %v", err)
+	}
+
+	// 2. HTTP port in use (trigger listen error)
+	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	defer ln.Close()
+	_, err = Start(ctx, Config{
+		HTTPListenAddr: ln.Addr().String(),
+		ListenAddr:     "127.0.0.1:0",
+		RepoPath:       t.TempDir(),
+		Mode:           "community",
+	}, nil)
+	if err == nil || !strings.Contains(err.Error(), "listen http") {
+		t.Errorf("expected listen error for occupied http port, got %v", err)
+	}
+
+	// 3. MUXRPC port in use
+	ln2, _ := net.Listen("tcp", "127.0.0.1:0")
+	defer ln2.Close()
+	_, err = Start(ctx, Config{
+		HTTPListenAddr: "127.0.0.1:0",
+		ListenAddr:     ln2.Addr().String(),
+		RepoPath:       t.TempDir(),
+		Mode:           "community",
+	}, nil)
+	if err == nil || !strings.Contains(err.Error(), "listen muxrpc") {
+		t.Errorf("expected listen error for occupied muxrpc port, got %v", err)
 	}
 }

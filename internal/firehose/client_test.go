@@ -8,6 +8,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -16,8 +19,10 @@ import (
 
 	"github.com/bluesky-social/indigo/api/atproto"
 	appbsky "github.com/bluesky-social/indigo/api/bsky"
+	"github.com/bluesky-social/indigo/events"
 	"github.com/bluesky-social/indigo/lex/util"
 	indigorepo "github.com/bluesky-social/indigo/repo"
+	"github.com/gorilla/websocket"
 	blockformat "github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
 	ipld "github.com/ipfs/go-ipld-format"
@@ -646,5 +651,175 @@ func TestClientRunDialError(t *testing.T) {
 	err := c.Run(context.Background())
 	if err == nil {
 		t.Fatal("expected error for invalid URL")
+	}
+}
+
+func TestProcessOpsEdgeCases(t *testing.T) {
+	// 1. Missing CID for create/update should be skipped
+	evt := &atproto.SyncSubscribeRepos_Commit{
+		Ops: []*atproto.SyncSubscribeRepos_RepoOp{
+			{Action: "create", Path: "app.bsky.feed.post/1", Cid: nil},
+		},
+	}
+	err := ProcessOps(context.Background(), nil, evt)
+	if err != nil {
+		t.Errorf("expected no error for nil CID, got %v", err)
+	}
+
+	// 2. Fetch error during process should return error
+	records := map[string]interface{}{
+		"app.bsky.feed.post/err": &appbsky.FeedPost{Text: "fail"},
+	}
+	carData, _ := createTestCAR("did:plc:test", records)
+	rr, _ := ParseCommit(context.Background(), &atproto.SyncSubscribeRepos_Commit{Blocks: carData})
+
+	evt2 := &atproto.SyncSubscribeRepos_Commit{
+		Ops: []*atproto.SyncSubscribeRepos_RepoOp{
+			{Action: "create", Path: "app.bsky.feed.post/nonexistent", Cid: ptrLexLink("bafyreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku")},
+		},
+	}
+	err = ProcessOps(context.Background(), rr, evt2)
+	if err == nil || !strings.Contains(err.Error(), "getting record") {
+		t.Errorf("expected fetch error, got %v", err)
+	}
+}
+
+type failingHandler struct {
+	err error
+}
+
+func (h *failingHandler) HandleCommit(ctx context.Context, evt *atproto.SyncSubscribeRepos_Commit) error {
+	return h.err
+}
+
+func TestClientRunDialErrorWithResponse(t *testing.T) {
+	// Server that returns 403 Forbidden
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer server.Close()
+
+	u, _ := url.Parse(server.URL)
+	u.Scheme = "ws" // Dial will fail because it's not a real websocket server upgrade
+
+	c := NewClient(u.String(), nil, nil)
+	err := c.Run(context.Background())
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "status=403") {
+		t.Fatalf("expected 403 error, got %v", err)
+	}
+}
+
+func TestClientCallbacksCoverage(t *testing.T) {
+	c := NewClient("", &mockHandler{}, log.New(io.Discard, "", 0))
+
+	t.Run("handleRepoCommit", func(t *testing.T) {
+		err := c.handleRepoCommit(&atproto.SyncSubscribeRepos_Commit{Repo: "did:plc:x"})
+		if err != nil {
+			t.Error(err)
+		}
+	})
+
+	t.Run("handleRepoCommitError", func(t *testing.T) {
+		c2 := NewClient("", &failingHandler{err: fmt.Errorf("fail")}, log.New(io.Discard, "", 0))
+		err := c2.handleRepoCommit(&atproto.SyncSubscribeRepos_Commit{Repo: "did:plc:x"})
+		if err != nil {
+			t.Error(err)
+		}
+	})
+
+	t.Run("handleRepoInfo", func(t *testing.T) {
+		err := c.handleRepoInfo(&atproto.SyncSubscribeRepos_Info{Name: "info"})
+		if err != nil {
+			t.Error(err)
+		}
+	})
+
+	t.Run("handleError", func(t *testing.T) {
+		err := c.handleError(&events.ErrorFrame{Message: "err"})
+		if err != nil {
+			t.Error(err)
+		}
+	})
+}
+
+func TestClientRunSuccess(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		// Send a dummy RepoInfo message (using a raw slice for now as we just need to exercise the loop)
+		// Real ATProto messages are CBOR-encoded frames.
+		// For the purpose of testing the Run loop exit, we can just keep the connection open.
+
+		time.Sleep(500 * time.Millisecond)
+	}))
+	defer server.Close()
+
+	u, _ := url.Parse(server.URL)
+	u.Scheme = "ws"
+
+	handler := &mockHandler{}
+	client := NewClient(u.String(), handler, log.New(io.Discard, "", 0))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	err := client.Run(ctx)
+	// We expect context.DeadlineExceeded because the mock server just hangs.
+	// We also tolerate connection close errors during shutdown.
+	if err != nil &&
+		!errors.Is(err, context.DeadlineExceeded) &&
+		!strings.Contains(err.Error(), "context deadline exceeded") &&
+		!strings.Contains(err.Error(), "use of closed network connection") {
+		t.Fatalf("Run exited with unexpected error: %v", err)
+	}
+}
+
+func TestRunWithReconnectSuccessFirstTry(t *testing.T) {
+	cfg := ReconnectConfig{}
+	err := runWithReconnectLoop(context.Background(), log.New(io.Discard, "", 0), cfg, func(context.Context) error {
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("expected nil error, got %v", err)
+	}
+}
+
+func TestRunWithReconnectJitterDefault(t *testing.T) {
+	c := NewClient("", nil, nil)
+	// We can't easily check the internal state, but we can call it
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	c.RunWithReconnect(ctx, ReconnectConfig{InitialBackoff: 1 * time.Millisecond})
+}
+
+func TestClientRunWithReconnectFatal(t *testing.T) {
+	// A 401 error is fatal and should stop the loop immediately
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	u, _ := url.Parse(server.URL)
+	u.Scheme = "ws"
+
+	handler := &mockHandler{}
+	client := NewClient(u.String(), handler, log.New(io.Discard, "", 0))
+
+	err := client.RunWithReconnect(context.Background(), ReconnectConfig{
+		InitialBackoff: 1 * time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("expected fatal error for 401 status")
+	}
+	if !strings.Contains(err.Error(), "status=401") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

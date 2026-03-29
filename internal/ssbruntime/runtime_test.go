@@ -240,3 +240,33 @@ func TestPublishFailsWithEmptyDID(t *testing.T) {
 		t.Fatal("expected error for empty DID")
 	}
 }
+
+func TestOpenWithExistingFeeds(t *testing.T) {
+	ctx := context.Background()
+	repoPath := filepath.Join(t.TempDir(), "repo")
+	seed := []byte("test-master-seed-for-persistence")
+
+	// 1. First run: publish a message
+	rt1, err := Open(ctx, Config{
+		RepoPath:   repoPath,
+		MasterSeed: seed,
+	}, nil)
+	if err != nil {
+		t.Fatalf("first open: %v", err)
+	}
+	_, err = rt1.Publish(ctx, "did:plc:persistence", map[string]interface{}{"type": "post", "text": "hi"})
+	if err != nil {
+		t.Fatalf("first publish: %v", err)
+	}
+	rt1.Close()
+
+	// 2. Second run: should log existing feeds
+	rt2, err := Open(ctx, Config{
+		RepoPath:   repoPath,
+		MasterSeed: seed,
+	}, nil)
+	if err != nil {
+		t.Fatalf("second open: %v", err)
+	}
+	defer rt2.Close()
+}

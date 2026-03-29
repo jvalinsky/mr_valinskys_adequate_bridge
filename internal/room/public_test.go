@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -495,6 +496,36 @@ func TestBridgeRoomHandlerBotDetailRejectsInvalidDID(t *testing.T) {
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for invalid DID, got %d", recorder.Code)
 	}
+}
+
+func TestBridgeRoomHandlerBotDetailGetActiveError(t *testing.T) {
+	// Trigger error in GetActiveBridgedAccountWithStats
+	m := &mockBridgeDB{err: fmt.Errorf("db fail")}
+	handler := newBridgeRoomHandler(http.NotFoundHandler(), newTestRoomConfig(roomdb.ModeOpen), m, m)
+
+	req := httptest.NewRequest(http.MethodGet, "http://room.test/bots/did:plc:x", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500, got %d", rr.Code)
+	}
+}
+
+type mockBridgeDB struct {
+	err error
+}
+
+func (m *mockBridgeDB) ListActiveBridgedAccountsWithStats(ctx context.Context) ([]db.BridgedAccountStats, error) {
+	return nil, m.err
+}
+func (m *mockBridgeDB) ListActiveBridgedAccountsWithStatsSorted(ctx context.Context, s, so string) ([]db.BridgedAccountStats, error) {
+	return nil, m.err
+}
+func (m *mockBridgeDB) GetActiveBridgedAccountWithStats(ctx context.Context, did string) (*db.BridgedAccountStats, error) {
+	return nil, m.err
+}
+func (m *mockBridgeDB) ListRecentPublishedMessagesByDID(ctx context.Context, did string, l int) ([]db.Message, error) {
+	return nil, m.err
 }
 
 type fakeRoomConfig struct {

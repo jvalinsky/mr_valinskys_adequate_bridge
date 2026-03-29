@@ -1822,6 +1822,71 @@ func TestProcessorInternalErrors(t *testing.T) {
 			t.Errorf("expected query error, got %v", err)
 		}
 	})
+
+	t.Run("resolveDeferredMessage_MapError", func(t *testing.T) {
+		m2 := &mockProcessorDatabase{}
+		p2 := NewProcessor(m2, nil)
+		msg := db.Message{RawATJson: "{invalid", Type: mapper.RecordTypePost}
+		_, err := p2.resolveDeferredMessage(context.Background(), msg)
+		if err == nil || !strings.Contains(err.Error(), "map deferred record") {
+			t.Errorf("expected map error, got %v", err)
+		}
+	})
+
+	t.Run("resolveDeferredMessage_AddMessageError", func(t *testing.T) {
+		m2 := &mockProcessorDatabase{addMessageErr: errBoom}
+		p2 := NewProcessor(m2, nil)
+		msg := db.Message{RawATJson: `{"text":"hi"}`, Type: mapper.RecordTypePost}
+		// This will go to unresolved (if unresolved) or pending (if p.publisher is nil)
+		// With no publisher and no unresolved refs, it goes to "persist deferred pending"
+		_, err := p2.resolveDeferredMessage(context.Background(), msg)
+		if err == nil || !strings.Contains(err.Error(), "persist deferred pending") {
+			t.Errorf("expected add message error, got %v", err)
+		}
+	})
+
+	t.Run("resolveDeferredMessage_UnresolvedAddError", func(t *testing.T) {
+		m2 := &mockProcessorDatabase{addMessageErr: errBoom}
+		p2 := NewProcessor(m2, nil)
+		msg := db.Message{
+			RawATJson: `{"text":"hi","reply":{"root":{"uri":"at://missing","cid":"abc"},"parent":{"uri":"at://missing","cid":"abc"}}}`,
+			Type:      mapper.RecordTypePost,
+		}
+		_, err := p2.resolveDeferredMessage(context.Background(), msg)
+		if err == nil || !strings.Contains(err.Error(), "persist deferred unresolved") {
+			t.Errorf("expected unresolved add error, got %v", err)
+		}
+	})
+
+	t.Run("resolveDeferredMessage_PublishError", func(t *testing.T) {
+		m2 := &mockProcessorDatabase{addMessageErr: errBoom}
+		p2 := NewProcessor(m2, nil, WithPublisher(&mockPublisher{err: errBoom}))
+		msg := db.Message{RawATJson: `{"text":"hi"}`, Type: mapper.RecordTypePost}
+		_, err := p2.resolveDeferredMessage(context.Background(), msg)
+		if err == nil || !strings.Contains(err.Error(), "persist deferred publish failure") {
+			t.Errorf("expected publish add error, got %v", err)
+		}
+	})
+
+	t.Run("retryMessage_UnmarshalError", func(t *testing.T) {
+		m2 := &mockProcessorDatabase{}
+		p2 := NewProcessor(m2, nil, WithPublisher(&mockPublisher{}))
+		msg := db.Message{RawSSBJson: "{invalid"}
+		err := p2.retryMessage(context.Background(), msg)
+		if err == nil || !strings.Contains(err.Error(), "invalid character") {
+			t.Errorf("expected unmarshal error, got %v", err)
+		}
+	})
+
+	t.Run("retryMessage_PublishError", func(t *testing.T) {
+		m2 := &mockProcessorDatabase{}
+		p2 := NewProcessor(m2, nil, WithPublisher(&mockPublisher{err: errBoom}))
+		msg := db.Message{RawSSBJson: `{"type":"post"}`}
+		err := p2.retryMessage(context.Background(), msg)
+		if err == nil || !errors.Is(err, errBoom) {
+			t.Errorf("expected publish error, got %v", err)
+		}
+	})
 }
 
 func TestResolveDeferredMessagesCascadesReplyChain(t *testing.T) {
@@ -2089,5 +2154,33 @@ func TestMapDeleteRecordForFollow(t *testing.T) {
 	}
 	if result["blocking"] != false {
 		t.Fatal("expected blocking=false")
+	}
+}
+
+func TestHydrateRecordDependencies(t *testing.T) {
+	database, _ := db.Open(":memory:")
+	defer database.Close()
+
+	ctx := context.Background()
+	fetcher := &stubRecordFetcher{}
+	processor := newProcessorWithDependencies(database, nil, nil, fetcher)
+
+	mapped := map[string]interface{}{
+		"_atproto_subject":       "at://s",
+		"_atproto_quote_subject": "at://q",
+		"_atproto_reply_root":    "at://r",
+		"_atproto_reply_parent":  "at://p",
+	}
+
+	err := processor.hydrateRecordDependencies(ctx, mapped)
+	if err != nil {
+		t.Fatalf("hydrate: %v", err)
+	}
+
+	// Check fetch counts
+	for _, uri := range []string{"at://s", "at://q", "at://r", "at://p"} {
+		if fetcher.fetchCount(uri) == 0 {
+			t.Errorf("expected fetch for %s", uri)
+		}
 	}
 }

@@ -142,7 +142,7 @@ func Start(parentCtx context.Context, cfg Config, logger *log.Logger) (*Runtime,
 		muxrpcListener: muxrpcListener,
 		ctx:            ctx,
 		cancel:         cancel,
-		muxrpcAddr:     cfg.ListenAddr,
+		muxrpcAddr:     muxrpcListener.Addr().String(),
 		httpAddr:       httpListener.Addr().String(),
 		shutdownCh:     make(chan struct{}),
 	}

@@ -91,24 +91,30 @@ func (c *Client) Run(ctx context.Context) error {
 	c.logger.Println("Connected to firehose")
 
 	callbacks := &events.RepoStreamCallbacks{
-		RepoCommit: func(evt *atproto.SyncSubscribeRepos_Commit) error {
-			if err := c.handler.HandleCommit(ctx, evt); err != nil {
-				c.logger.Printf("Error handling commit: %v", err)
-			}
-			return nil
-		},
-		RepoInfo: func(info *atproto.SyncSubscribeRepos_Info) error {
-			c.logger.Printf("RepoInfo: %v", info.Name)
-			return nil
-		},
-		Error: func(errEvt *events.ErrorFrame) error {
-			c.logger.Printf("Error from firehose: %v", errEvt.Message)
-			return nil
-		},
+		RepoCommit: c.handleRepoCommit,
+		RepoInfo:   c.handleRepoInfo,
+		Error:      c.handleError,
 	}
 
 	sched := sequential.NewScheduler("firehose", callbacks.EventHandler)
 	return events.HandleRepoStream(ctx, con, sched, nil)
+}
+
+func (c *Client) handleRepoCommit(evt *atproto.SyncSubscribeRepos_Commit) error {
+	if err := c.handler.HandleCommit(context.Background(), evt); err != nil {
+		c.logger.Printf("Error handling commit: %v", err)
+	}
+	return nil
+}
+
+func (c *Client) handleRepoInfo(info *atproto.SyncSubscribeRepos_Info) error {
+	c.logger.Printf("RepoInfo: %v", info.Name)
+	return nil
+}
+
+func (c *Client) handleError(errEvt *events.ErrorFrame) error {
+	c.logger.Printf("Error from firehose: %v", errEvt.Message)
+	return nil
 }
 
 func (c *Client) RunWithReconnect(ctx context.Context, cfg ReconnectConfig) error {
