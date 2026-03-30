@@ -329,7 +329,7 @@ func NewEBTHandler(self *refs.FeedRef, store FeedManager, matrix *StateMatrix, r
 	}
 }
 
-func (h *EBTHandler) HandleDuplex(ctx context.Context, tx Writer, rx ByteSourceReader, remoteAddr string) error {
+func (h *EBTHandler) HandleDuplex(ctx context.Context, tx Writer, rx ByteSourceReader, remoteAddr string, remoteFeed *refs.FeedRef) error {
 	log.Printf("[EBT DEBUG] HandleDuplex: START remote=%s", remoteAddr)
 
 	session := h.sessions.Started(remoteAddr)
@@ -366,7 +366,14 @@ func (h *EBTHandler) HandleDuplex(ctx context.Context, tx Writer, rx ByteSourceR
 
 		log.Printf("[EBT DEBUG] HandleDuplex: received frontier from %s: %+v", remoteAddr, frontierUpdate)
 
-		wants, err := h.stateMatrix.Update(FeedRefToPtr(*h.self), frontierUpdate)
+		// Store remote peer's frontier under their identity, not ours
+		_, err = h.stateMatrix.Update(remoteFeed, frontierUpdate)
+		if err != nil {
+			return err
+		}
+
+		// Compute what's changed between our frontier and the remote peer's
+		wants, err := h.stateMatrix.Changed(h.self, remoteFeed)
 		if err != nil {
 			return err
 		}

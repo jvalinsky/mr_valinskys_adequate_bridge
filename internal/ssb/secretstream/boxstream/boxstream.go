@@ -15,7 +15,9 @@ const (
 	MaxSegmentSize = 4 * 1024
 )
 
-var goodbye = [18]byte{'g', 'o', 'o', 'd', 'b', 'y', 'e', '!', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
+// Goodbye is 18 zero bytes per the SSB boxstream spec.
+// The encrypted goodbye header signals stream termination.
+var goodbye [18]byte
 
 type BoxerEngine struct {
 	secret [32]byte

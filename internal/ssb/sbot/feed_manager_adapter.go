@@ -1,9 +1,12 @@
 package sbot
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
+	"strconv"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/feedlog"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
@@ -46,32 +49,55 @@ func (f *FeedManagerAdapter) GetMessage(author *refs.FeedRef, seq int64) ([]byte
 		content = string(msg.Value)
 	}
 
-	var previous interface{}
+	buf := &bytes.Buffer{}
+	buf.WriteString("{\n")
+
+	// NOTE: Do NOT include "key" field here. EBT messages are raw message
+	// objects (previous, author, sequence, timestamp, hash, content, signature).
+	// The "key" field is only used in createHistoryStream key-value format.
+	// Including it breaks TF's signature verification and message ID computation.
+
+	buf.WriteString(`  "previous": `)
 	if msg.Metadata.Previous != "" {
-		previous = msg.Metadata.Previous
+		buf.WriteString(`"` + msg.Metadata.Previous + `"`)
+	} else {
+		buf.WriteString("null")
 	}
+	buf.WriteString(",\n")
 
-	value := map[string]interface{}{
-		"author":    msg.Metadata.Author,
-		"sequence":  msg.Metadata.Sequence,
-		"previous":  previous,
-		"signature": fmt.Sprintf("%x", msg.Metadata.Sig),
-		"content":   content,
-	}
+	buf.WriteString(`  "author": "`)
+	buf.WriteString(msg.Metadata.Author)
+	buf.WriteString(`",` + "\n")
 
-	msgData := map[string]interface{}{
-		"key":       msg.Metadata.Hash,
-		"value":     value,
-		"timestamp": msg.Metadata.Timestamp,
-	}
+	buf.WriteString(`  "sequence": `)
+	buf.WriteString(strconv.FormatInt(msg.Metadata.Sequence, 10))
+	buf.WriteString(",\n")
 
-	data, err := json.Marshal(msgData)
+	buf.WriteString(`  "timestamp": `)
+	buf.WriteString(strconv.FormatInt(msg.Metadata.Timestamp, 10))
+	buf.WriteString(",\n")
+
+	buf.WriteString(`  "hash": "sha256",` + "\n")
+
+	buf.WriteString(`  "content": `)
+	// Content must be indented to match JSON.stringify(msg, null, 2) semantics.
+	contentBytes, err := json.MarshalIndent(content, "  ", "  ")
 	if err != nil {
-		return nil, fmt.Errorf("feed manager: marshal message: %w", err)
+		return nil, fmt.Errorf("feed manager: marshal content: %w", err)
 	}
+	buf.Write(contentBytes)
+	buf.WriteString(",\n")
 
-	log.Printf("[EBT DEBUG] FeedManagerAdapter.GetMessage: author=%s seq=%d msg_bytes=%d", author.String(), seq, len(data))
-	return data, nil
+	buf.WriteString(`  "signature": "`)
+	buf.WriteString(base64.StdEncoding.EncodeToString(msg.Metadata.Sig))
+	buf.WriteString(`.sig.ed25519"` + "\n")
+
+	buf.WriteString("}")
+
+	msgBytes := buf.Bytes()
+	log.Printf("[EBT DEBUG] GetMessage full msg for seq=%d:\n%s", seq, string(msgBytes))
+	log.Printf("[EBT DEBUG] FeedManagerAdapter.GetMessage: author=%s seq=%d msg_bytes=%d", author.String(), seq, len(msgBytes))
+	return msgBytes, nil
 }
 
 var _ replication.FeedManager = (*FeedManagerAdapter)(nil)

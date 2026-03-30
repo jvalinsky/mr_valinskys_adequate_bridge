@@ -6,7 +6,9 @@ import (
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc/codec"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/replication"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/secretstream"
 )
 
 type EBTHandlerWrapper struct {
@@ -43,7 +45,19 @@ func (w *EBTHandlerWrapper) HandleCall(ctx context.Context, req *muxrpc.Request)
 	rx := muxrpc.NewByteSourceAdapter(source)
 
 	go func() {
-		if err := w.ebt.HandleDuplex(ctx, tx, rx, req.RemoteAddr().String()); err != nil {
+		remoteAddr := req.RemoteAddr()
+		addrStr := remoteAddr.String()
+
+		// Extract the remote peer's feed ref from the SHS connection
+		var remoteFeed *refs.FeedRef
+		if sshAddr, ok := remoteAddr.(secretstream.Addr); ok {
+			ref, err := refs.NewFeedRef(sshAddr.PubKey, refs.RefAlgoFeedSSB1)
+			if err == nil {
+				remoteFeed = ref
+			}
+		}
+
+		if err := w.ebt.HandleDuplex(ctx, tx, rx, addrStr, remoteFeed); err != nil {
 			req.CloseWithError(err)
 		} else {
 			req.Sink().Close()

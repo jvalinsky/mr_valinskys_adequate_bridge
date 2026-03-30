@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
-	"net"
 	"sync"
 	"time"
 
@@ -19,6 +18,7 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/replication"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomdb/sqlite"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomstate"
+	"golang.org/x/crypto/ed25519"
 )
 
 type Options struct {
@@ -62,15 +62,22 @@ type Sbot struct {
 
 func New(opts Options) (*Sbot, error) {
 	if opts.AppKey == "" {
-		opts.AppKey = "tofu"
+		opts.AppKey = ""
 	}
 	if opts.Hops == 0 {
 		opts.Hops = 2
 	}
 	if opts.KeyPair == nil {
-		kp, err := keys.Generate()
+		secretPath := opts.RepoPath + "/secret"
+		kp, err := keys.Load(secretPath)
 		if err != nil {
-			return nil, fmt.Errorf("sbot: failed to generate key pair: %w", err)
+			kp, err = keys.Generate()
+			if err != nil {
+				return nil, fmt.Errorf("sbot: failed to generate key pair: %w", err)
+			}
+			if saveErr := keys.Save(kp, secretPath); saveErr != nil {
+				return nil, fmt.Errorf("sbot: failed to save key pair: %w", saveErr)
+			}
 		}
 		opts.KeyPair = kp
 	}
@@ -84,16 +91,19 @@ func New(opts Options) (*Sbot, error) {
 		return nil, fmt.Errorf("sbot: failed to create store: %w", err)
 	}
 
+	selfRef := opts.KeyPair.FeedRef()
 	stateMatrix, err := replication.NewStateMatrix(
 		opts.RepoPath+"/ebt-state",
-		nil,
+		&selfRef,
 		feedStore,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("sbot: failed to create state matrix: %w", err)
 	}
 
-	ebtHandler := replication.NewEBTHandler(nil, nil, stateMatrix, nil)
+	feedManagerAdapter := NewFeedManagerAdapter(feedStore)
+	feedReplicator := NewFeedReplicator(feedStore)
+	ebtHandler := replication.NewEBTHandler(&selfRef, feedManagerAdapter, stateMatrix, feedReplicator)
 
 	blobStore := blobs.NewStore(feedStore.Blobs())
 
@@ -239,6 +249,9 @@ func registerHandlers(mux *muxrpc.HandlerMux, store *feedlog.StoreImpl, ebt *rep
 	mux.Register(muxrpc.Method{"blobs", "size"}, blobHandler)
 	mux.Register(muxrpc.Method{"blobs", "want"}, blobHandler)
 	mux.Register(muxrpc.Method{"blobs", "createWants"}, blobHandler)
+
+	ebtHandlerWrapper := NewEBTHandlerWrapper(ebt)
+	mux.Register(muxrpc.Method{"ebt", "replicate"}, ebtHandlerWrapper)
 }
 
 func (s *Sbot) Serve() error {
@@ -289,8 +302,16 @@ func (s *Sbot) Shutdown() error {
 	return nil
 }
 
-func (s *Sbot) Connect(ctx context.Context, addr string) (*network.Peer, error) {
-	return s.netClient.Connect(ctx, addr)
+func (s *Sbot) Connect(ctx context.Context, addr string, remote ed25519.PublicKey) (*network.Peer, error) {
+	return s.netClient.Connect(ctx, addr, remote)
+}
+
+func (s *Sbot) Node() *Sbot {
+	return s
+}
+
+func (s *Sbot) ListenAddr() string {
+	return s.opts.ListenAddr
 }
 
 func (s *Sbot) Peers() []*network.Peer {
@@ -339,6 +360,10 @@ func (s *Sbot) EBT() *replication.EBTHandler {
 	return s.ebt
 }
 
+func (s *Sbot) HandlerMux() *muxrpc.HandlerMux {
+	return s.handlerMux
+}
+
 func (s *Sbot) StateMatrix() *replication.StateMatrix {
 	return s.state
 }
@@ -360,17 +385,8 @@ func (s *Sbot) GetNet() *SbotNetwork {
 	return s.Network
 }
 
-func (n *SbotNetwork) Connect(ctx context.Context, addr interface{}) error {
-	var addrStr string
-	switch a := addr.(type) {
-	case string:
-		addrStr = a
-	case net.Addr:
-		addrStr = a.String()
-	default:
-		return fmt.Errorf("unsupported addr type: %T", addr)
-	}
-	_, err := n.client.Connect(ctx, addrStr)
+func (n *SbotNetwork) Connect(ctx context.Context, addr string, remote ed25519.PublicKey) error {
+	_, err := n.client.Connect(ctx, addr, remote)
 	return err
 }
 
@@ -414,5 +430,11 @@ func (s *Sbot) Replicate(feed interface{}) {
 		s.replicatedFeeds.Store(f.String(), f)
 	case string:
 		s.replicatedFeeds.Store(f, nil)
+	}
+}
+
+func (s *Sbot) NotifyFeedSeq(feed *refs.FeedRef, seq int64) {
+	if s.state != nil {
+		s.state.SetFeedSeq(feed, seq)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"strconv"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/keys"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
@@ -102,55 +103,89 @@ func (m *Message) MarshalForSigning() ([]byte, error) {
 }
 
 func (m *Message) marshalForSigning() ([]byte, error) {
-	msg := struct {
-		Previous  *refs.MessageRef `json:"previous,omitempty"`
-		Author    string           `json:"author"`
-		Sequence  int64            `json:"sequence"`
-		Timestamp int64            `json:"timestamp"`
-		Hash      string           `json:"hash"`
-		Content   interface{}      `json:"content"`
-	}{
-		Previous:  m.Previous,
-		Author:    m.Author.String(),
-		Sequence:  m.Sequence,
-		Timestamp: m.Timestamp,
-		Hash:      m.Hash,
-		Content:   m.Content,
-	}
+	buf := &bytes.Buffer{}
+	buf.WriteString("{\n")
 
-	data, err := json.Marshal(msg)
+	buf.WriteString(`  "previous": `)
+	if m.Previous != nil {
+		buf.WriteString(`"` + m.Previous.String() + `"`)
+	} else {
+		buf.WriteString("null")
+	}
+	buf.WriteString(",\n")
+
+	buf.WriteString(`  "author": "`)
+	buf.WriteString(m.Author.String())
+	buf.WriteString(`",` + "\n")
+
+	buf.WriteString(`  "sequence": `)
+	buf.WriteString(strconv.FormatInt(m.Sequence, 10))
+	buf.WriteString(",\n")
+
+	buf.WriteString(`  "timestamp": `)
+	buf.WriteString(strconv.FormatInt(m.Timestamp, 10))
+	buf.WriteString(",\n")
+
+	buf.WriteString(`  "hash": "`)
+	buf.WriteString(m.Hash)
+	buf.WriteString(`",` + "\n")
+
+	buf.WriteString(`  "content": `)
+	// Content must be indented with JSON.stringify(msg, null, 2) semantics.
+	// At depth 1, nested keys use prefix "  " (parent depth) + indent "  " per level.
+	contentBytes, err := json.MarshalIndent(m.Content, "  ", "  ")
 	if err != nil {
 		return nil, err
 	}
+	buf.Write(contentBytes)
+	buf.WriteString("\n")
 
-	return PrettyPrint(data)
+	buf.WriteString("}")
+	return buf.Bytes(), nil
 }
 
 func (m *Message) marshalWithSignature(sig []byte) ([]byte, error) {
-	signed := struct {
-		Previous  *refs.MessageRef `json:"previous,omitempty"`
-		Author    string           `json:"author"`
-		Sequence  int64            `json:"sequence"`
-		Timestamp int64            `json:"timestamp"`
-		Hash      string           `json:"hash"`
-		Content   interface{}      `json:"content"`
-		Signature string           `json:"signature"`
-	}{
-		Previous:  m.Previous,
-		Author:    m.Author.String(),
-		Sequence:  m.Sequence,
-		Timestamp: m.Timestamp,
-		Hash:      m.Hash,
-		Content:   m.Content,
-		Signature: base64.StdEncoding.EncodeToString(sig) + ".sig.ed25519",
-	}
+	buf := &bytes.Buffer{}
+	buf.WriteString("{\n")
 
-	data, err := json.Marshal(signed)
+	buf.WriteString(`  "previous": `)
+	if m.Previous != nil {
+		buf.WriteString(`"` + m.Previous.String() + `"`)
+	} else {
+		buf.WriteString("null")
+	}
+	buf.WriteString(",\n")
+
+	buf.WriteString(`  "author": "`)
+	buf.WriteString(m.Author.String())
+	buf.WriteString(`",` + "\n")
+
+	buf.WriteString(`  "sequence": `)
+	buf.WriteString(strconv.FormatInt(m.Sequence, 10))
+	buf.WriteString(",\n")
+
+	buf.WriteString(`  "timestamp": `)
+	buf.WriteString(strconv.FormatInt(m.Timestamp, 10))
+	buf.WriteString(",\n")
+
+	buf.WriteString(`  "hash": "`)
+	buf.WriteString(m.Hash)
+	buf.WriteString(`",` + "\n")
+
+	buf.WriteString(`  "content": `)
+	contentBytes, err := json.MarshalIndent(m.Content, "  ", "  ")
 	if err != nil {
 		return nil, err
 	}
+	buf.Write(contentBytes)
+	buf.WriteString(",\n")
 
-	return PrettyPrint(data)
+	buf.WriteString(`  "signature": "`)
+	buf.WriteString(base64.StdEncoding.EncodeToString(sig))
+	buf.WriteString(`.sig.ed25519"` + "\n")
+
+	buf.WriteString("}")
+	return buf.Bytes(), nil
 }
 
 func ExtractSignature(b []byte) ([]byte, Signature, error) {

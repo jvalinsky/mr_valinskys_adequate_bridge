@@ -170,6 +170,7 @@ type ByteSink struct {
 	mu        sync.Mutex
 	writer    *bytes.Buffer
 	usePacker bool
+	isCounter bool // true if this is a response (negative ID)
 }
 
 func NewByteSink(p PacketWriter) *ByteSink {
@@ -180,26 +181,34 @@ func NewByteSink(p PacketWriter) *ByteSink {
 	}
 }
 
-func NewByteSinkFromStream(ps *PacketStream) *ByteSink {
-	return &ByteSink{
-		pkr:       nil,
-		writer:    new(bytes.Buffer),
-		usePacker: false,
-		flag:      ps.flag,
-		req:       ps.req,
-	}
-}
-
 func (bs *ByteSink) SetReqID(req int32) {
 	bs.mu.Lock()
 	defer bs.mu.Unlock()
 	bs.req = req
 }
 
+func (bs *ByteSink) SetCounterpart(v bool) {
+	bs.mu.Lock()
+	defer bs.mu.Unlock()
+	bs.isCounter = v
+}
+
 func (bs *ByteSink) SetEncoding(enc RequestEncoding) {
 	bs.mu.Lock()
 	defer bs.mu.Unlock()
 	bs.encoding = enc
+}
+
+func (bs *ByteSink) SetFlag(f codec.Flag) {
+	bs.mu.Lock()
+	defer bs.mu.Unlock()
+	bs.flag = f
+}
+
+func (bs *ByteSink) isStream() bool {
+	bs.mu.Lock()
+	defer bs.mu.Unlock()
+	return bs.flag.Get(codec.FlagStream)
 }
 
 func (bs *ByteSink) Packer() *Packer {
@@ -219,7 +228,43 @@ func (bs *ByteSink) Write(p []byte) (int, error) {
 		return 0, io.EOF
 	}
 
+	if bs.usePacker && bs.pkr != nil && bs.isStreamUnlocked() {
+		return bs.flush(p, false)
+	}
+
 	bs.writer.Write(p)
+	return len(p), nil
+}
+
+func (bs *ByteSink) isStreamUnlocked() bool {
+	return bs.flag.Get(codec.FlagStream)
+}
+
+func (bs *ByteSink) flush(p []byte, end bool) (int, error) {
+	encFlag, err := bs.encoding.AsCodecFlag()
+	if err != nil {
+		return 0, err
+	}
+
+	flag := encFlag | codec.FlagStream
+	if end {
+		flag |= codec.FlagEndErr
+	}
+
+	id := bs.req
+	if bs.isCounter {
+		id = -id
+	}
+
+	pkt := codec.Packet{
+		Flag: flag,
+		Req:  id,
+		Body: p,
+	}
+	err = bs.pkr.WritePacket(pkt)
+	if err != nil {
+		return 0, err
+	}
 	return len(p), nil
 }
 
@@ -232,18 +277,22 @@ func (bs *ByteSink) Close() error {
 	}
 	bs.closed = true
 	if bs.usePacker && bs.pkr != nil {
-		encFlag, err := bs.encoding.AsCodecFlag()
-		if err != nil {
-			bs.closeErr = err
-			return err
+		if bs.isStreamUnlocked() {
+			// Send empty end packet
+			_, bs.closeErr = bs.flush(nil, true)
+		} else {
+			encFlag, _ := bs.encoding.AsCodecFlag()
+			id := bs.req
+			if bs.isCounter {
+				id = -id
+			}
+			pkt := codec.Packet{
+				Flag: encFlag | codec.FlagEndErr,
+				Req:  id,
+				Body: bs.writer.Bytes(),
+			}
+			bs.closeErr = bs.pkr.WritePacket(pkt)
 		}
-
-		pkt := codec.Packet{
-			Flag: encFlag | codec.FlagEndErr,
-			Req:  -bs.req,
-			Body: bs.writer.Bytes(),
-		}
-		bs.closeErr = bs.pkr.WritePacket(pkt)
 	}
 
 	return bs.closeErr

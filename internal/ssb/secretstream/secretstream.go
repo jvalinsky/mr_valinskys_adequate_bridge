@@ -4,29 +4,30 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"io"
 	"net"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/secretstream/boxstream"
 
+	"crypto/sha512"
 	"filippo.io/edwards25519"
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/crypto/ed25519"
 	"golang.org/x/crypto/nacl/auth"
 	"golang.org/x/crypto/nacl/box"
-	"crypto/sha512"
 	"time"
 )
 
 const NetworkString = "boxstream"
 
-// Standard SSB public network identifier (Base64: 1KHLiKZvAvjbY1wiZEHMXOWBBYm2hPU10pkVkyQ183M=)
+// Standard SSB public network identifier (Base64: 1KHLiKZvAvjbY1ziZEHMXawbCEIM6qwjCDm3VYRan/s=)
 var DefaultAppKey = AppKey{
 	0xd4, 0xa1, 0xcb, 0x88, 0xa6, 0x6f, 0x02, 0xf8,
-	0xdb, 0x63, 0x5c, 0x22, 0x64, 0x41, 0xcc, 0x5c,
-	0xe5, 0x81, 0x05, 0x89, 0xb6, 0x84, 0xf5, 0x35,
-	0xd2, 0x99, 0x15, 0x93, 0x24, 0x35, 0xf3, 0x73,
+	0xdb, 0x63, 0x5c, 0xe2, 0x64, 0x41, 0xcc, 0x5d,
+	0xac, 0x1b, 0x08, 0x42, 0x0c, 0xea, 0xac, 0x23,
+	0x08, 0x39, 0xb7, 0x55, 0x84, 0x5a, 0x9f, 0xfb,
 }
 
 var (
@@ -52,10 +53,10 @@ const (
 )
 
 type HandshakeMachine struct {
-	state   *State
-	role    shsState
+	state    *State
+	role     shsState
 	isClient bool
-	buffer  []byte
+	buffer   []byte
 }
 
 func NewClientHandshake(appKey AppKey, local ed25519.PrivateKey, remote ed25519.PublicKey) (*HandshakeMachine, error) {
@@ -224,8 +225,15 @@ func (a Addr) String() string {
 type AppKey [32]byte
 
 func NewAppKey(s string) AppKey {
-	if s == "boxstream" || s == "" {
+	if s == "" || s == "boxstream" {
 		return DefaultAppKey
+	}
+	if len(s) == 64 {
+		if b, err := hex.DecodeString(s); err == nil && len(b) == 32 {
+			var k AppKey
+			copy(k[:], b)
+			return k
+		}
 	}
 	h := sha256.Sum256([]byte(s))
 	return h

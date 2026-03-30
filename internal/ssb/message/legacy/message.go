@@ -2,6 +2,7 @@ package legacy
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -91,10 +92,10 @@ func (m *SignedMessage) ContentHash() []byte {
 }
 
 func verifySignature(pubKey []byte, content, sig []byte) bool {
-	if len(sig) != 64 || len(pubKey) != 32 {
+	if len(sig) != ed25519.SignatureSize || len(pubKey) != ed25519.PublicKeySize {
 		return false
 	}
-	return true
+	return ed25519.Verify(pubKey, content, sig)
 }
 
 func PrettyPrint(input []byte) ([]byte, error) {
@@ -132,13 +133,24 @@ func formatObject(buf *bytes.Buffer, data []byte, depth int, indent string) erro
 	}
 
 	buf.WriteString("{\n")
-	keys := make([]string, 0, len(obj))
-	for k := range obj {
-		keys = append(keys, k)
+	
+	// Preserve key order using a manual scan of the raw data.
+	// Go's json.Unmarshal sorts map keys, which breaks SSB verification.
+	keys := getKeysInOrder(data)
+	if len(keys) == 0 {
+		// Fallback to sorted keys if order extraction fails
+		keys = make([]string, 0, len(obj))
+		for k := range obj {
+			keys = append(keys, k)
+		}
+		sortStrings(keys)
 	}
-	sortStrings(keys)
 
 	for i, k := range keys {
+		val, ok := obj[k]
+		if !ok {
+			continue
+		}
 		if i > 0 {
 			buf.WriteString(",\n")
 		}
@@ -147,7 +159,7 @@ func formatObject(buf *bytes.Buffer, data []byte, depth int, indent string) erro
 		buf.WriteString(k)
 		buf.WriteString("\": ")
 
-		if err := formatJSON(buf, obj[k], depth+1); err != nil {
+		if err := formatJSON(buf, val, depth+1); err != nil {
 			return err
 		}
 	}
@@ -156,6 +168,30 @@ func formatObject(buf *bytes.Buffer, data []byte, depth int, indent string) erro
 	buf.WriteString(indent)
 	buf.WriteString("}")
 	return nil
+}
+
+func getKeysInOrder(data []byte) []string {
+	var keys []string
+	dec := json.NewDecoder(bytes.NewReader(data))
+	t, err := dec.Token()
+	if err != nil || t != json.Delim('{') {
+		return nil
+	}
+	for dec.More() {
+		t, err := dec.Token()
+		if err != nil {
+			break
+		}
+		if s, ok := t.(string); ok {
+			keys = append(keys, s)
+		}
+		// Skip the value
+		var v json.RawMessage
+		if err := dec.Decode(&v); err != nil {
+			break
+		}
+	}
+	return keys
 }
 
 func formatArray(buf *bytes.Buffer, data []byte, depth int, indent string) error {
@@ -214,77 +250,24 @@ func HashMessage(content []byte) []byte {
 	return h[:]
 }
 
+// V8Binary implements the specific quirky encoding used in SSB message hashing.
+// It mimics how legacy Node.js/V8 implementations hashed strings by converting
+// to UTF-16 and taking only the low 8 bits of each code unit.
 func V8Binary(data []byte) []byte {
-	var result []byte
-	var strBuf bytes.Buffer
-	inString := false
-
-	for i := 0; i < len(data); i++ {
-		c := data[i]
-
-		switch c {
-		case '"':
-			if !inString {
-				inString = true
-				strBuf.Reset()
-			} else {
-				inString = false
-				escaped := false
-				for j := strBuf.Len() - 1; j >= 0; j-- {
-					if strBuf.Bytes()[j] != '\\' {
-						break
-					}
-					escaped = !escaped
-				}
-				if !escaped {
-					result = append(result, '"')
-					result = append(result, escapeString(strBuf.String())...)
-					result = append(result, '"')
-					strBuf.Reset()
-					continue
-				}
-			}
-			strBuf.WriteByte(c)
-		case '\\':
-			if inString {
-				if i+1 < len(data) && data[i+1] == 'u' {
-					result = append(result, data[i:i+6]...)
-					i += 5
-					continue
-				}
-			}
-			result = append(result, c)
-		case '\n':
-			if inString {
-				strBuf.WriteByte('\\')
-				strBuf.WriteByte('n')
-			} else {
-				result = append(result, c)
-			}
-		case '\r':
-			if inString {
-				strBuf.WriteByte('\\')
-				strBuf.WriteByte('r')
-			} else {
-				result = append(result, c)
-			}
-		case '\t':
-			if inString {
-				strBuf.WriteByte('\\')
-				strBuf.WriteByte('t')
-			} else {
-				result = append(result, c)
-			}
-		default:
-			if inString {
-				strBuf.WriteByte(c)
-			} else {
-				result = append(result, c)
-			}
+	runes := []rune(string(data))
+	var quirky []byte
+	for _, r := range runes {
+		if r < 0x10000 {
+			quirky = append(quirky, byte(r&0xff))
+		} else {
+			// Surrogate pair for non-BMP characters
+			r -= 0x10000
+			h := 0xd800 + (r >> 10)
+			l := 0xdc00 + (r & 0x3ff)
+			quirky = append(quirky, byte(h&0xff), byte(l&0xff))
 		}
 	}
-
-	return result
+	return quirky
 }
 
 func escapeString(s string) string {
@@ -305,7 +288,12 @@ func escapeString(s string) string {
 		case '\t':
 			result = append(result, '\\', 't')
 		default:
-			result = append(result, c)
+			if c < 0x20 {
+				// Escape control characters as \u00xx
+				result = append(result, []byte(fmt.Sprintf("\\u%04x", c))...)
+			} else {
+				result = append(result, c)
+			}
 		}
 	}
 	return string(result)

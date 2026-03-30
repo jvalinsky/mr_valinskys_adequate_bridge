@@ -343,9 +343,15 @@ func (r *rpc) HandlePacket(p *codec.Packet) {
 		existingReq, hasExisting := r.streams[p.Req]
 		r.mu.Unlock()
 
-		if hasExisting && existingReq.Type == "duplex" {
-			log.Printf("[MUXRPC DEBUG] HandlePacket: Duplex response detected on Req=%d, routing to existing stream", p.Req)
-			if err := existingReq.source.WritePacket(p); err != nil {
+		if hasExisting {
+			log.Printf("[MUXRPC DEBUG] HandlePacket: follow-up packet detected on Req=%d, routing to existing stream", p.Req)
+			if len(p.Body) > 0 {
+				if err := existingReq.source.WritePacket(p); err != nil {
+				}
+			}
+			if p.Flag.Get(codec.FlagEndErr) {
+				existingReq.source.Cancel(nil)
+				r.closeStream(existingReq)
 			}
 		} else {
 			req := &Request{
@@ -369,18 +375,27 @@ func (r *rpc) HandlePacket(p *codec.Packet) {
 				}
 			}
 
+			// Set sink flags after unmarshaling Type
+			req.sink.SetReqID(p.Req)
+			req.sink.SetCounterpart(true)
+			if req.Type.Flags().Get(codec.FlagStream) {
+				req.sink.SetFlag(codec.FlagStream)
+			}
+
 			if r.handler != nil {
-				r.handler.HandleCall(r.ctx, req)
+				go r.handler.HandleCall(r.ctx, req)
 			}
 		}
-	} else {
+	} else if p.Req < 0 {
 		r.mu.Lock()
 		req, ok := r.streams[-p.Req]
 		r.mu.Unlock()
 		if ok {
 			if err := req.source.WritePacket(p); err != nil {
 			}
-			if p.Flag.Get(codec.FlagEndErr) && !p.Flag.Get(codec.FlagStream) {
+			// Stream end: FlagEndErr signals termination regardless of FlagStream.
+			// Both stream end (EndErr+Stream) and async error (EndErr only) should close.
+			if p.Flag.Get(codec.FlagEndErr) {
 				req.source.Cancel(nil)
 				r.closeStream(req)
 			}
@@ -429,16 +444,39 @@ func (r *rpc) Async(ctx context.Context, ret interface{}, tipe RequestEncoding, 
 	return nil
 }
 
-func (r *rpc) Source(ctx context.Context, tipe RequestEncoding, method Method, args ...interface{}) (*ByteSource, error) {
-	return r.call(ctx, "source", tipe, method, args...)
-}
-
-func (r *rpc) call(ctx context.Context, callType string, tipe RequestEncoding, method Method, args ...interface{}) (*ByteSource, error) {
-	encFlag, err := tipe.AsCodecFlag()
+func (r *rpc) Sink(ctx context.Context, tipe RequestEncoding, method Method, args ...interface{}) (*ByteSink, error) {
+	req, err := r.doCall(ctx, "sink", tipe, method, args...)
 	if err != nil {
 		return nil, err
 	}
+	return req.sink, nil
+}
 
+func (r *rpc) Duplex(ctx context.Context, tipe RequestEncoding, method Method, args ...interface{}) (*ByteSource, *ByteSink, error) {
+	req, err := r.doCall(ctx, "duplex", tipe, method, args...)
+	if err != nil {
+		return nil, nil, err
+	}
+	return req.source, req.sink, nil
+}
+
+func (r *rpc) Source(ctx context.Context, tipe RequestEncoding, method Method, args ...interface{}) (*ByteSource, error) {
+	req, err := r.doCall(ctx, "source", tipe, method, args...)
+	if err != nil {
+		return nil, err
+	}
+	return req.source, nil
+}
+
+func (r *rpc) call(ctx context.Context, callType string, tipe RequestEncoding, method Method, args ...interface{}) (*ByteSource, error) {
+	req, err := r.doCall(ctx, callType, tipe, method, args...)
+	if err != nil {
+		return nil, err
+	}
+	return req.source, nil
+}
+
+func (r *rpc) doCall(ctx context.Context, callType string, tipe RequestEncoding, method Method, args ...interface{}) (*Request, error) {
 	r.mu.Lock()
 	id := r.nextID
 	r.nextID++
@@ -446,6 +484,11 @@ func (r *rpc) call(ctx context.Context, callType string, tipe RequestEncoding, m
 
 	sink := NewByteSink(r)
 	sink.SetReqID(id)
+	sink.SetCounterpart(false)
+	sink.SetEncoding(tipe)
+	if callType != "async" && callType != "sync" {
+		sink.SetFlag(codec.FlagStream)
+	}
 	src := NewByteSource(ctx)
 
 	req := &Request{
@@ -468,12 +511,9 @@ func (r *rpc) call(ctx context.Context, callType string, tipe RequestEncoding, m
 	}
 
 	pkt := codec.Packet{
-		Flag: encFlag,
+		Flag: codec.FlagJSON,
 		Req:  id,
 		Body: body,
-	}
-	if tipe == TypeJSON {
-		pkt.Flag |= codec.FlagJSON
 	}
 	if callType != "async" && callType != "sync" {
 		pkt.Flag |= codec.FlagStream
@@ -487,15 +527,7 @@ func (r *rpc) call(ctx context.Context, callType string, tipe RequestEncoding, m
 	r.streams[id] = req
 	r.mu.Unlock()
 
-	return src, nil
-}
-
-func (r *rpc) Sink(ctx context.Context, tipe RequestEncoding, method Method, args ...interface{}) (*ByteSink, error) {
-	return nil, fmt.Errorf("not implemented")
-}
-
-func (r *rpc) Duplex(ctx context.Context, tipe RequestEncoding, method Method, args ...interface{}) (*ByteSource, *ByteSink, error) {
-	return nil, nil, fmt.Errorf("not implemented")
+	return req, nil
 }
 
 type Manifest struct {
