@@ -116,8 +116,12 @@ func (c *Client) handleRepoCommit(evt *atproto.SyncSubscribeRepos_Commit) error 
 	c.logger.Printf("[FIREHOSE DEBUG] RepoCommit: repo=%s seq=%d ops=%d",
 		evt.Repo, evt.Seq, len(evt.Ops))
 	for i, op := range evt.Ops {
+		cidStr := "nil"
+		if op.Cid != nil {
+			cidStr = op.Cid.String()
+		}
 		c.logger.Printf("[FIREHOSE DEBUG]   op[%d]: action=%s path=%s cid=%s",
-			i, op.Action, op.Path, *op.Cid)
+			i, op.Action, op.Path, cidStr)
 	}
 	if err := c.handler.HandleCommit(context.Background(), evt); err != nil {
 		c.logger.Printf("Error handling commit: %v", err)
