@@ -101,6 +101,10 @@ func New(opts Options) (*Sbot, error) {
 		return nil, fmt.Errorf("sbot: failed to create state matrix: %w", err)
 	}
 
+	if err := stateMatrix.InitializeFromFeedlog(); err != nil {
+		return nil, fmt.Errorf("sbot: failed to initialize EBT state: %w", err)
+	}
+
 	feedManagerAdapter := NewFeedManagerAdapter(feedStore)
 	feedReplicator := NewFeedReplicator(feedStore)
 	ebtHandler := replication.NewEBTHandler(&selfRef, feedManagerAdapter, stateMatrix, feedReplicator)

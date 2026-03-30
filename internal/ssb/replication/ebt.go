@@ -81,6 +81,38 @@ func NewStateMatrix(basePath string, self *refs.FeedRef, store feedlog.FeedStore
 	return sm, nil
 }
 
+func (sm *StateMatrix) InitializeFromFeedlog() error {
+	if sm.store == nil {
+		return nil
+	}
+
+	feeds, err := sm.store.Logs().List()
+	if err != nil {
+		return fmt.Errorf("failed to list feeds: %w", err)
+	}
+
+	for _, feedID := range feeds {
+		log, err := sm.store.Logs().Get(feedID)
+		if err != nil {
+			continue
+		}
+
+		seq, err := log.Seq()
+		if err != nil {
+			continue
+		}
+
+		feedRef, err := refs.ParseFeedRef(feedID)
+		if err != nil {
+			continue
+		}
+
+		sm.SetFeedSeq(feedRef, seq)
+	}
+
+	return nil
+}
+
 func (sm *StateMatrix) Inspect(peer *refs.FeedRef) (NetworkFrontier, error) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
