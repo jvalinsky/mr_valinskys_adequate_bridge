@@ -3,6 +3,7 @@ package replication
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -81,6 +82,29 @@ func NewStateMatrix(basePath string, self *refs.FeedRef, store feedlog.FeedStore
 	return sm, nil
 }
 
+func (sm *StateMatrix) initializeFeed(feed *refs.FeedRef, seq int64) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	if sm.self == "" {
+		return
+	}
+
+	selfFrontier := sm.frontiers[sm.self]
+	if selfFrontier == nil {
+		selfFrontier = make(NetworkFrontier)
+	}
+
+	selfFrontier[feed.String()] = Note{
+		Seq:       seq,
+		Replicate: true,
+		Receive:   true,
+	}
+
+	sm.frontiers[sm.self] = selfFrontier
+	log.Printf("[EBT DEBUG] initializeFeed: feed=%s seq=%d, Receive=true", feed.String(), seq)
+}
+
 func (sm *StateMatrix) InitializeFromFeedlog() error {
 	if sm.store == nil {
 		return nil
@@ -107,7 +131,7 @@ func (sm *StateMatrix) InitializeFromFeedlog() error {
 			continue
 		}
 
-		sm.SetFeedSeq(feedRef, seq)
+		sm.initializeFeed(feedRef, seq)
 	}
 
 	return nil
@@ -479,7 +503,7 @@ func (h *EBTHandler) createStreamHistory(ctx context.Context, tx Writer, arg Cre
 	for seq := arg.Seq; ; seq++ {
 		msg, err := h.store.GetMessage(feed, seq)
 		if err != nil {
-			if err == ErrNotFound {
+			if errors.Is(err, feedlog.ErrNotFound) || errors.Is(err, ErrNotFound) {
 				log.Printf("[EBT DEBUG] createStreamHistory: feed=%s seq=%d not found, waiting...", feed.String(), seq)
 				if !arg.Live {
 					return nil
