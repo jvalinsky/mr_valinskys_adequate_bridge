@@ -18,15 +18,6 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/web/security"
 )
 
-type ActiveBridgeAccountLister interface {
-	ListActiveBridgedAccountsWithStats(ctx context.Context) ([]db.BridgedAccountStats, error)
-}
-
-type ActiveBridgeAccountDetailer interface {
-	GetActiveBridgedAccountWithStats(ctx context.Context, atDID string) (*db.BridgedAccountStats, error)
-	ListRecentPublishedMessagesByDID(ctx context.Context, atDID string, limit int) ([]db.Message, error)
-}
-
 type bridgeRoomHandler struct {
 	stock             http.Handler
 	roomConfig        roomdb.RoomConfig

@@ -892,7 +892,7 @@ func main() {
 					}
 					defer database.Close()
 
-					var atpClient *handlers.PDSClient
+					var atpClient handlers.PDSClientInterface
 					if c.String("pds-host") != "" && c.String("pds-password") != "" {
 						host, err := resolveLiveXRPCHost(c.String("pds-host"))
 						if err != nil {

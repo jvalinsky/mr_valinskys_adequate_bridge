@@ -53,7 +53,7 @@ type Runtime struct {
 	httpAddr   string
 
 	keyPair *keys.KeyPair
-	roomDB  *sqlite.DB
+	roomDB  RoomDB
 	state   *roomstate.Manager
 
 	httpServer     *http.Server
@@ -369,11 +369,11 @@ func (c *connWrapper) RemoteAddr() net.Addr {
 
 type roomServer struct {
 	keyPair *refs.FeedRef
-	db      *sqlite.DB
+	db      RoomDB
 	state   *roomstate.Manager
 }
 
-func newRoomServer(keyPair *refs.FeedRef, db *sqlite.DB, state *roomstate.Manager) *roomServer {
+func newRoomServer(keyPair *refs.FeedRef, db RoomDB, state *roomstate.Manager) *roomServer {
 	return &roomServer{
 		keyPair: keyPair,
 		db:      db,
@@ -381,7 +381,7 @@ func newRoomServer(keyPair *refs.FeedRef, db *sqlite.DB, state *roomstate.Manage
 	}
 }
 
-func newServeMux(ctx context.Context, db *sqlite.DB, state *roomstate.Manager, keyPair *keys.KeyPair) *http.ServeMux {
+func newServeMux(ctx context.Context, db RoomDB, state *roomstate.Manager, keyPair *keys.KeyPair) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

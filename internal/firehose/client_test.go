@@ -758,6 +758,40 @@ func TestClientCallbacksCoverage(t *testing.T) {
 	})
 }
 
+func TestClientConnectedCallbackInvoked(t *testing.T) {
+	upgrader := websocket.Upgrader{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		time.Sleep(100 * time.Millisecond)
+	}))
+	defer server.Close()
+
+	u, _ := url.Parse(server.URL)
+	u.Scheme = "ws"
+
+	connected := make(chan struct{})
+	cb := func() { close(connected) }
+	client := NewClient(u.String(), &mockHandler{}, log.New(io.Discard, "", 0), WithConnectedCallback(cb))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer cancel()
+
+	go func() {
+		_ = client.Run(ctx)
+	}()
+
+	select {
+	case <-connected:
+		// Success
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for ConnectedCallback")
+	}
+}
+
 func TestClientRunSuccess(t *testing.T) {
 	upgrader := websocket.Upgrader{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
