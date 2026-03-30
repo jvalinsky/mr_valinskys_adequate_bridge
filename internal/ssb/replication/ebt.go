@@ -502,13 +502,19 @@ func (h *EBTHandler) createStreamHistory(ctx context.Context, tx Writer, arg Cre
 
 	retryDelay := 100 * time.Millisecond
 	maxRetries := 50
+	maxWaitTime := 60 * time.Second
 	retries := 0
+	startTime := time.Now()
 
 	for seq := arg.Seq; ; {
 		msg, err := h.store.GetMessage(feed, seq)
 		if err != nil {
 			if errors.Is(err, feedlog.ErrNotFound) || errors.Is(err, ErrNotFound) {
 				if !arg.Live {
+					return nil
+				}
+				if time.Since(startTime) > maxWaitTime {
+					log.Printf("[EBT DEBUG] createStreamHistory: feed=%s seq=%d not found after %v, returning current state", feed.String(), seq, time.Since(startTime))
 					return nil
 				}
 				retries++
@@ -538,6 +544,7 @@ func (h *EBTHandler) createStreamHistory(ctx context.Context, tx Writer, arg Cre
 
 		retries = 0
 		retryDelay = 100 * time.Millisecond
+		startTime = time.Now()
 
 		log.Printf("[EBT DEBUG] createStreamHistory: sending msg for feed=%s seq=%d bytes=%d", feed.String(), seq, len(msg))
 		if err := tx.Write(ctx, msg); err != nil {

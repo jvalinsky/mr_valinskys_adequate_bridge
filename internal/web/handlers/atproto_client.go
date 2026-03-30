@@ -12,11 +12,19 @@ import (
 	"github.com/bluesky-social/indigo/xrpc"
 )
 
+// PDSClientInterface defines the interactions with a PDS.
+type PDSClientInterface interface {
+	UploadBlob(ctx context.Context, identifier string, reader io.Reader, mime string) (*lexutil.LexBlob, error)
+	CreatePost(ctx context.Context, identifier string, text string, imageBlob *lexutil.LexBlob) (string, error)
+}
+
 // PDSClient handles XRPC interactions with the PDS.
 type PDSClient struct {
 	Host     string
 	Password string
 }
+
+var _ PDSClientInterface = (*PDSClient)(nil)
 
 func (c *PDSClient) createSession(ctx context.Context, identifier string) (*xrpc.Client, error) {
 	client := &xrpc.Client{Host: c.Host}

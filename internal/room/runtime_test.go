@@ -23,6 +23,7 @@ import (
 	roomhandlers "github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc/handlers/room"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomdb"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomstate"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/secretstream"
 )
 
@@ -1431,4 +1432,24 @@ func TestSetPublicCacheHeaders(t *testing.T) {
 	if got := rr.Header().Get("Cache-Control"); got != "public, max-age=30" {
 		t.Errorf("expected Cache-Control header, got %q", got)
 	}
+}
+
+func TestAnnouncePeer(t *testing.T) {
+	// Test nil runtime
+	var r *Runtime
+	r.AnnouncePeer(refs.FeedRef{}, "addr")
+
+	// Test nil state
+	r = &Runtime{}
+	r.AnnouncePeer(refs.FeedRef{}, "addr")
+
+	// Test with state
+	r.state = roomstate.NewManager()
+	kp, _ := keys.Generate()
+	r.AnnouncePeer(kp.FeedRef(), "net:1.2.3.4:8008~shs:key")
+}
+
+func TestWhoamiHandleConnect(t *testing.T) {
+	h := &whoamiHandler{}
+	h.HandleConnect(context.Background(), nil)
 }

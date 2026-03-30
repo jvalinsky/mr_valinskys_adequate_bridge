@@ -12,7 +12,6 @@ import (
 	"time"
 )
 
-
 func TestOpenError(t *testing.T) {
 	// 1. Invalid path (directory that doesn't exist)
 	tmpDir, err := os.MkdirTemp("", "db_test_*")
@@ -770,6 +769,155 @@ func TestGetRecentBlobs(t *testing.T) {
 	}
 	if len(blobs) != 1 {
 		t.Fatalf("expected 1 blob, got %d", len(blobs))
+	}
+}
+
+func TestResetMessageForRetry(t *testing.T) {
+	db, err := Open(":memory:?parseTime=true")
+	if err != nil {
+		t.Fatalf("failed to open memory db: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	if err := db.AddMessage(ctx, Message{
+		ATURI:           "at://did:plc:alice/app.bsky.feed.post/retry",
+		ATCID:           "bafyretry",
+		ATDID:           "did:plc:alice",
+		Type:            "app.bsky.feed.post",
+		MessageState:    MessageStateFailed,
+		PublishError:    "some error",
+		PublishAttempts: 3,
+		RawATJson:       `{"text":"test"}`,
+		RawSSBJson:      `{"type":"post"}`,
+	}); err != nil {
+		t.Fatalf("add message: %v", err)
+	}
+
+	if err := db.ResetMessageForRetry(ctx, "at://did:plc:alice/app.bsky.feed.post/retry"); err != nil {
+		t.Fatalf("ResetMessageForRetry: %v", err)
+	}
+
+	msg, err := db.GetMessage(ctx, "at://did:plc:alice/app.bsky.feed.post/retry")
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	if msg.MessageState != MessageStatePending {
+		t.Fatalf("expected state pending, got %s", msg.MessageState)
+	}
+	if msg.PublishAttempts != 0 {
+		t.Fatalf("expected 0 attempts, got %d", msg.PublishAttempts)
+	}
+	if msg.PublishError != "" {
+		t.Fatalf("expected empty error, got %s", msg.PublishError)
+	}
+}
+
+func TestListPublishedMessagesGlobal(t *testing.T) {
+	db, err := Open(":memory:?parseTime=true")
+	if err != nil {
+		t.Fatalf("failed to open memory db: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	if err := db.AddMessage(ctx, Message{
+		ATURI:        "at://did:plc:alice/app.bsky.feed.post/global1",
+		ATCID:        "bafyglobal1",
+		SSBMsgRef:    "%global1.sha256",
+		ATDID:        "did:plc:alice",
+		Type:         "app.bsky.feed.post",
+		MessageState: MessageStatePublished,
+		RawATJson:    `{"text":"test1"}`,
+		RawSSBJson:   `{"type":"post"}`,
+	}); err != nil {
+		t.Fatalf("add message: %v", err)
+	}
+
+	if err := db.AddMessage(ctx, Message{
+		ATURI:        "at://did:plc:alice/app.bsky.feed.post/global2",
+		ATCID:        "bafyglobal2",
+		SSBMsgRef:    "%global2.sha256",
+		ATDID:        "did:plc:bob",
+		Type:         "app.bsky.feed.post",
+		MessageState: MessageStatePublished,
+		RawATJson:    `{"text":"test2"}`,
+		RawSSBJson:   `{"type":"post"}`,
+	}); err != nil {
+		t.Fatalf("add message: %v", err)
+	}
+
+	messages, err := db.ListPublishedMessagesGlobal(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListPublishedMessagesGlobal: %v", err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(messages))
+	}
+}
+
+func TestListPublishedMessagesGlobalEmptyLimit(t *testing.T) {
+	db, err := Open(":memory:?parseTime=true")
+	if err != nil {
+		t.Fatalf("failed to open memory db: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+
+	messages, err := db.ListPublishedMessagesGlobal(ctx, 0)
+	if err != nil {
+		t.Fatalf("ListPublishedMessagesGlobal: %v", err)
+	}
+	if len(messages) != 0 {
+		t.Fatalf("expected 0 messages with limit 0, got %d", len(messages))
+	}
+}
+
+func TestGetBlobBySSBRef(t *testing.T) {
+	db, err := Open(":memory:?parseTime=true")
+	if err != nil {
+		t.Fatalf("failed to open memory db: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	if err := db.AddBlob(ctx, Blob{
+		ATCID:      "bafyblob",
+		SSBBlobRef: "&test.sha256",
+		Size:       200,
+		MimeType:   "image/jpeg",
+	}); err != nil {
+		t.Fatalf("add blob: %v", err)
+	}
+
+	blob, err := db.GetBlobBySSBRef(ctx, "&test.sha256")
+	if err != nil {
+		t.Fatalf("GetBlobBySSBRef: %v", err)
+	}
+	if blob == nil {
+		t.Fatalf("expected blob, got nil")
+	}
+	if blob.ATCID != "bafyblob" {
+		t.Fatalf("expected atcid bafyblob, got %s", blob.ATCID)
+	}
+}
+
+func TestGetBlobBySSBRefNotFound(t *testing.T) {
+	db, err := Open(":memory:?parseTime=true")
+	if err != nil {
+		t.Fatalf("failed to open memory db: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+
+	blob, err := db.GetBlobBySSBRef(ctx, "&nonexistent.sha256")
+	if err != nil {
+		t.Fatalf("GetBlobBySSBRef: %v", err)
+	}
+	if blob != nil {
+		t.Fatalf("expected nil, got %v", blob)
 	}
 }
 

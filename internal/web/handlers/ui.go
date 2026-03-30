@@ -61,12 +61,12 @@ type BlobStore interface {
 type UIHandler struct {
 	db        Database
 	logger    *log.Logger
-	atpClient *PDSClient
+	atpClient PDSClientInterface
 	blobStore BlobStore
 }
 
 // NewUIHandler creates a UIHandler bound to database.
-func NewUIHandler(database Database, logger *log.Logger, atpClient *PDSClient, blobStore BlobStore) *UIHandler {
+func NewUIHandler(database Database, logger *log.Logger, atpClient PDSClientInterface, blobStore BlobStore) *UIHandler {
 	return &UIHandler{
 		db:        database,
 		logger:    logutil.Ensure(logger),

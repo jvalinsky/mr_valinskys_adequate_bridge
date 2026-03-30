@@ -42,6 +42,19 @@ func (m *mockHandler) HandleCommit(ctx context.Context, evt *atproto.SyncSubscri
 	return nil
 }
 
+func TestWithConnectedCallback(t *testing.T) {
+	called := false
+	cb := func() { called = true }
+	client := NewClient("", nil, nil, WithConnectedCallback(cb))
+	if client.ConnectedCallback == nil {
+		t.Fatal("ConnectedCallback not set")
+	}
+	client.ConnectedCallback()
+	if !called {
+		t.Fatal("callback not called")
+	}
+}
+
 func TestFirehoseClient(t *testing.T) {
 	if os.Getenv("TEST_FIREHOSE") == "" {
 		t.Skip("Skipping firehose test; set TEST_FIREHOSE=1 to run")

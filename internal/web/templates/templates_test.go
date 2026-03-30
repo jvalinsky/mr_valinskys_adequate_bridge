@@ -69,6 +69,50 @@ func TestRenderState(t *testing.T) {
 	}
 }
 
+func TestRenderFeed(t *testing.T) {
+	var buf bytes.Buffer
+	data := FeedData{
+		Chrome: PageChrome{
+			ActiveNav: "feed",
+			Status:    PageStatus{Visible: false},
+		},
+		Feed: []FeedRow{
+			{
+				ATURI:     "at://did:plc/example/app.bsky.feed.post/abc123",
+				ATDID:     "did:plc:example",
+				Type:      "app.bsky.feed.post",
+				CreatedAt: time.Now(),
+				Text:      "Hello world",
+			},
+		},
+	}
+	err := RenderFeed(&buf, data)
+	if err != nil {
+		t.Fatalf("RenderFeed failed: %v", err)
+	}
+}
+
+func TestRenderPost(t *testing.T) {
+	var buf bytes.Buffer
+	data := PostData{
+		Chrome: PageChrome{
+			ActiveNav: "post",
+			Status:    PageStatus{Visible: false},
+		},
+		Accounts: []AccountRow{
+			{
+				ATDID:     "did:plc:example",
+				SSBFeedID: "@feed.example.ed25519",
+				Active:    true,
+			},
+		},
+	}
+	err := RenderPost(&buf, data)
+	if err != nil {
+		t.Fatalf("RenderPost failed: %v", err)
+	}
+}
+
 func TestMustPageTemplatePanic(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
@@ -80,37 +124,37 @@ func TestMustPageTemplatePanic(t *testing.T) {
 
 func TestMustPageTemplateFuncs(t *testing.T) {
 	tmpl := mustPageTemplate("test", `{{define "content"}}{{ fmtTime .Time }} {{ navClass .Active .Tab }} {{ navCurrent .Active .Tab }} {{ statusToneClass .Tone1 }} {{ statusToneClass .Tone2 }} {{ statusToneClass .Tone3 }} {{ statusToneClass .Tone4 }} {{ stateClass .State1 }} {{ stateClass .State2 }} {{ stateClass .State3 }} {{ stateClass .State4 }} {{ stateClass .State5 }}{{end}}`)
-	
+
 	var buf bytes.Buffer
 	data := struct {
 		Chrome PageChrome
-		Time time.Time
+		Time   time.Time
 		Active string
-		Tab string
-		Tone1 string
-		Tone2 string
-		Tone3 string
-		Tone4 string
+		Tab    string
+		Tone1  string
+		Tone2  string
+		Tone3  string
+		Tone4  string
 		State1 string
 		State2 string
 		State3 string
 		State4 string
 		State5 string
 	}{
-		Time: time.Now(),
+		Time:   time.Now(),
 		Active: "dashboard",
-		Tab: "dashboard",
-		Tone1: "success",
-		Tone2: "warning",
-		Tone3: "danger",
-		Tone4: "other",
+		Tab:    "dashboard",
+		Tone1:  "success",
+		Tone2:  "warning",
+		Tone3:  "danger",
+		Tone4:  "other",
 		State1: "published",
 		State2: "failed",
 		State3: "deferred",
 		State4: "deleted",
 		State5: "other",
 	}
-	
+
 	err := tmpl.Execute(&buf, data)
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
@@ -120,22 +164,22 @@ func TestMustPageTemplateFuncs(t *testing.T) {
 	var buf2 bytes.Buffer
 	err = tmpl.Execute(&buf2, struct {
 		Chrome PageChrome
-		Time time.Time
+		Time   time.Time
 		Active string
-		Tab string
-		Tone1 string
-		Tone2 string
-		Tone3 string
-		Tone4 string
+		Tab    string
+		Tone1  string
+		Tone2  string
+		Tone3  string
+		Tone4  string
 		State1 string
 		State2 string
 		State3 string
 		State4 string
 		State5 string
 	}{
-		Time: time.Time{},
+		Time:   time.Time{},
 		Active: "dashboard",
-		Tab: "other",
+		Tab:    "other",
 	})
 	if err != nil {
 		t.Fatalf("Execute zero time failed: %v", err)

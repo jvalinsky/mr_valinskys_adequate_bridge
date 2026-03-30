@@ -1,16 +1,21 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	lexutil "github.com/bluesky-social/indigo/lex/util"
 	"github.com/go-chi/chi/v5"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/mapper"
@@ -601,6 +606,13 @@ func (e *erroringDB) GetMessage(ctx context.Context, atURI string) (*db.Message,
 
 func (e *erroringDB) GetLatestDeferredReason(ctx context.Context) (string, bool, error) {
 	return "", false, nil
+}
+
+func (e *erroringDB) ResetMessageForRetry(ctx context.Context, atURI string) error {
+	if e.failMethod == "ResetMessageForRetry" {
+		return fmt.Errorf("forced error")
+	}
+	return nil
 }
 
 func TestHandlersHandleErrors(t *testing.T) {
@@ -1477,6 +1489,170 @@ func (m *mockDatabase) GetBlobBySSBRef(ctx context.Context, ssbBlobRef string) (
 	return nil, m.err
 }
 
+type mockPDSClient struct {
+	err error
+}
+
+func (m *mockPDSClient) UploadBlob(ctx context.Context, identifier string, reader io.Reader, mime string) (*lexutil.LexBlob, error) {
+	return nil, m.err
+}
+
+func (m *mockPDSClient) CreatePost(ctx context.Context, identifier string, text string, imageBlob *lexutil.LexBlob) (string, error) {
+	return "at://did:plc:alice/app.bsky.feed.post/post1", m.err
+}
+
+type mockBlobStore struct {
+	data map[string]io.ReadCloser
+	err  error
+}
+
+func (m *mockBlobStore) Get(hash []byte) (io.ReadCloser, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	if data, ok := m.data[string(hash)]; ok {
+		return data, nil
+	}
+	return nil, os.ErrNotExist
+}
+
+func TestHandleBlobView(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	ctx := context.Background()
+	blobData := "fake image data"
+	blobRef := "&AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=.sha256"
+	if err := database.AddBlob(ctx, db.Blob{
+		ATCID:      "bafytest",
+		SSBBlobRef: blobRef,
+		Size:       int64(len(blobData)),
+		MimeType:   "image/png",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	mockStore := &mockBlobStore{
+		data: map[string]io.ReadCloser{
+			string([]byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31}): io.NopCloser(strings.NewReader(blobData)),
+		},
+	}
+
+	handler := NewUIHandler(database, nil, nil, mockStore)
+	router := chi.NewRouter()
+	handler.Mount(router)
+
+	urlPath := "/blobs/view?ref=" + url.QueryEscape(blobRef)
+	req := httptest.NewRequest(http.MethodGet, urlPath, nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if rr.Header().Get("Content-Type") != "image/png" {
+		t.Fatalf("expected image/png, got %s", rr.Header().Get("Content-Type"))
+	}
+}
+
+func TestHandleBlobViewMissingRef(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	handler := NewUIHandler(database, nil, nil, nil)
+	router := chi.NewRouter()
+	handler.Mount(router)
+
+	req := httptest.NewRequest(http.MethodGet, "/blobs/view", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rr.Code)
+	}
+}
+
+func TestHandleBlobViewNotFound(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	handler := NewUIHandler(database, nil, nil, nil)
+	router := chi.NewRouter()
+	handler.Mount(router)
+
+	blobRef := "&AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=.sha256"
+	req := httptest.NewRequest(http.MethodGet, "/blobs/view?ref="+url.QueryEscape(blobRef), nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rr.Code)
+	}
+}
+
+func TestHandleBlobViewNoStore(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	ctx := context.Background()
+	blobRef := "&BBECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=.sha256"
+	if err := database.AddBlob(ctx, db.Blob{
+		ATCID:      "bafytest",
+		SSBBlobRef: blobRef,
+		Size:       100,
+		MimeType:   "image/png",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := NewUIHandler(database, nil, nil, nil)
+	router := chi.NewRouter()
+	handler.Mount(router)
+
+	req := httptest.NewRequest(http.MethodGet, "/blobs/view?ref="+url.QueryEscape(blobRef), nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", rr.Code)
+	}
+}
+
+func TestHandlePostActionSuccess(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	ctx := context.Background()
+	database.AddBridgedAccount(ctx, db.BridgedAccount{
+		ATDID:     "did:plc:alice",
+		SSBFeedID: "@alice.test.ed25519",
+		Active:    true,
+	})
+
+	atp := &mockPDSClient{}
+	router := chi.NewRouter()
+	NewUIHandler(database, nil, atp, nil).Mount(router)
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	writer.WriteField("at_did", "did:plc:alice")
+	writer.WriteField("text", "hello world")
+	writer.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/post", body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303 redirect, got %d: %s", rr.Code, rr.Body.String())
+	}
+	expectedURI := "at://did:plc:alice/app.bsky.feed.post/post1"
+	if !strings.Contains(rr.Header().Get("Location"), url.QueryEscape(expectedURI)) {
+		t.Fatalf("redirect URL missing expected URI: %s", rr.Header().Get("Location"))
+	}
+}
+
 func TestUIHandlerInternalErrors(t *testing.T) {
 	m := &mockDatabase{err: fmt.Errorf("db boom")}
 	h := NewUIHandler(m, nil, nil, nil)
@@ -1950,5 +2126,145 @@ func TestBreadcrumbs(t *testing.T) {
 	body := fetchUI(t, database, "/accounts")
 	if !strings.Contains(body, "Dashboard") || !strings.Contains(body, "Accounts") || !strings.Contains(body, "aria-label=\"Breadcrumb\"") {
 		t.Fatalf("breadcrumbs missing on accounts page: %s", body)
+	}
+}
+
+func TestHandlePost(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	ctx := context.Background()
+	if err := database.AddBridgedAccount(ctx, db.BridgedAccount{
+		ATDID:     "did:plc:alice",
+		SSBFeedID: "@alice.test.ed25519",
+		Active:    true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	router := chi.NewRouter()
+	NewUIHandler(database, nil, nil, nil).Mount(router)
+
+	req := httptest.NewRequest(http.MethodGet, "/post", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "Compose Post") {
+		t.Fatalf("missing compose post title: %s", rr.Body.String())
+	}
+}
+
+func TestHandleMessageRetry(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	ctx := context.Background()
+	if err := database.AddMessage(ctx, db.Message{
+		ATURI:           "at://did:plc:alice/app.bsky.feed.post/retry1",
+		ATCID:           "cidretry",
+		ATDID:           "did:plc:alice",
+		Type:            "app.bsky.feed.post",
+		MessageState:    db.MessageStateFailed,
+		PublishAttempts: 1,
+		RawATJson:       `{"text":"test"}`,
+		RawSSBJson:      `{"type":"post"}`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	router := chi.NewRouter()
+	NewUIHandler(database, nil, nil, nil).Mount(router)
+
+	req := httptest.NewRequest(http.MethodPost, "/messages/retry?at_uri=at://did:plc:alice/app.bsky.feed.post/retry1", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	msg, err := database.GetMessage(ctx, "at://did:plc:alice/app.bsky.feed.post/retry1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg.MessageState != db.MessageStatePending {
+		t.Fatalf("expected state pending, got %s", msg.MessageState)
+	}
+}
+
+func TestHandleMessageRetryMissingURI(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	router := chi.NewRouter()
+	NewUIHandler(database, nil, nil, nil).Mount(router)
+
+	req := httptest.NewRequest(http.MethodPost, "/messages/retry", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rr.Code)
+	}
+}
+
+func TestHandlePostActionMissingDID(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	router := chi.NewRouter()
+	NewUIHandler(database, nil, nil, nil).Mount(router)
+
+	req := httptest.NewRequest(http.MethodPost, "/post", strings.NewReader("text=hello"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestHandlePostActionMissingText(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	ctx := context.Background()
+	database.AddBridgedAccount(ctx, db.BridgedAccount{
+		ATDID:     "did:plc:alice",
+		SSBFeedID: "@alice.test.ed25519",
+		Active:    true,
+	})
+
+	router := chi.NewRouter()
+	NewUIHandler(database, nil, nil, nil).Mount(router)
+
+	req := httptest.NewRequest(http.MethodPost, "/post", strings.NewReader("at_did=did:plc:alice"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestHandlePostActionInvalidAccount(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	router := chi.NewRouter()
+	NewUIHandler(database, nil, nil, nil).Mount(router)
+
+	req := httptest.NewRequest(http.MethodPost, "/post", strings.NewReader("at_did=did:plc:invalid&text=hello"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rr.Code, rr.Body.String())
 	}
 }
