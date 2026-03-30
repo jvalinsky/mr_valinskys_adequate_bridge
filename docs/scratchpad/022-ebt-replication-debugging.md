@@ -333,10 +333,24 @@ msg.Sequence = nextSeq
 
 ## Current Status (2026-03-30)
 
-EBT replication is NOW WORKING from the bridge side:
+**EBT replication is NOW WORKING from the bridge side:**
 - ✅ Messages sent in correct SSB format with full envelope
+- ✅ Author/sequence/signature at **top level** (classic format for TF)
 - ✅ Sequence numbers start at 1 (verified in logs)
 - ✅ Feeds tracked in StateMatrix
 - ✅ TF receives messages via `cli0 RPC RECV[ebt.replicate]`
 
-**Remaining Issue**: Tildefriends receives messages but doesn't store them in its database (`messages_from_bot=0`). This appears to be a TF-specific issue, not a bridge issue. TF may have a bug in its EBT message processing or storage logic.
+**Remaining Issue**: Tildefriends receives messages but doesn't store them in its database (`messages_from_bot=0`). This appears to be a TF-specific issue in its EBT message processing or storage logic, not a bridge issue.
+
+---
+
+## Comprehensive Debugging Report
+
+A detailed debugging session report has been created at:
+**`docs/scratchpad/030-ebt-debugging-session-report.md`**
+
+This report documents:
+- All 9 bugs found and fixed
+- How each bug was discovered
+- Debugging techniques used
+- Current status and recommendations

@@ -158,14 +158,27 @@ go test ./...
 ## Infrastructure
 
 - **`infra/local-atproto/`** — Docker Compose stack for local development: PLC directory server + PDS instance.
-- **`infra/e2e-tildefriends/`** — Docker Compose setup for tildefriends integration testing.
+- **`infra/e2e-full/`** — Docker E2E test infrastructure for tildefriends integration testing with Room2 peer verification.
+- **`reference/tildefriends/`** — Tildefriends C source code for SSB protocol compatibility reference (used to verify bridge message format compatibility).
 
 ## Documentation
 
-- **[`docs/README.md`](docs/README.md)** — Docs index for architecture and translation notes.
+- **[`docs/README.md`](docs/README.md)** — Docs index organized by topic area.
 - **[`docs/atproto-ssb-translation-overview.md`](docs/atproto-ssb-translation-overview.md)** — High-level map of DID, AT URI, and blob translation layers.
-- **[`docs/atproto-ssb-identity-mapping.md`](docs/atproto-ssb-identity-mapping.md)** — How DIDs become deterministic SSB feed identities and why the bridge uses DIDs instead of handles.
-- **[`docs/atproto-ssb-record-translation.md`](docs/atproto-ssb-record-translation.md)** — How `_atproto_*` placeholders become SSB refs, when records defer, and how retries resolve them.
+- **[`docs/atproto-ssb-identity-mapping.md`](docs/atproto-ssb-identity-mapping.md)** — How DIDs become deterministic SSB feed identities.
+- **[`docs/atproto-ssb-record-translation.md`](docs/atproto-ssb-record-translation.md)** — How `_atproto_*` placeholders become SSB refs.
 - **[`docs/runbook.md`](docs/runbook.md)** — Operational runbook: startup, restart, retry, incident triage, pre-release E2E gates.
-- **[`docs/scratchpad/`](docs/scratchpad/)** — Development milestone notes (001–017) linked to the decision graph.
-- **[`reference/`](reference/)** — External project sources used as architectural reference (see [`reference/README.md`](reference/README.md)).
+
+### SSB Protocol
+
+The bridge implements Secure Scuttlebutt protocols. These documents cover the protocol stack with ASCII diagrams and code examples:
+
+- **[`docs/ssb-protocol-fundamentals.md`](docs/ssb-protocol-fundamentals.md)** — Identity, feeds, messages, and signing
+- **[`docs/ssb-replication.md`](docs/ssb-replication.md)** — Secret handshake, box stream, MUXRPC, and EBT
+- **[`docs/ssb-rooms.md`](docs/ssb-rooms.md)** — Room2 architecture and tunnel connections
+- **[`docs/ssb-implementations.md`](docs/ssb-implementations.md)** — Go code examples from the bridge
+- **[`docs/ebt-replication.md`](docs/ebt-replication.md)** — EBT debugging findings and Tildefriends compatibility
+
+### Development Notes
+
+- **[`docs/scratchpad/README.md`](docs/scratchpad/README.md)** — Index of development notes and debugging sessions
