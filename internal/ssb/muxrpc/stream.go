@@ -202,6 +202,15 @@ func (bs *ByteSink) SetEncoding(enc RequestEncoding) {
 	bs.encoding = enc
 }
 
+func (bs *ByteSink) Packer() *Packer {
+	bs.mu.Lock()
+	defer bs.mu.Unlock()
+	if pkr, ok := bs.pkr.(*Packer); ok {
+		return pkr
+	}
+	return nil
+}
+
 func (bs *ByteSink) Write(p []byte) (int, error) {
 	bs.mu.Lock()
 	defer bs.mu.Unlock()
@@ -295,6 +304,15 @@ type PacketStream struct {
 
 func (ps *PacketStream) SetRequest(req *Request) {
 	ps.reqPtr = req
+}
+
+func (ps *PacketStream) SetPackerAndReq(pkr *Packer, req int32) {
+	ps.packer = pkr
+	ps.req = req
+}
+
+func (ps *PacketStream) SetFlag(flag codec.Flag) {
+	ps.flag = flag
 }
 
 func (ps *PacketStream) Read(p []byte) (int, error) {
@@ -449,4 +467,62 @@ func (cr *countingReader) Read(b []byte) (int, error) {
 		*cr.read += uint32(n)
 	}
 	return n, err
+}
+
+type ByteSourceAdapter struct {
+	source *ByteSource
+}
+
+func NewByteSourceAdapter(source *ByteSource) *ByteSourceAdapter {
+	return &ByteSourceAdapter{source: source}
+}
+
+func (a *ByteSourceAdapter) Next(ctx context.Context) bool {
+	return a.source.Next(ctx)
+}
+
+func (a *ByteSourceAdapter) Bytes() ([]byte, error) {
+	return a.source.Bytes()
+}
+
+func (a *ByteSourceAdapter) Err() error {
+	return a.source.Err()
+}
+
+type ByteSinkWriter struct {
+	sink *ByteSink
+}
+
+func NewByteSinkWriter(sink *ByteSink) *ByteSinkWriter {
+	return &ByteSinkWriter{sink: sink}
+}
+
+func (w *ByteSinkWriter) Write(ctx context.Context, data []byte) error {
+	n, err := w.sink.Write(data)
+	if err != nil {
+		return err
+	}
+	if n != len(data) {
+		return io.ErrShortWrite
+	}
+	return nil
+}
+
+type PacketStreamWriter struct {
+	ps *PacketStream
+}
+
+func NewPacketStreamWriter(ps *PacketStream) *PacketStreamWriter {
+	return &PacketStreamWriter{ps: ps}
+}
+
+func (w *PacketStreamWriter) Write(ctx context.Context, data []byte) error {
+	n, err := w.ps.Write(data)
+	if err != nil {
+		return err
+	}
+	if n != len(data) {
+		return io.ErrShortWrite
+	}
+	return nil
 }

@@ -102,7 +102,8 @@ func (hm *HandlerMux) Handled(m Method) bool {
 func (hm *HandlerMux) HandleCall(ctx context.Context, req *Request) {
 	for i := len(req.Method); i > 0; i-- {
 		m := req.Method[:i]
-		h, ok := hm.handlers[m.String()]
+		key := m.String()
+		h, ok := hm.handlers[key]
 		if ok {
 			h.HandleCall(ctx, req)
 			return
@@ -143,8 +144,8 @@ type Request struct {
 	sink   *ByteSink
 	source *ByteSource
 
-	id     int32
-	abort  context.CancelFunc
+	id    int32
+	abort context.CancelFunc
 
 	remoteAddr net.Addr
 	endpoint   *rpc
@@ -156,6 +157,18 @@ func (req Request) Endpoint() Endpoint {
 
 func (req Request) RemoteAddr() net.Addr {
 	return req.remoteAddr
+}
+
+func (req *Request) ID() int32 {
+	return req.id
+}
+
+func (req *Request) Sink() *ByteSink {
+	return req.sink
+}
+
+func (req *Request) Source() *ByteSource {
+	return req.source
 }
 
 func (req *Request) ResponseSink() (*ByteSink, error) {
@@ -334,7 +347,7 @@ func (r *rpc) HandlePacket(p *codec.Packet) {
 			endpoint:   r,
 		}
 		req.sink.SetReqID(p.Req)
-		
+
 		r.mu.Lock()
 		r.streams[p.Req] = req
 		r.mu.Unlock()

@@ -30,11 +30,12 @@ type EventHandler interface {
 
 // Client connects to subscribeRepos and forwards commits to an EventHandler.
 type Client struct {
-	relayURL string
-	handler  EventHandler
-	logger   *log.Logger
-	dialer   *websocket.Dialer
-	cursor   *int64
+	relayURL          string
+	handler           EventHandler
+	logger            *log.Logger
+	dialer            *websocket.Dialer
+	cursor            *int64
+	ConnectedCallback func()
 }
 
 type ReconnectConfig struct {
@@ -50,6 +51,13 @@ type ClientOption func(*Client)
 func WithCursor(cursor int64) ClientOption {
 	return func(c *Client) {
 		c.cursor = &cursor
+	}
+}
+
+// WithConnectedCallback calls the provided function when the firehose websocket connects.
+func WithConnectedCallback(cb func()) ClientOption {
+	return func(c *Client) {
+		c.ConnectedCallback = cb
 	}
 }
 
@@ -90,6 +98,10 @@ func (c *Client) Run(ctx context.Context) error {
 
 	c.logger.Println("Connected to firehose")
 
+	if c.ConnectedCallback != nil {
+		c.ConnectedCallback()
+	}
+
 	callbacks := &events.RepoStreamCallbacks{
 		RepoCommit: c.handleRepoCommit,
 		RepoInfo:   c.handleRepoInfo,
@@ -101,6 +113,12 @@ func (c *Client) Run(ctx context.Context) error {
 }
 
 func (c *Client) handleRepoCommit(evt *atproto.SyncSubscribeRepos_Commit) error {
+	c.logger.Printf("[FIREHOSE DEBUG] RepoCommit: repo=%s seq=%d ops=%d",
+		evt.Repo, evt.Seq, len(evt.Ops))
+	for i, op := range evt.Ops {
+		c.logger.Printf("[FIREHOSE DEBUG]   op[%d]: action=%s path=%s cid=%s",
+			i, op.Action, op.Path, *op.Cid)
+	}
 	if err := c.handler.HandleCommit(context.Background(), evt); err != nil {
 		c.logger.Printf("Error handling commit: %v", err)
 	}
