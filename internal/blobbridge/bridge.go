@@ -4,6 +4,7 @@ package blobbridge
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -326,7 +327,7 @@ func (b *Bridge) ensureBlob(ctx context.Context, atDID string, cand blobCandidat
 		return "", fmt.Errorf("store blob cid=%s: %w", cand.CID, err)
 	}
 
-	blobRefStr := fmt.Sprintf("&%x.blake2b", blobHash)
+	blobRefStr := fmt.Sprintf("&%s.blake2b", base64.StdEncoding.EncodeToString(blobHash))
 
 	if err := b.db.AddBlob(ctx, db.Blob{
 		ATCID:      cand.CID,
