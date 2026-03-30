@@ -162,11 +162,15 @@ func (h *TunnelHandler) handleConnect(ctx context.Context, req *muxrpc.Request) 
 		return
 	}
 
+	log.Printf("[TUNNEL] handleConnect: id=%s addr=%s", args.ID, args.Addr)
+
 	targetRef, err := refs.ParseFeedRef(args.ID)
 	if err != nil {
 		req.CloseWithError(fmt.Errorf("tunnel.connect: parse target id: %w", err))
 		return
 	}
+
+	log.Printf("[TUNNEL] handleConnect: parsed target=%s", targetRef.String())
 
 	log.Printf("[TUNNEL] tunnel.connect from %s to %s (addr: %s)", req.RemoteAddr(), args.ID, args.Addr)
 
@@ -256,7 +260,7 @@ func (h *TunnelHandler) dialPeer(ctx context.Context, addr string, expectedFeed 
 		return nil, fmt.Errorf("parse addr: %w", err)
 	}
 
-	log.Printf("[TUNNEL] Parsed TCP address: %s", tcpAddr)
+	log.Printf("[TUNNEL] dialPeer: raw=%s parsed=%s expectedFeed=%s", addr, tcpAddr, expectedFeed.String())
 
 	conn, err := net.DialTimeout("tcp", tcpAddr, 10*1000000000)
 	if err != nil {
