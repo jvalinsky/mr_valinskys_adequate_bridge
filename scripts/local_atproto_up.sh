@@ -16,6 +16,7 @@ fi
 
 export LOCAL_ATPROTO_DATA_DIR="${LOCAL_ATPROTO_DATA_DIR:-/tmp/mvab-local-atproto}"
 mkdir -p "${LOCAL_ATPROTO_DATA_DIR}"
+mkdir -p "${LOCAL_ATPROTO_DATA_DIR}/cocoon-keys"
 
 "${ROOT_DIR}/infra/local-atproto/build-relay.sh"
 

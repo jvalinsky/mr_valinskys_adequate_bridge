@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -31,17 +30,11 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/publishqueue"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/room"
-	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomdb"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssbruntime"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/web/handlers"
 	websecurity "github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/web/security"
-	roomrefs "github.com/ssbc/go-ssb-refs"
 	"github.com/urfave/cli/v2"
-	oldmuxrpc "go.cryptoscope.co/muxrpc/v2"
-	"go.cryptoscope.co/netwrap"
-	"go.cryptoscope.co/secretstream"
-	oldrefs "go.mindeco.de/ssb-refs"
 )
 
 var (
@@ -345,6 +338,10 @@ func main() {
 						Name:  "xrpc-host",
 						Usage: "optional ATProto read host for dependency record and blob fetches (defaults to AppView)",
 					},
+					&cli.StringFlag{
+						Name:  "app-key",
+						Usage: "SSB network identifier (hex or name; empty = standard SSB key)",
+					},
 					&cli.BoolFlag{
 						Name:  "firehose-enable",
 						Value: true,
@@ -383,6 +380,7 @@ func main() {
 						ListenAddr: c.String("ssb-listen-addr"),
 						MasterSeed: []byte(botSeed),
 						HMACKey:    hmacKey,
+						AppKey:     c.String("app-key"),
 					}, bridgeLogger)
 					if err != nil {
 						return fmt.Errorf("init ssb runtime: %w", err)
@@ -455,8 +453,10 @@ func main() {
 							RepoPath:              filepath.Join(repoPath, "room"),
 							Mode:                  c.String("room-mode"),
 							HTTPSDomain:           c.String("room-https-domain"),
+							AppKey:                c.String("app-key"),
 							BridgeAccountLister:   database,
 							BridgeAccountDetailer: database,
+							HandlerMux:            ssbRuntime.Node().HandlerMux(),
 						}, roomLogger)
 						if err != nil {
 							_ = ssbRuntime.Close()
@@ -476,6 +476,9 @@ func main() {
 					if firehoseEnabled {
 						firehoseLogger.Printf("event=firehose_enabled relay_url=%s", relayURL)
 						firehoseErrCh := make(chan error, 1)
+						firehoseOpts = append(firehoseOpts, firehose.WithConnectedCallback(func() {
+							setBridgeStateBestEffort(runCtx, database, "firehose_connected", "1", bridgeLogger)
+						}))
 						client := firehose.NewClient(relayURL, processor, firehoseLogger, firehoseOpts...)
 						go func() {
 							firehoseErrCh <- client.RunWithReconnect(runCtx, firehose.ReconnectConfig{
@@ -1150,114 +1153,23 @@ func resolveSharedRepoPath(c *cli.Context) (string, error) {
 // and periodically re-announces on the room tunnel. It polls for readiness
 // instead of using fixed sleeps, and retries the full sequence on failure.
 func runRoomTunnelBootstrap(ctx context.Context, ssbRT *ssbruntime.Runtime, roomRT *room.Runtime, logger *log.Logger) {
-	const (
-		pollInterval    = 500 * time.Millisecond
-		readyTimeout    = 30 * time.Second
-		reannounceEvery = 30 * time.Second
-	)
+	const reannounceEvery = 30 * time.Second
 
-	// Parse feed refs once (these don't change).
-	bridgeFeedRef, err := roomrefs.ParseFeedRef(ssbRT.Node().KeyPair.ID().Ref())
-	if err != nil {
-		logger.Printf("event=room_bridge_feed_parse_failed err=%v", err)
-		return
-	}
-	bridgeFeed, err := refs.ParseFeedRef("@" + base64.StdEncoding.EncodeToString(bridgeFeedRef.PubKey()) + ".ed25519")
-	if err != nil {
-		logger.Printf("event=room_bridge_feed_parse_failed err=%v", err)
-		return
-	}
-
-	oldRoomFeedRef, err := oldrefs.ParseFeedRef(roomRT.RoomFeed().String())
-	if err != nil {
-		logger.Printf("event=room_old_feed_parse_failed err=%v", err)
-		return
-	}
-	oldRoomFeed, err := refs.ParseFeedRef("@" + base64.StdEncoding.EncodeToString(oldRoomFeedRef.PubKey()) + ".ed25519")
-	if err != nil {
-		logger.Printf("event=room_old_feed_parse_failed err=%v", err)
-		return
-	}
+	bridgeFeed := ssbRT.Node().KeyPair.FeedRef()
+	sbotListenAddr := ssbRT.Node().ListenAddr()
 
 	// Ensure bridge is a room admin so it can announce.
-	if err := roomRT.AddMember(ctx, *bridgeFeed, roomdb.RoleAdmin); err != nil {
+	if err := roomRT.AddMember(ctx, bridgeFeed, roomdb.RoleAdmin); err != nil {
 		if !strings.Contains(err.Error(), "already exists") {
 			logger.Printf("event=room_add_member_failed err=%v", err)
 		}
 	}
 
-	// Authorize the room feed in the bridge sbot for replication.
-	ssbRT.Node().Replicate(*oldRoomFeed)
+	// Announce the bridge sbot directly in the room's peer state (in-process).
+	roomRT.AnnouncePeer(bridgeFeed, sbotListenAddr)
+	logger.Printf("event=room_tunnel_announce_success feed=%s addr=%s", bridgeFeed.Ref(), sbotListenAddr)
 
-	// Poll until the room MUXRPC port is accepting TCP connections.
-	roomAddr := roomRT.Addr()
-	deadline := time.Now().Add(readyTimeout)
-	for {
-		if ctx.Err() != nil {
-			return
-		}
-		conn, err := net.DialTimeout("tcp", roomAddr, 2*time.Second)
-		if err == nil {
-			conn.Close()
-			logger.Printf("event=room_tcp_ready addr=%s", roomAddr)
-			break
-		}
-		if time.Now().After(deadline) {
-			logger.Printf("event=room_tcp_ready_timeout addr=%s timeout=%s", roomAddr, readyTimeout)
-			return
-		}
-		time.Sleep(pollInterval)
-	}
-
-	// Connect the bridge sbot to the room via secret-handshake.
-	roomTCPAddr, err := net.ResolveTCPAddr("tcp", roomAddr)
-	if err != nil {
-		logger.Printf("event=room_dial_resolve_failed err=%v", err)
-		return
-	}
-	shsAddr := netwrap.WrapAddr(roomTCPAddr, secretstream.Addr{PubKey: roomRT.RoomFeed().PubKey()})
-	if err := ssbRT.Node().Network.Connect(ctx, shsAddr); err != nil {
-		logger.Printf("event=room_dial_failed err=%v", err)
-		return
-	}
-	logger.Printf("event=room_dial_success")
-
-	// Poll until the MUXRPC endpoint is available.
-	deadline = time.Now().Add(readyTimeout)
-	for {
-		if ctx.Err() != nil {
-			return
-		}
-		if _, ok := ssbRT.Node().Network.GetEndpointFor(oldRoomFeed); ok {
-			logger.Printf("event=room_endpoint_ready")
-			break
-		}
-		if time.Now().After(deadline) {
-			logger.Printf("event=room_endpoint_timeout timeout=%s", readyTimeout)
-			return
-		}
-		time.Sleep(pollInterval)
-	}
-
-	// Announce on the tunnel, then re-announce periodically to stay visible.
-	announceTunnel := func() bool {
-		ep, ok := ssbRT.Node().Network.GetEndpointFor(oldRoomFeed)
-		if !ok {
-			logger.Printf("event=room_tunnel_announce_failed err=endpoint_not_found")
-			return false
-		}
-		var announced bool
-		err := ep.Async(ctx, &announced, oldmuxrpc.TypeJSON, oldmuxrpc.Method{"tunnel", "announce"})
-		if err == nil && announced {
-			logger.Printf("event=room_tunnel_announce_success")
-			return true
-		}
-		logger.Printf("event=room_tunnel_announce_failed err=%v", err)
-		return false
-	}
-
-	announceTunnel()
-
+	// Re-announce periodically to stay visible.
 	ticker := time.NewTicker(reannounceEvery)
 	defer ticker.Stop()
 	for {
@@ -1265,7 +1177,7 @@ func runRoomTunnelBootstrap(ctx context.Context, ssbRT *ssbruntime.Runtime, room
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			announceTunnel()
+			roomRT.AnnouncePeer(bridgeFeed, sbotListenAddr)
 		}
 	}
 }
