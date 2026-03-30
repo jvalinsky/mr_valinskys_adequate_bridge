@@ -327,7 +327,7 @@ func (b *Bridge) ensureBlob(ctx context.Context, atDID string, cand blobCandidat
 		return "", fmt.Errorf("store blob cid=%s: %w", cand.CID, err)
 	}
 
-	blobRefStr := fmt.Sprintf("&%s.blake2b", base64.StdEncoding.EncodeToString(blobHash))
+	blobRefStr := fmt.Sprintf("&%s.sha256", base64.RawStdEncoding.EncodeToString(blobHash))
 
 	if err := b.db.AddBlob(ctx, db.Blob{
 		ATCID:      cand.CID,
