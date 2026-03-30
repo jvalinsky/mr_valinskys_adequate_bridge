@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"strings"
 	"sync"
@@ -336,30 +337,41 @@ func (r *rpc) sender() {
 }
 
 func (r *rpc) HandlePacket(p *codec.Packet) {
+	log.Printf("[MUXRPC DEBUG] HandlePacket: Req=%d, Flag=%v, BodyLen=%d", p.Req, p.Flag, len(p.Body))
 	if p.Req > 0 {
-		req := &Request{
-			id:         p.Req,
-			Method:     ParseMethod("unknown"),
-			Type:       CallType("async"),
-			sink:       NewByteSink(r.packer),
-			source:     NewByteSource(r.ctx),
-			remoteAddr: r.conn.RemoteAddr(),
-			endpoint:   r,
-		}
-		req.sink.SetReqID(p.Req)
-
 		r.mu.Lock()
-		r.streams[p.Req] = req
+		existingReq, hasExisting := r.streams[p.Req]
 		r.mu.Unlock()
 
-		if len(p.Body) > 0 {
-			if err := json.Unmarshal(p.Body, req); err != nil {
-				req.RawArgs = json.RawMessage(p.Body)
+		if hasExisting && existingReq.Type == "duplex" {
+			log.Printf("[MUXRPC DEBUG] HandlePacket: Duplex response detected on Req=%d, routing to existing stream", p.Req)
+			if err := existingReq.source.WritePacket(p); err != nil {
 			}
-		}
+		} else {
+			req := &Request{
+				id:         p.Req,
+				Method:     ParseMethod("unknown"),
+				Type:       CallType("async"),
+				sink:       NewByteSink(r.packer),
+				source:     NewByteSource(r.ctx),
+				remoteAddr: r.conn.RemoteAddr(),
+				endpoint:   r,
+			}
+			req.sink.SetReqID(p.Req)
 
-		if r.handler != nil {
-			r.handler.HandleCall(r.ctx, req)
+			r.mu.Lock()
+			r.streams[p.Req] = req
+			r.mu.Unlock()
+
+			if len(p.Body) > 0 {
+				if err := json.Unmarshal(p.Body, req); err != nil {
+					req.RawArgs = json.RawMessage(p.Body)
+				}
+			}
+
+			if r.handler != nil {
+				r.handler.HandleCall(r.ctx, req)
+			}
 		}
 	} else {
 		r.mu.Lock()

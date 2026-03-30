@@ -294,8 +294,14 @@ func (bs *ByteSink) Sink() *ByteSink {
 	return bs
 }
 
+func (bs *ByteSink) Writer() PacketWriter {
+	bs.mu.Lock()
+	defer bs.mu.Unlock()
+	return bs.pkr
+}
+
 type PacketStream struct {
-	packer *Packer
+	packer PacketWriter
 	req    int32
 	flag   codec.Flag
 	buf    *bytes.Buffer
@@ -306,7 +312,7 @@ func (ps *PacketStream) SetRequest(req *Request) {
 	ps.reqPtr = req
 }
 
-func (ps *PacketStream) SetPackerAndReq(pkr *Packer, req int32) {
+func (ps *PacketStream) SetPackerAndReq(pkr PacketWriter, req int32) {
 	ps.packer = pkr
 	ps.req = req
 }

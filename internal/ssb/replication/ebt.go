@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -110,6 +111,29 @@ func (sm *StateMatrix) Update(who *refs.FeedRef, update NetworkFrontier) (Networ
 	return current, nil
 }
 
+func (sm *StateMatrix) SetFeedSeq(feed *refs.FeedRef, seq int64) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	if sm.self == "" {
+		return
+	}
+
+	selfFrontier := sm.frontiers[sm.self]
+	if selfFrontier == nil {
+		selfFrontier = make(NetworkFrontier)
+	}
+
+	selfFrontier[feed.String()] = Note{
+		Seq:       seq,
+		Replicate: true,
+		Receive:   false,
+	}
+
+	sm.frontiers[sm.self] = selfFrontier
+	log.Printf("[EBT DEBUG] SetFeedSeq: feed=%s seq=%d, self_frontier now has %d feeds", feed.String(), seq, len(selfFrontier))
+}
+
 func (sm *StateMatrix) Changed(self, peer *refs.FeedRef) (NetworkFrontier, error) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -122,15 +146,34 @@ func (sm *StateMatrix) Changed(self, peer *refs.FeedRef) (NetworkFrontier, error
 		selfNf = make(NetworkFrontier)
 	}
 
-	peerNf, err := sm.loadFrontier(peer.String())
-	if err != nil {
-		return nil, err
-	}
-	if peerNf == nil {
+	log.Printf("[EBT DEBUG] Changed: self=%s, selfNf_count=%d, selfNf=%+v", self.String(), len(selfNf), selfNf)
+
+	var peerNf NetworkFrontier
+	if peer != nil {
+		peerNf, err = sm.loadFrontier(peer.String())
+		if err != nil {
+			return nil, err
+		}
+		if peerNf == nil {
+			peerNf = make(NetworkFrontier)
+		}
+		log.Printf("[EBT DEBUG] Changed: peer=%s, peerNf_count=%d", peer.String(), len(peerNf))
+	} else {
 		peerNf = make(NetworkFrontier)
+		log.Printf("[EBT DEBUG] Changed: peer=nil (initial state request)")
 	}
 
 	relevant := make(NetworkFrontier)
+
+	if peer == nil {
+		for feed, note := range selfNf {
+			if note.Replicate {
+				relevant[feed] = note
+			}
+		}
+		log.Printf("[EBT DEBUG] Changed: initial state, advertising %d feeds", len(relevant))
+		return relevant, nil
+	}
 
 	for wantedFeed, myNote := range selfNf {
 		theirNote, has := peerNf[wantedFeed]
@@ -287,28 +330,48 @@ func NewEBTHandler(self *refs.FeedRef, store FeedManager, matrix *StateMatrix, r
 }
 
 func (h *EBTHandler) HandleDuplex(ctx context.Context, tx Writer, rx ByteSourceReader, remoteAddr string) error {
+	log.Printf("[EBT DEBUG] HandleDuplex: START remote=%s", remoteAddr)
+
 	session := h.sessions.Started(remoteAddr)
 	defer h.sessions.Ended(remoteAddr)
 
+	log.Printf("[EBT DEBUG] HandleDuplex: sending initial state to %s", remoteAddr)
 	if err := h.sendState(ctx, tx, remoteAddr); err != nil {
+		log.Printf("[EBT DEBUG] HandleDuplex: sendState failed: %v", err)
 		return err
 	}
+	log.Printf("[EBT DEBUG] HandleDuplex: initial state sent, waiting for peer frontier...")
 
-	for rx.Next(ctx) {
-		data, err := rx.Bytes()
-		if err != nil {
+	for {
+		log.Printf("[EBT DEBUG] HandleDuplex: about to call rx.Next(ctx)...")
+		ok := rx.Next(ctx)
+		if !ok {
+			err := rx.Err()
+			log.Printf("[EBT DEBUG] HandleDuplex: rx.Next returned false, err=%v", err)
 			return err
 		}
 
+		data, err := rx.Bytes()
+		if err != nil {
+			log.Printf("[EBT DEBUG] HandleDuplex: rx.Bytes error: %v", err)
+			return err
+		}
+		log.Printf("[EBT DEBUG] HandleDuplex: received %d bytes from peer: %s", len(data), string(data))
+
 		var frontierUpdate NetworkFrontier
 		if err := json.Unmarshal(data, &frontierUpdate); err != nil {
+			log.Printf("[EBT DEBUG] HandleDuplex: failed to unmarshal frontier: %v", err)
 			continue
 		}
+
+		log.Printf("[EBT DEBUG] HandleDuplex: received frontier from %s: %+v", remoteAddr, frontierUpdate)
 
 		wants, err := h.stateMatrix.Update(FeedRefToPtr(*h.self), frontierUpdate)
 		if err != nil {
 			return err
 		}
+
+		log.Printf("[EBT DEBUG] HandleDuplex: feeds_wanted=%d: %+v", len(wants), wants)
 
 		for feedStr, note := range wants {
 			if !note.Replicate {
@@ -326,6 +389,8 @@ func (h *EBTHandler) HandleDuplex(ctx context.Context, tx Writer, rx ByteSourceR
 				continue
 			}
 
+			log.Printf("[EBT DEBUG] HandleDuplex: streaming history for feed=%s seq=%d", feedStr, note.Seq+1)
+
 			arg := CreateHistArgs{
 				ID:    feed,
 				Seq:   note.Seq + 1,
@@ -336,14 +401,13 @@ func (h *EBTHandler) HandleDuplex(ctx context.Context, tx Writer, rx ByteSourceR
 			subCtx, cancel := context.WithCancel(ctx)
 			err = h.createStreamHistory(subCtx, tx, arg)
 			if err != nil {
+				log.Printf("[EBT DEBUG] HandleDuplex: createStreamHistory error for %s: %v", feedStr, err)
 				cancel()
 				continue
 			}
 			session.Subscribed(feedStr, cancel)
 		}
 	}
-
-	return rx.Err()
 }
 
 func (h *EBTHandler) sendState(ctx context.Context, tx Writer, remote string) error {
@@ -357,6 +421,8 @@ func (h *EBTHandler) sendState(ctx context.Context, tx Writer, remote string) er
 		return err
 	}
 
+	log.Printf("[EBT DEBUG] sendState: remote=%s, state_bytes=%d, state=%s", remote, len(data), string(data))
+
 	return tx.Write(ctx, data)
 }
 
@@ -369,11 +435,13 @@ type CreateHistArgs struct {
 
 func (h *EBTHandler) createStreamHistory(ctx context.Context, tx Writer, arg CreateHistArgs) error {
 	feed := arg.ID
+	log.Printf("[EBT DEBUG] createStreamHistory: starting for feed=%s seq=%d live=%v", feed.String(), arg.Seq, arg.Live)
 
 	for seq := arg.Seq; ; seq++ {
 		msg, err := h.store.GetMessage(feed, seq)
 		if err != nil {
 			if err == ErrNotFound {
+				log.Printf("[EBT DEBUG] createStreamHistory: feed=%s seq=%d not found, waiting...", feed.String(), seq)
 				if !arg.Live {
 					return nil
 				}
@@ -387,6 +455,7 @@ func (h *EBTHandler) createStreamHistory(ctx context.Context, tx Writer, arg Cre
 			return err
 		}
 
+		log.Printf("[EBT DEBUG] createStreamHistory: sending msg for feed=%s seq=%d bytes=%d", feed.String(), seq, len(msg))
 		if err := tx.Write(ctx, msg); err != nil {
 			return err
 		}

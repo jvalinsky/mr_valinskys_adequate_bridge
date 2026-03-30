@@ -65,6 +65,7 @@ func (p *Publisher) Publish(content []byte) (refs.MessageRef, error) {
 	}
 
 	var previous *refs.MessageRef
+	nextSeq := int64(1)
 	if seq >= 0 {
 		msg, err := p.log.Get(seq)
 		if err == nil {
@@ -72,6 +73,7 @@ func (p *Publisher) Publish(content []byte) (refs.MessageRef, error) {
 			if err == nil {
 				previous = prevRef
 			}
+			nextSeq = seq + 1
 		}
 	}
 
@@ -83,7 +85,7 @@ func (p *Publisher) Publish(content []byte) (refs.MessageRef, error) {
 	msg := &legacy.Message{
 		Previous:  previous,
 		Author:    p.feed,
-		Sequence:  seq + 1,
+		Sequence:  nextSeq,
 		Timestamp: time.Now().UnixMilli(),
 		Hash:      "sha256",
 		Content:   contentObj,

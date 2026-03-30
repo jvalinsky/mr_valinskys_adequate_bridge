@@ -33,8 +33,10 @@ func (w *EBTHandlerWrapper) HandleCall(ctx context.Context, req *muxrpc.Request)
 		return
 	}
 
+	req.Sink().SetEncoding(muxrpc.TypeJSON)
+
 	txStream := &muxrpc.PacketStream{}
-	txStream.SetPackerAndReq(req.Sink().Packer(), -req.ID())
+	txStream.SetPackerAndReq(req.Sink().Writer(), -req.ID())
 	txStream.SetFlag(codec.FlagJSON | codec.FlagStream)
 	txStream.SetRequest(req)
 	tx := muxrpc.NewPacketStreamWriter(txStream)

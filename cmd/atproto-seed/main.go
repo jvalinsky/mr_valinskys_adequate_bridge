@@ -97,27 +97,28 @@ func main() {
 			}
 			log.Printf("session created for %s", sess.Did)
 
-			// Register bridged account in DB
-			database, err := db.Open(dbPath)
-			if err != nil {
-				return fmt.Errorf("open db: %w", err)
-			}
-			defer database.Close()
+			if targetDID == "" {
+				database, err := db.Open(dbPath)
+				if err != nil {
+					return fmt.Errorf("open db: %w", err)
+				}
+				defer database.Close()
 
-			manager := bots.NewManager([]byte(botSeed), nil, nil, nil)
-			feedRef, err := manager.GetFeedID(sess.Did)
-			if err != nil {
-				return fmt.Errorf("derive ref: %w", err)
-			}
+				manager := bots.NewManager([]byte(botSeed), nil, nil, nil)
+				feedRef, err := manager.GetFeedID(sess.Did)
+				if err != nil {
+					return fmt.Errorf("derive ref: %w", err)
+				}
 
-			if err := database.AddBridgedAccount(ctx, db.BridgedAccount{
-				ATDID:     sess.Did,
-				SSBFeedID: feedRef.Ref(),
-				Active:    true,
-			}); err != nil {
-				log.Printf("warning: could not register bridged account (it may already exist): %v", err)
-			} else {
-				log.Printf("registered bridged account: did=%s feed=%s", sess.Did, feedRef.Ref())
+				if err := database.AddBridgedAccount(ctx, db.BridgedAccount{
+					ATDID:     sess.Did,
+					SSBFeedID: feedRef.Ref(),
+					Active:    true,
+				}); err != nil {
+					log.Printf("warning: could not register bridged account (it may already exist): %v", err)
+				} else {
+					log.Printf("registered bridged account: did=%s feed=%s", sess.Did, feedRef.Ref())
+				}
 			}
 
 			var postURI string
