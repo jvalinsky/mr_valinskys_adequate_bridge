@@ -204,6 +204,8 @@ type Peer struct {
 	Conn   net.Conn
 	Role   Role
 	isAuth bool
+
+	muxrpcServer *muxrpc.Server
 }
 
 type Options struct {
@@ -265,14 +267,22 @@ func (s *Server) handleConn(conn net.Conn, mux *muxrpc.HandlerMux) {
 		return
 	}
 
+	remotePubKey := shs.RemotePubKey()
+	feedRef, err := refs.ParseFeedRef("@" + base64.StdEncoding.EncodeToString(remotePubKey) + ".ed25519")
+	if err != nil {
+		return
+	}
+
 	peer := &Peer{
+		Feed: *feedRef,
 		Conn: conn,
 	}
 
 	s.addPeer(peer)
 	defer s.removePeer(peer)
 
-	_ = muxrpc.NewServer(s.ctx, conn, mux, nil)
+	srv := muxrpc.NewServer(s.ctx, conn, mux, nil)
+	s.SetPeerMuxRPC(peer.Feed, srv)
 
 	<-s.ctx.Done()
 }
@@ -298,6 +308,29 @@ func (s *Server) GetPeers() []*Peer {
 		result = append(result, p)
 	}
 	return result
+}
+
+func (s *Server) GetPeerByFeed(feed refs.FeedRef) *Peer {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.peers[feed.String()]
+}
+
+func (s *Server) SetPeerMuxRPC(feed refs.FeedRef, srv *muxrpc.Server) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if p, ok := s.peers[feed.String()]; ok {
+		p.muxrpcServer = srv
+	}
+}
+
+func (s *Server) GetPeerMuxRPC(feed refs.FeedRef) *muxrpc.Server {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if p, ok := s.peers[feed.String()]; ok {
+		return p.muxrpcServer
+	}
+	return nil
 }
 
 func (s *Server) Authenticate(feed refs.FeedRef, sig []byte, msg []byte) bool {

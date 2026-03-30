@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
@@ -19,6 +20,37 @@ type RoomServer struct {
 	denied  roomdb.DeniedKeysService
 	config  roomdb.RoomConfig
 	state   *roomstate.Manager
+
+	peerRegistry *PeerRegistry
+}
+
+type PeerRegistry struct {
+	mu    sync.RWMutex
+	peers map[string]*muxrpc.Server
+}
+
+func NewPeerRegistry() *PeerRegistry {
+	return &PeerRegistry{
+		peers: make(map[string]*muxrpc.Server),
+	}
+}
+
+func (r *PeerRegistry) Register(feed refs.FeedRef, srv *muxrpc.Server) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.peers[feed.String()] = srv
+}
+
+func (r *PeerRegistry) Unregister(feed refs.FeedRef) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.peers, feed.String())
+}
+
+func (r *PeerRegistry) Get(feed refs.FeedRef) *muxrpc.Server {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.peers[feed.String()]
 }
 
 func NewRoomServer(
@@ -31,13 +63,14 @@ func NewRoomServer(
 	state *roomstate.Manager,
 ) *RoomServer {
 	return &RoomServer{
-		keyPair: keyPair,
-		members: members,
-		aliases: aliases,
-		invites: invites,
-		denied:  denied,
-		config:  config,
-		state:   state,
+		keyPair:      keyPair,
+		members:      members,
+		aliases:      aliases,
+		invites:      invites,
+		denied:       denied,
+		config:       config,
+		state:        state,
+		peerRegistry: NewPeerRegistry(),
 	}
 }
 
@@ -51,6 +84,17 @@ func NewAliasHandler(s *RoomServer) *AliasHandler {
 
 func (s *RoomServer) KeyPair() *refs.FeedRef {
 	return s.keyPair
+}
+
+func (s *RoomServer) PeerRegistry() *PeerRegistry {
+	return s.peerRegistry
+}
+
+func (s *RoomServer) GetPeerMuxRPC(feed refs.FeedRef) *muxrpc.Server {
+	if s.peerRegistry == nil {
+		return nil
+	}
+	return s.peerRegistry.Get(feed)
 }
 
 func (h *AliasHandler) Handled(m muxrpc.Method) bool {

@@ -18,6 +18,17 @@ type Stream interface {
 	Sink() *ByteSink
 }
 
+type ByteSourceReader interface {
+	Next(ctx context.Context) bool
+	Bytes() ([]byte, error)
+	Err() error
+}
+
+type SinkWriter interface {
+	io.Writer
+	io.Closer
+}
+
 type ByteSource struct {
 	buf *frameBuffer
 

@@ -4,19 +4,33 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
+	"net"
+	"strings"
+	"sync"
+	"time"
 
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/keys"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomstate"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/secretstream"
 )
 
 type TunnelHandler struct {
 	server       *RoomServer
 	announceHook func(refs.FeedRef) error
+	keyPair      *keys.KeyPair
+	appKey       string
 }
 
-func NewTunnelHandler(s *RoomServer) *TunnelHandler {
-	return &TunnelHandler{server: s}
+func NewTunnelHandler(s *RoomServer, keyPair *keys.KeyPair, appKey string) *TunnelHandler {
+	return &TunnelHandler{
+		server:  s,
+		keyPair: keyPair,
+		appKey:  appKey,
+	}
 }
 
 func (h *TunnelHandler) Handled(m muxrpc.Method) bool {
@@ -148,10 +162,169 @@ func (h *TunnelHandler) handleConnect(ctx context.Context, req *muxrpc.Request) 
 		return
 	}
 
-	req.Return(ctx, map[string]interface{}{
-		"id":   args.ID,
-		"addr": args.Addr,
-	})
+	targetRef, err := refs.ParseFeedRef(args.ID)
+	if err != nil {
+		req.CloseWithError(fmt.Errorf("tunnel.connect: parse target id: %w", err))
+		return
+	}
+
+	log.Printf("[TUNNEL] tunnel.connect from %s to %s (addr: %s)", req.RemoteAddr(), args.ID, args.Addr)
+
+	var targetAddr string
+	if args.Addr != "" {
+		targetAddr = args.Addr
+	} else {
+		req.CloseWithError(fmt.Errorf("tunnel.connect: addr required for dialing"))
+		return
+	}
+
+	go h.dialAndBridge(ctx, req, *targetRef, targetAddr)
+}
+
+func (h *TunnelHandler) dialAndBridge(ctx context.Context, req *muxrpc.Request, targetRef refs.FeedRef, targetAddr string) {
+	callerSink, err := req.ResponseSink()
+	if err != nil {
+		req.CloseWithError(fmt.Errorf("tunnel.connect: get caller sink: %w", err))
+		return
+	}
+
+	callerSource := req.Source()
+	if callerSource == nil {
+		callerSink.Close()
+		req.CloseWithError(fmt.Errorf("tunnel.connect: get caller source"))
+		return
+	}
+
+	log.Printf("[TUNNEL] Dialing target peer at %s", targetAddr)
+
+	conn, err := h.dialPeer(ctx, targetAddr, targetRef)
+	if err != nil {
+		log.Printf("[TUNNEL] Failed to dial target peer: %v", err)
+		callerSink.Close()
+		callerSource.Cancel(fmt.Errorf("tunnel: dial failed"))
+		req.CloseWithError(fmt.Errorf("tunnel.connect: dial failed: %w", err))
+		return
+	}
+
+	log.Printf("[TUNNEL] Successfully connected to target, starting bridge")
+
+	var wg sync.WaitGroup
+	cleanupOnce := sync.Once{}
+
+	cleanup := func() {
+		cleanupOnce.Do(func() {
+			callerSource.Cancel(fmt.Errorf("tunnel: closing"))
+			callerSink.Close()
+			conn.Close()
+		})
+	}
+
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		h.copyStreamToConn(ctx, callerSource, conn, cleanup)
+		log.Printf("[TUNNEL] Caller -> Target stream closed")
+		cleanup()
+	}()
+	go func() {
+		defer wg.Done()
+		h.copyConnToStream(ctx, conn, callerSink, cleanup)
+		log.Printf("[TUNNEL] Target -> Caller stream closed")
+		cleanup()
+	}()
+
+	wg.Wait()
+	log.Printf("[TUNNEL] Tunnel bridge complete")
+
+	req.Close()
+}
+
+func parseMultiServerAddr(addr string) (string, error) {
+	if strings.HasPrefix(addr, "net:") {
+		addr = strings.TrimPrefix(addr, "net:")
+	}
+	parts := strings.Split(addr, "~shs:")
+	if len(parts) < 1 {
+		return "", fmt.Errorf("parse addr: invalid format")
+	}
+	return parts[0], nil
+}
+
+func (h *TunnelHandler) dialPeer(ctx context.Context, addr string, expectedFeed refs.FeedRef) (net.Conn, error) {
+	tcpAddr, err := parseMultiServerAddr(addr)
+	if err != nil {
+		return nil, fmt.Errorf("parse addr: %w", err)
+	}
+
+	log.Printf("[TUNNEL] Parsed TCP address: %s", tcpAddr)
+
+	conn, err := net.DialTimeout("tcp", tcpAddr, 10*1000000000)
+	if err != nil {
+		return nil, fmt.Errorf("dial: %w", err)
+	}
+
+	shs, err := secretstream.NewClient(conn, secretstream.NewAppKey(h.appKey), h.keyPair.Private(), expectedFeed.PubKey())
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("create client: %w", err)
+	}
+
+	if err := shs.Handshake(); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("handshake: %w", err)
+	}
+
+	return conn, nil
+}
+
+func (h *TunnelHandler) copyStreamToConn(ctx context.Context, source *muxrpc.ByteSource, conn net.Conn, onClose func()) {
+	defer onClose()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		if !source.Next(ctx) {
+			return
+		}
+		data, err := source.Bytes()
+		if err != nil {
+			return
+		}
+		if len(data) > 0 {
+			if _, err := conn.Write(data); err != nil {
+				return
+			}
+		}
+	}
+}
+
+func (h *TunnelHandler) copyConnToStream(ctx context.Context, conn net.Conn, sink *muxrpc.ByteSink, onClose func()) {
+	defer onClose()
+	buf := make([]byte, 8192)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+		n, err := conn.Read(buf)
+		if n > 0 {
+			sink.Write(buf[:n])
+		}
+		if err != nil {
+			if err == io.EOF {
+				return
+			}
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				continue
+			}
+			log.Printf("[TUNNEL] Read error: %v", err)
+			return
+		}
+	}
 }
 
 func (h *TunnelHandler) handleEndpoints(ctx context.Context, req *muxrpc.Request) {

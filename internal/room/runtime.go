@@ -136,7 +136,7 @@ func Start(parentCtx context.Context, cfg Config, logger *log.Logger) (*Runtime,
 		cfg.HandlerMux.Register(muxrpc.Method{"whoami"}, &whoamiHandler{roomSrv})
 		cfg.HandlerMux.Register(muxrpc.Method{"room"}, roomhandlers.NewAliasHandler(roomSrv))
 
-		tunnelHandler := roomhandlers.NewTunnelHandler(roomSrv)
+		tunnelHandler := roomhandlers.NewTunnelHandler(roomSrv, cfg.KeyPair, cfg.AppKey)
 		cfg.HandlerMux.Register(muxrpc.Method{"tunnel", "announce"}, tunnelHandler)
 		cfg.HandlerMux.Register(muxrpc.Method{"tunnel", "leave"}, tunnelHandler)
 		cfg.HandlerMux.Register(muxrpc.Method{"tunnel", "connect"}, tunnelHandler)
@@ -145,7 +145,7 @@ func Start(parentCtx context.Context, cfg Config, logger *log.Logger) (*Runtime,
 		cfg.HandlerMux.Register(muxrpc.Method{"tunnel", "ping"}, tunnelHandler)
 	} else {
 		handlerMux = &muxrpc.HandlerMux{}
-		registerRoomHandlers(handlerMux, roomSrv)
+		registerRoomHandlers(handlerMux, roomSrv, cfg.KeyPair, cfg.AppKey)
 	}
 
 	manifest := &muxrpc.Manifest{} // Room currently doesn't use a formal manifest for discovery
@@ -399,11 +399,11 @@ func newServeMux(ctx context.Context, db *sqlite.DB, state *roomstate.Manager, k
 	return mux
 }
 
-func registerRoomHandlers(mux *muxrpc.HandlerMux, srv *roomhandlers.RoomServer) {
+func registerRoomHandlers(mux *muxrpc.HandlerMux, srv *roomhandlers.RoomServer, keyPair *keys.KeyPair, appKey string) {
 	mux.Register(muxrpc.Method{"whoami"}, &whoamiHandler{srv})
 	mux.Register(muxrpc.Method{"room"}, roomhandlers.NewAliasHandler(srv))
 
-	tunnelHandler := roomhandlers.NewTunnelHandler(srv)
+	tunnelHandler := roomhandlers.NewTunnelHandler(srv, keyPair, appKey)
 	mux.Register(muxrpc.Method{"tunnel", "announce"}, tunnelHandler)
 	mux.Register(muxrpc.Method{"tunnel", "leave"}, tunnelHandler)
 	mux.Register(muxrpc.Method{"tunnel", "connect"}, tunnelHandler)

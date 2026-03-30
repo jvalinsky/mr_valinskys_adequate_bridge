@@ -655,6 +655,10 @@ func (s *Server) SetDeadline(t time.Time) error      { return s.conn.SetDeadline
 func (s *Server) SetReadDeadline(t time.Time) error  { return s.conn.SetReadDeadline(t) }
 func (s *Server) SetWriteDeadline(t time.Time) error { return s.conn.SetWriteDeadline(t) }
 
+func (s *Server) RemotePubKey() []byte {
+	return s.state.Remote()
+}
+
 func (c *Client) Read(b []byte) (int, error) {
 	return c.unboxer.Read(b)
 }

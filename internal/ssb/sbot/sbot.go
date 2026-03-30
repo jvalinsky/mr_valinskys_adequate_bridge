@@ -158,7 +158,7 @@ func New(opts Options) (*Sbot, error) {
 		handlerMux.Register(muxrpc.Method{"room", "attendants"}, aliasHandler)
 		handlerMux.Register(muxrpc.Method{"room", "metadata"}, aliasHandler)
 
-		tunnelHandler := room.NewTunnelHandler(roomSrv)
+		tunnelHandler := room.NewTunnelHandler(roomSrv, opts.KeyPair, opts.AppKey)
 		handlerMux.Register(muxrpc.Method{"tunnel", "announce"}, tunnelHandler)
 		handlerMux.Register(muxrpc.Method{"tunnel", "leave"}, tunnelHandler)
 		handlerMux.Register(muxrpc.Method{"tunnel", "connect"}, tunnelHandler)
