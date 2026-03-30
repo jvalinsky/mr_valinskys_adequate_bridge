@@ -2,7 +2,9 @@ package refs
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -57,6 +59,23 @@ func (f FeedRef) Ref() string {
 
 func (f FeedRef) Equal(other FeedRef) bool {
 	return f.algo == other.algo && f.id == other.id
+}
+
+func (f FeedRef) MarshalJSON() ([]byte, error) {
+	return json.Marshal(f.String())
+}
+
+func (f *FeedRef) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return err
+	}
+	parsed, err := ParseFeedRef(s)
+	if err != nil {
+		return fmt.Errorf("refs: unmarshal feed ref: %w", err)
+	}
+	*f = *parsed
+	return nil
 }
 
 func NewFeedRef(id []byte, algo RefAlgo) (*FeedRef, error) {

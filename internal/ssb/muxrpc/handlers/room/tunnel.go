@@ -206,24 +206,22 @@ func (h *TunnelHandler) handleIsRoom(ctx context.Context, req *muxrpc.Request) {
 		return
 	}
 
+	// Room2 spec: tunnel.isRoom returns true if this is a room server.
+	// Clients may call with empty args or with {id: <feedref>}.
 	var args struct {
 		ID string `json:"id"`
 	}
 	if len(req.RawArgs) > 0 {
-		if err := json.Unmarshal(req.RawArgs, &args); err != nil {
-			req.CloseWithError(fmt.Errorf("tunnel.isRoom: parse args: %w", err))
-			return
-		}
+		// Try to parse as object; ignore errors for empty arrays like []
+		_ = json.Unmarshal(req.RawArgs, &args)
 	}
 
-	if args.ID == "" {
-		req.CloseWithError(fmt.Errorf("tunnel.isRoom: id required"))
+	// If an ID was provided, check it matches; otherwise just confirm we're a room
+	if args.ID != "" {
+		req.Return(ctx, args.ID == h.server.keyPair.String())
 		return
 	}
-
-	isRoom := args.ID == h.server.keyPair.String()
-
-	req.Return(ctx, isRoom)
+	req.Return(ctx, true)
 }
 
 func (h *TunnelHandler) handlePing(ctx context.Context, req *muxrpc.Request) {

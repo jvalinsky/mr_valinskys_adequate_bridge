@@ -121,7 +121,7 @@ func EncodeSecret(kp *KeyPair, w io.Writer) error {
 	pub := kp.Public()
 	secret := SecretFile{
 		Curve:   "ed25519",
-		ID:      refs.FeedRef{},
+		ID:      kp.FeedRef(),
 		Private: base64.StdEncoding.EncodeToString(kp.Private()) + ".ed25519",
 		Public:  base64.StdEncoding.EncodeToString(pub[:]) + ".ed25519",
 	}

@@ -38,8 +38,12 @@ type Config struct {
 	Mode                  string
 	HTTPSDomain           string
 	KeyPair               *keys.KeyPair
+	AppKey                string
 	BridgeAccountLister   ActiveBridgeAccountLister
 	BridgeAccountDetailer ActiveBridgeAccountDetailer
+	HandlerMux            interface {
+		Register(method muxrpc.Method, h muxrpc.Handler)
+	}
 }
 
 type Runtime struct {
@@ -78,18 +82,26 @@ func Start(parentCtx context.Context, cfg Config, logger *log.Logger) (*Runtime,
 
 	ctx, cancel := context.WithCancel(parentCtx)
 
-	if cfg.KeyPair == nil {
-		kp, err := keys.Generate()
-		if err != nil {
-			cancel()
-			return nil, fmt.Errorf("room: failed to generate key pair: %w", err)
-		}
-		cfg.KeyPair = kp
-	}
-
-	if err := os.MkdirAll(filepath.Join(cfg.RepoPath), 0700); err != nil {
+	if err := os.MkdirAll(cfg.RepoPath, 0700); err != nil {
 		cancel()
 		return nil, fmt.Errorf("room: failed to create repo directory: %w", err)
+	}
+
+	if cfg.KeyPair == nil {
+		secretPath := filepath.Join(cfg.RepoPath, "secret")
+		kp, err := keys.Load(secretPath)
+		if err != nil {
+			kp, err = keys.Generate()
+			if err != nil {
+				cancel()
+				return nil, fmt.Errorf("room: failed to generate key pair: %w", err)
+			}
+			if err := keys.Save(kp, secretPath); err != nil {
+				cancel()
+				return nil, fmt.Errorf("room: failed to save key pair: %w", err)
+			}
+		}
+		cfg.KeyPair = kp
 	}
 
 	roomDB, err := sqlite.Open(filepath.Join(cfg.RepoPath, "room.sqlite"))
@@ -118,8 +130,23 @@ func Start(parentCtx context.Context, cfg Config, logger *log.Logger) (*Runtime,
 		state,
 	)
 
-	handlerMux := &muxrpc.HandlerMux{}
-	registerRoomHandlers(handlerMux, roomSrv)
+	var handlerMux *muxrpc.HandlerMux
+	if cfg.HandlerMux != nil {
+		handlerMux = cfg.HandlerMux.(*muxrpc.HandlerMux)
+		cfg.HandlerMux.Register(muxrpc.Method{"whoami"}, &whoamiHandler{roomSrv})
+		cfg.HandlerMux.Register(muxrpc.Method{"room"}, roomhandlers.NewAliasHandler(roomSrv))
+
+		tunnelHandler := roomhandlers.NewTunnelHandler(roomSrv)
+		cfg.HandlerMux.Register(muxrpc.Method{"tunnel", "announce"}, tunnelHandler)
+		cfg.HandlerMux.Register(muxrpc.Method{"tunnel", "leave"}, tunnelHandler)
+		cfg.HandlerMux.Register(muxrpc.Method{"tunnel", "connect"}, tunnelHandler)
+		cfg.HandlerMux.Register(muxrpc.Method{"tunnel", "endpoints"}, tunnelHandler)
+		cfg.HandlerMux.Register(muxrpc.Method{"tunnel", "isRoom"}, tunnelHandler)
+		cfg.HandlerMux.Register(muxrpc.Method{"tunnel", "ping"}, tunnelHandler)
+	} else {
+		handlerMux = &muxrpc.HandlerMux{}
+		registerRoomHandlers(handlerMux, roomSrv)
+	}
 
 	manifest := &muxrpc.Manifest{} // Room currently doesn't use a formal manifest for discovery
 
@@ -182,6 +209,14 @@ func (r *Runtime) Addr() string {
 		return ""
 	}
 	return r.muxrpcAddr
+}
+
+// AnnouncePeer registers a peer in the room's state so it appears in tunnel.endpoints.
+func (r *Runtime) AnnouncePeer(id refs.FeedRef, addr string) {
+	if r == nil || r.state == nil {
+		return
+	}
+	r.state.AddPeer(id, addr)
 }
 
 func (r *Runtime) HTTPAddr() string {
@@ -295,7 +330,7 @@ func (r *Runtime) handleMUXRPCConn(ctx context.Context, conn net.Conn) {
 		return
 	}
 
-	appKey := secretstream.NewAppKey("boxstream") // Default SSB network identifier
+	appKey := secretstream.NewAppKey(r.cfg.AppKey)
 	shs, err := secretstream.NewServer(conn, appKey, r.keyPair.Private())
 	if err != nil {
 		r.logger.Printf("room: shs server init failed: %v", err)
@@ -367,6 +402,14 @@ func newServeMux(ctx context.Context, db *sqlite.DB, state *roomstate.Manager, k
 func registerRoomHandlers(mux *muxrpc.HandlerMux, srv *roomhandlers.RoomServer) {
 	mux.Register(muxrpc.Method{"whoami"}, &whoamiHandler{srv})
 	mux.Register(muxrpc.Method{"room"}, roomhandlers.NewAliasHandler(srv))
+
+	tunnelHandler := roomhandlers.NewTunnelHandler(srv)
+	mux.Register(muxrpc.Method{"tunnel", "announce"}, tunnelHandler)
+	mux.Register(muxrpc.Method{"tunnel", "leave"}, tunnelHandler)
+	mux.Register(muxrpc.Method{"tunnel", "connect"}, tunnelHandler)
+	mux.Register(muxrpc.Method{"tunnel", "endpoints"}, tunnelHandler)
+	mux.Register(muxrpc.Method{"tunnel", "isRoom"}, tunnelHandler)
+	mux.Register(muxrpc.Method{"tunnel", "ping"}, tunnelHandler)
 }
 
 type whoamiHandler struct {

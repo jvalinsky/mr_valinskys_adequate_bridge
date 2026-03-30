@@ -12,6 +12,7 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/secretstream"
+	"golang.org/x/crypto/ed25519"
 )
 
 type Conn struct {
@@ -230,13 +231,13 @@ func NewClient(opts Options) *Client {
 	}
 }
 
-func (c *Client) Connect(ctx context.Context, addr string) (*Peer, error) {
+func (c *Client) Connect(ctx context.Context, addr string, remote ed25519.PublicKey) (*Peer, error) {
 	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
 	if err != nil {
-		return nil, fmt.Errorf("network: failed to dial: %w", err)
+		return nil, fmt.Errorf("network: failed to dial %s: %w", addr, err)
 	}
 
-	shs, err := secretstream.NewClient(conn, secretstream.NewAppKey(c.opts.AppKey), c.keyPair.Private(), nil)
+	shs, err := secretstream.NewClient(conn, secretstream.NewAppKey(c.opts.AppKey), c.keyPair.Private(), remote)
 	if err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("network: failed to create client: %w", err)

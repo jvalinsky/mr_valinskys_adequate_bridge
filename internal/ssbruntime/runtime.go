@@ -31,6 +31,7 @@ type Config struct {
 	MasterSeed []byte
 	HMACKey    *[32]byte
 	KeyPair    *keys.KeyPair
+	AppKey     string
 }
 
 func Open(ctx context.Context, cfg Config, logger *log.Logger) (*Runtime, error) {
@@ -43,7 +44,7 @@ func Open(ctx context.Context, cfg Config, logger *log.Logger) (*Runtime, error)
 		return nil, fmt.Errorf("create repo path: %w", err)
 	}
 
-	appKey := "tofu"
+	appKey := cfg.AppKey
 	if cfg.HMACKey != nil {
 		appKey = string(cfg.HMACKey[:])
 	}
@@ -125,6 +126,13 @@ func (r *Runtime) Publish(ctx context.Context, atDID string, content map[string]
 	msgRef, err := pub.PublishJSON(content)
 	if err != nil {
 		return "", fmt.Errorf("ssbruntime: failed to publish message for %s: %w", atDID, err)
+	}
+
+	if err == nil && feedRef.Ref() != "" {
+		seq, err := pub.Seq()
+		if err == nil {
+			r.sbotNode.NotifyFeedSeq(&feedRef, seq)
+		}
 	}
 
 	return msgRef.String(), nil

@@ -164,6 +164,8 @@ func (h *Handler) HandleCall(ctx context.Context, req *muxrpc.Request) {
 		h.handleGet(ctx, req)
 	case req.Method.String() == "blobs.add":
 		h.handleAdd(ctx, req)
+	case req.Method.String() == "blobs.createWants":
+		h.handleCreateWants(ctx, req)
 	default:
 		req.CloseWithError(fmt.Errorf("unknown method: %s", req.Method))
 	}
@@ -343,4 +345,30 @@ func (h *Handler) handleAdd(ctx context.Context, req *muxrpc.Request) {
 
 func decodeArgs(raw []byte, v interface{}) error {
 	return json.Unmarshal(raw, v)
+}
+
+func (h *Handler) handleCreateWants(ctx context.Context, req *muxrpc.Request) {
+	if req.Type != "source" {
+		req.CloseWithError(fmt.Errorf("blobs.createWants is a source handler"))
+		return
+	}
+
+	sink, err := req.ResponseSink()
+	if err != nil {
+		req.CloseWithError(fmt.Errorf("blobs.createWants: get sink: %w", err))
+		return
+	}
+
+	wants, err := h.wm.Wants()
+	if err != nil {
+		req.CloseWithError(fmt.Errorf("blobs.createWants: get wants: %w", err))
+		return
+	}
+
+	for _, want := range wants {
+		data, _ := json.Marshal(want.Ref())
+		if _, err := sink.Write(data); err != nil {
+			return
+		}
+	}
 }

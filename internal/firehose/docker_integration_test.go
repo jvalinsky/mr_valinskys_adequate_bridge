@@ -5,6 +5,7 @@ package firehose
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"sync"
@@ -37,12 +38,9 @@ func TestDockerIntegrationFirehose(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	session, err := atproto.ServerCreateSession(ctx, xrpcc, &atproto.ServerCreateSession_Input{
-		Identifier: "admin@test",
-		Password:   "admin",
-	})
+	session, err := setupTestAccount(ctx, t, xrpcc)
 	if err != nil {
-		t.Skipf("Skipping: authentication failed - %v (ensure PDS is configured with admin@test/admin)", err)
+		t.Fatalf("Failed to setup test account: %v", err)
 	}
 	t.Logf("Logged in as DID: %s", session.Did)
 
@@ -130,12 +128,9 @@ func TestDockerIntegrationCreateAndReceiveCommit(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	session, err := atproto.ServerCreateSession(ctx, xrpcc, &atproto.ServerCreateSession_Input{
-		Identifier: "admin@test",
-		Password:   "admin",
-	})
+	session, err := setupTestAccount(ctx, t, xrpcc)
 	if err != nil {
-		t.Skipf("Skipping: authentication failed - %v (ensure PDS is configured with admin@test/admin)", err)
+		t.Fatalf("Failed to setup test account: %v", err)
 	}
 
 	xrpcc.Auth = &xrpc.AuthInfo{
@@ -206,4 +201,29 @@ func createPost(ctx context.Context, t *testing.T, xrpcc *xrpc.Client, did strin
 	if err != nil {
 		t.Logf("create post (may already exist): %v", err)
 	}
+}
+
+func setupTestAccount(ctx context.Context, t *testing.T, xrpcc *xrpc.Client) (*atproto.ServerCreateSession_Output, error) {
+	handle := fmt.Sprintf("test-%d.test", time.Now().UnixNano())
+	email := fmt.Sprintf("test-%d@example.test", time.Now().UnixNano())
+	password := "test-password"
+
+	_, err := atproto.ServerCreateAccount(ctx, xrpcc, &atproto.ServerCreateAccount_Input{
+		Email:    &email,
+		Handle:   handle,
+		Password: &password,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("createAccount: %w", err)
+	}
+
+	session, err := atproto.ServerCreateSession(ctx, xrpcc, &atproto.ServerCreateSession_Input{
+		Identifier: handle,
+		Password:   password,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("createSession: %w", err)
+	}
+
+	return session, nil
 }
