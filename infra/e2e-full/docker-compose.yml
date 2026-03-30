@@ -15,6 +15,22 @@ services:
       timeout: 3s
       retries: 30
 
+  plc-proxy:
+    image: caddy:alpine
+    command: caddy run --config /etc/caddy/Caddyfile
+    networks:
+      default:
+        aliases:
+          - plc.directory
+          - pds.test
+        ipv4_address: 10.42.0.11
+    depends_on:
+      plc:
+        condition: service_healthy
+    volumes:
+      - plc_proxy_data:/data
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+
   relay_pg:
     image: postgres:16-alpine
     environment:
@@ -36,55 +52,101 @@ services:
         condition: service_healthy
       plc:
         condition: service_healthy
+      plc-proxy:
+        condition: service_started
     environment:
       RELAY_ADMIN_PASSWORD: local-dev-relay-admin
       RELAY_PLC_HOST: http://plc:2582
       DATABASE_URL: postgres://relay:relay@relay_pg:5432/relay?sslmode=disable
       RELAY_PERSIST_DIR: /data
       RELAY_INITIAL_SEQ_NUMBER: "1"
-      RELAY_TRUSTED_DOMAINS: ""
+      RELAY_TRUSTED_DOMAINS: "pds.test"
       RELAY_ALLOW_INSECURE_HOSTS: "true"
+      RELAY_ALLOW_NONPUBLIC: "true"
+      ATP_RELAY_ALLOW_NONPUBLIC_IPS: "true"
+      SSL_CERT_FILE: /certs/caddy/pki/authorities/local/root.crt
     volumes:
       - relay-data:/data
+      - plc_proxy_data:/certs:ro
+      - ./relay_startup.sh:/relay_startup.sh:ro
+    extra_hosts:
+      - "pds.test:10.42.0.11"
+      - "plc.directory:10.42.0.11"
+    networks:
+      default:
+        aliases:
+          - relay
+    entrypoint: ["/bin/sh", "/relay_startup.sh"]
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:2470/ || exit 1"]
       interval: 3s
       timeout: 3s
       retries: 30
 
-  pds:
-    image: ghcr.io/bluesky-social/pds:0.4
+  relay-seed:
+    image: postgres:16-alpine
     depends_on:
-      plc:
-        condition: service_healthy
-      relay:
-        condition: service_healthy
+      relay: { condition: service_healthy }
     environment:
-      PDS_PORT: "80"
-      PDS_HOSTNAME: pds.test
-      PDS_SERVICE_HANDLE_DOMAINS: .test
-      PDS_DEV_MODE: "true"
-      PDS_RATE_LIMITS_ENABLED: "false"
-      PDS_INVITE_REQUIRED: "false"
-      PDS_CRAWLERS: http://relay:2470
-      PDS_ENABLE_DID_DOC_WITH_SESSION: "true"
-      PDS_DID_PLC_URL: http://plc:2582
-      PDS_JWT_SECRET: local-dev-jwt-secret-change-me
-      PDS_ADMIN_PASSWORD: local-dev-admin-password
-      PDS_PLC_ROTATION_KEY_K256_PRIVATE_KEY_HEX: "1111111111111111111111111111111111111111111111111111111111111111"
-      PDS_DATA_DIRECTORY: /pds
-      PDS_BLOBSTORE_DISK_LOCATION: /pds/blocks
+      PGPASSWORD: relay
+    volumes:
+      - ./relay_seed.sh:/scripts/relay_seed.sh:ro
+    entrypoint: ["/bin/sh", "-c", "/scripts/relay_seed.sh && touch /tmp/relay_seeded && tail -f /dev/null"]
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/relay_seeded"]
+      interval: 2s
+      timeout: 2s
+      retries: 5
+
+  init-keys:
+    image: ghcr.io/haileyok/cocoon:latest
+    entrypoint: ["/bin/sh", "-c", "/scripts/cocoon-init-keys.sh && touch /keys/done && tail -f /dev/null"]
+    volumes:
+      - ../local-atproto/cocoon-init-keys.sh:/scripts/cocoon-init-keys.sh:ro
+      - cocoon-keys:/keys
+    healthcheck:
+      test: ["CMD", "test", "-f", "/keys/done"]
+      interval: 2s
+      timeout: 2s
+      retries: 5
+
+  pds:
+    image: ghcr.io/haileyok/cocoon:latest
+    command: ["/cocoon", "run"]
+    depends_on:
+      plc: { condition: service_healthy }
+      relay: { condition: service_healthy }
+      init-keys: { condition: service_healthy }
+      plc-proxy: { condition: service_started }
+    environment:
+      COCOON_ADDR: ":80"
+      COCOON_HOSTNAME: pds.test
+      COCOON_ADMIN_PASSWORD: local-dev-admin-password
+      COCOON_SESSION_SECRET: local-dev-jwt-secret-change-me
+      COCOON_ROTATION_KEY_PATH: /keys/rotation.key
+      COCOON_JWK_PATH: /keys/jwk.key
+      COCOON_RELAYS: "http://relay:2470"
+      COCOON_REQUIRE_INVITE: "false"
+      COCOON_DB_TYPE: sqlite
+      COCOON_DB_NAME: /data/cocoon.db
+      COCOON_CONTACT_EMAIL: admin@pds.test
+      COCOON_LOG_LEVEL: debug
+      COCOON_DID: did:web:pds.test
+      SSL_CERT_FILE: /data/plc_proxy/caddy/pki/authorities/local/root.crt
     networks:
       default:
         aliases:
           - pds.test
+          - pds
     volumes:
-      - pds-data:/pds
+      - cocoon-keys:/keys:ro
+      - pds-data:/data
+      - plc_proxy_data:/data/plc_proxy:ro
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:80/xrpc/_health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
-      interval: 3s
-      timeout: 3s
-      retries: 60
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:80/xrpc/_health"]
+      interval: 5s
+      timeout: 5s
+      retries: 100
 
   # ── Bridge ───────────────────────────────────────────────────────
   bridge:
@@ -108,6 +170,8 @@ services:
     depends_on:
       relay:
         condition: service_healthy
+      relay-seed:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://127.0.0.1:8976/healthz"]
       interval: 3s
@@ -119,15 +183,16 @@ services:
     build:
       context: ../..
       dockerfile: infra/e2e-tildefriends/Dockerfile.bridge
-    entrypoint: ["/bin/bash", "-c", "atproto-seed --db /data/bridge.sqlite --bot-seed e2e-full-seed && tail -f /dev/null"]
+    entrypoint: ["/bin/bash", "/scripts/seeder_entrypoint.sh"]
     environment:
-      # Map localhost to pds.test for the seeder
-      # Actually, since handle is 'seed.test', PDS will resolve it.
       PDS_HOST: "http://pds:80"
-      TARGET_DID: "did:plc:bridge-bot" # Optional
+      BOT_SEED: e2e-full-seed
     volumes:
       - bridge-data:/data
+      - ./seeder_entrypoint.sh:/scripts/seeder_entrypoint.sh:ro
     depends_on:
+      bridge:
+        condition: service_healthy
       pds:
         condition: service_healthy
 
@@ -159,10 +224,19 @@ services:
       seeder:
         condition: service_started
 
+
 volumes:
   plc-data:
   relay-pg-data:
   relay-data:
   pds-data:
+  cocoon-keys:
+  plc_proxy_data:
   bridge-data:
   tf-data:
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 10.42.0.0/24

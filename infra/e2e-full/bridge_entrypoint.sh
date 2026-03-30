@@ -10,6 +10,13 @@ ROOM_HTTP_ADDR="${ROOM_HTTP_ADDR:-0.0.0.0:8976}"
 ROOM_MODE="${ROOM_MODE:-open}"
 ROOM_HTTPS_DOMAIN="${ROOM_HTTPS_DOMAIN:-bridge}"
 BRIDGE_RELAY_URL="${BRIDGE_RELAY_URL:-}"
+BRIDGE_CLEAN_START="${BRIDGE_CLEAN_START:-1}"
+
+# In e2e, wipe stale state to avoid FutureCursor errors from prior runs.
+if [ "${BRIDGE_CLEAN_START}" = "1" ]; then
+  echo "[bridge-entry] clean start: removing stale db and repo..."
+  rm -rf "${DB_PATH}" "${DB_PATH}-wal" "${DB_PATH}-shm" "${REPO_PATH}"
+fi
 
 echo "[bridge-entry] starting bridge engine connecting to ${BRIDGE_RELAY_URL} ..."
 

@@ -101,7 +101,7 @@ log "waiting for firehose to deliver commits and bridge to publish SSB messages.
 MAX_FIREHOSE_WAIT=60
 FIREHOSE_WAIT=0
 while true; do
-  PUBLISHED_COUNT="$(sql_count "${BRIDGE_DB_PATH}" "SELECT COUNT(*) FROM messages WHERE published=1;")"
+  PUBLISHED_COUNT="$(sql_count "${BRIDGE_DB_PATH}" "SELECT COUNT(*) FROM messages WHERE message_state='published';")"
   if [[ "${PUBLISHED_COUNT}" -gt 0 ]]; then
     log "firehose delivered commits, bridge has ${PUBLISHED_COUNT} published SSB messages"
     break
@@ -176,6 +176,6 @@ while true; do
   sleep "${POLL_INTERVAL}"
 done
 
-log "test passed! Keeping Tildefriends alive on port 12345..."
-wait "${TF_PID}"
-exit 0
+log "test passed! Keeping container alive for inspection..."
+# Keep alive indefinitely even if tildefriends exited
+tail -f /dev/null

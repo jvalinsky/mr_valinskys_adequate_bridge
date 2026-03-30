@@ -1,0 +1,18 @@
+services:
+  bridge:
+    ports:
+      - "8976:8976"
+      - "8989:8989"
+    environment:
+      BRIDGE_RELAY_URL: "ws://pds:80/xrpc/com.atproto.sync.subscribeRepos"
+  pds:
+    ports:
+      - "3000:80"
+  relay:
+    ports:
+      - "2470:2470"
+    environment:
+      RELAY_ALLOW_LOOPBACK: "true"
+  plc:
+    ports:
+      - "2582:2582"
