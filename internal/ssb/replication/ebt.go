@@ -183,7 +183,7 @@ func (sm *StateMatrix) SetFeedSeq(feed *refs.FeedRef, seq int64) {
 	selfFrontier[feed.String()] = Note{
 		Seq:       seq,
 		Replicate: true,
-		Receive:   false,
+		Receive:   true,
 	}
 
 	sm.frontiers[sm.self] = selfFrontier
@@ -246,7 +246,7 @@ func (sm *StateMatrix) Changed(self, peer *refs.FeedRef) (NetworkFrontier, error
 			continue
 		}
 
-		relevant[wantedFeed] = myNote
+		relevant[wantedFeed] = theirNote
 	}
 
 	return relevant, nil
@@ -500,28 +500,50 @@ func (h *EBTHandler) createStreamHistory(ctx context.Context, tx Writer, arg Cre
 	feed := arg.ID
 	log.Printf("[EBT DEBUG] createStreamHistory: starting for feed=%s seq=%d live=%v", feed.String(), arg.Seq, arg.Live)
 
-	for seq := arg.Seq; ; seq++ {
+	retryDelay := 100 * time.Millisecond
+	maxRetries := 50
+	retries := 0
+
+	for seq := arg.Seq; ; {
 		msg, err := h.store.GetMessage(feed, seq)
 		if err != nil {
 			if errors.Is(err, feedlog.ErrNotFound) || errors.Is(err, ErrNotFound) {
-				log.Printf("[EBT DEBUG] createStreamHistory: feed=%s seq=%d not found, waiting...", feed.String(), seq)
 				if !arg.Live {
 					return nil
 				}
+				retries++
+				if retries > maxRetries {
+					log.Printf("[EBT DEBUG] createStreamHistory: feed=%s seq=%d not found after %d retries, checking GetFeedSeq", feed.String(), seq, maxRetries)
+					currentSeq, seqErr := h.store.GetFeedSeq(feed)
+					if seqErr == nil && currentSeq >= seq {
+						log.Printf("[EBT DEBUG] createStreamHistory: feed=%s caught up to seq=%d", feed.String(), currentSeq)
+						return nil
+					}
+					retries = 0
+					retryDelay = 100 * time.Millisecond
+				}
+				log.Printf("[EBT DEBUG] createStreamHistory: feed=%s seq=%d not found, retry %d/%d in %v", feed.String(), seq, retries, maxRetries, retryDelay)
 				select {
 				case <-ctx.Done():
 					return ctx.Err()
-				case <-time.After(100 * time.Millisecond):
+				case <-time.After(retryDelay):
+					if retryDelay < 2*time.Second {
+						retryDelay *= 2
+					}
 					continue
 				}
 			}
 			return err
 		}
 
+		retries = 0
+		retryDelay = 100 * time.Millisecond
+
 		log.Printf("[EBT DEBUG] createStreamHistory: sending msg for feed=%s seq=%d bytes=%d", feed.String(), seq, len(msg))
 		if err := tx.Write(ctx, msg); err != nil {
 			return err
 		}
+		seq++
 	}
 }
 
