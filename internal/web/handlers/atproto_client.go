@@ -2,8 +2,11 @@ package handlers
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
+	"log"
+	"net/http"
 	"time"
 
 	"github.com/bluesky-social/indigo/api/atproto"
@@ -22,12 +25,20 @@ type PDSClientInterface interface {
 type PDSClient struct {
 	Host     string
 	Password string
+	Insecure bool
 }
 
 var _ PDSClientInterface = (*PDSClient)(nil)
 
 func (c *PDSClient) createSession(ctx context.Context, identifier string) (*xrpc.Client, error) {
 	client := &xrpc.Client{Host: c.Host}
+	if c.Insecure {
+		client.Client = &http.Client{
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			},
+		}
+	}
 	sess, err := atproto.ServerCreateSession(ctx, client, &atproto.ServerCreateSession_Input{
 		Identifier: identifier,
 		Password:   c.Password,
@@ -46,6 +57,7 @@ func (c *PDSClient) createSession(ctx context.Context, identifier string) (*xrpc
 }
 
 func (c *PDSClient) UploadBlob(ctx context.Context, identifier string, reader io.Reader, mime string) (*lexutil.LexBlob, error) {
+	log.Printf("unit=pds event=upload_blob_start identifier=%q mime=%q", identifier, mime)
 	client, err := c.createSession(ctx, identifier)
 	if err != nil {
 		return nil, err
@@ -53,9 +65,11 @@ func (c *PDSClient) UploadBlob(ctx context.Context, identifier string, reader io
 
 	resp, err := atproto.RepoUploadBlob(ctx, client, reader)
 	if err != nil {
+		log.Printf("unit=pds event=upload_blob_error identifier=%q error=%q", identifier, err)
 		return nil, fmt.Errorf("upload blob: %w", err)
 	}
 
+	log.Printf("unit=pds event=upload_blob_success identifier=%q cid=%q", identifier, resp.Blob.Ref)
 	return resp.Blob, nil
 }
 

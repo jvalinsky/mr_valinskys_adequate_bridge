@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -201,6 +203,8 @@ func runStart(c *cli.Context) error {
 		RoomHTTPAddr:   c.String("room-http-listen-addr"),
 		RoomMode:       c.String("room-mode"),
 		RoomDomain:     c.String("room-https-domain"),
+		PLCURL:         c.String("plc-url"),
+		AtprotoInsecure: c.Bool("atproto-insecure"),
 	}
 
 	app := NewBridgeApp(cfg, logRuntime.Logger("bridge"))
@@ -244,6 +248,8 @@ func runBackfill(c *cli.Context) error {
 		AppKey:         c.String("app-key"),
 		PublishWorkers: c.Int("publish-workers"),
 		XRPCReadHost:   c.String("xrpc-host"),
+		PLCURL:         c.String("plc-url"),
+		AtprotoInsecure: c.Bool("atproto-insecure"),
 	}
 
 	app := NewBridgeApp(cfg, logRuntime.Logger("bridge"))
@@ -276,11 +282,17 @@ func runBackfill(c *cli.Context) error {
 		return err
 	}
 
-	hostResolver, err := resolveBackfillHostResolver(c.String("xrpc-host"))
+	hostResolver, err := resolveBackfillHostResolver(c.String("xrpc-host"), c.String("plc-url"), c.Bool("atproto-insecure"))
 	if err != nil {
 		return err
 	}
-	repoFetcher := backfill.XRPCRepoFetcher{}
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+	if c.Bool("atproto-insecure") {
+		httpClient.Transport = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
+	}
+	repoFetcher := backfill.XRPCRepoFetcher{HTTPClient: httpClient}
 
 	total := backfill.Stats{}
 	statusCounts := map[backfill.DIDStatus]int{}
@@ -360,6 +372,8 @@ func runRetryFailures(c *cli.Context) error {
 		HMACKey:        hmacKey,
 		AppKey:         c.String("app-key"),
 		PublishWorkers: c.Int("publish-workers"),
+		PLCURL:         c.String("plc-url"),
+		AtprotoInsecure: c.Bool("atproto-insecure"),
 	}
 
 	app := NewBridgeApp(cfg, logRuntime.Logger("bridge"))
@@ -411,6 +425,7 @@ func runServeUI(c *cli.Context) error {
 		atpClient = &handlers.PDSClient{
 			Host:     host,
 			Password: c.String("pds-password"),
+			Insecure: c.Bool("atproto-insecure"),
 		}
 	}
 
@@ -437,23 +452,31 @@ func runServeUI(c *cli.Context) error {
 		return fmt.Errorf("refusing to serve UI on non-loopback address %q without auth; configure --ui-auth-user and --ui-auth-pass-env", listenAddr)
 	}
 
+	uiLogger := logRuntime.Logger("ui")
 	var ssbStatus handlers.SSBStatusProvider
 	var blobStore handlers.BlobStore
-	if c.String("repo-path") != "" {
+	if repo := c.String("repo-path"); repo != "" {
 		ssbRuntime, err := ssbruntime.Open(c.Context, ssbruntime.Config{
-			RepoPath:   c.String("repo-path"),
+			RepoPath:   repo,
 			MasterSeed: []byte(botSeed),
 			GossipDB:   database,
 		}, logRuntime.Logger("ssb"))
-		if err != nil {
-			return fmt.Errorf("open ssb runtime for blobs: %w", err)
-		}
-		defer ssbRuntime.Close()
-		blobStore = ssbRuntime.BlobStore()
-		ssbStatus = ssbRuntime
-	}
 
-	uiLogger := logRuntime.Logger("ui")
+		// We always wrap the blob store in a composite that checks the filesystem 
+		// (RepoPath/blobs) if the runtime doesn't have it.
+		var primaryStore handlers.BlobStore
+		if err == nil {
+			defer ssbRuntime.Close()
+			primaryStore = ssbRuntime.BlobStore()
+			ssbStatus = ssbRuntime
+		} else {
+			uiLogger.Printf("event=ssb_runtime_open_failed repo=%s err=%v acting_as_blob_only=true", repo, err)
+		}
+		blobStore = &compositeBlobStore{
+			primary: primaryStore,
+			fsPath:  filepath.Join(repo, "blobs"),
+		}
+	}
 	r := chi.NewRouter()
 	r.Use(websecurity.RequestLogMiddleware(uiLogger))
 	r.Use(websecurity.SecurityHeadersMiddleware(true))

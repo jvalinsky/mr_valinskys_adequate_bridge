@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"path/filepath"
 	"time"
 
@@ -32,21 +34,23 @@ type BridgeApp struct {
 }
 
 type AppConfig struct {
-	DBPath         string
-	RepoPath       string
-	BotSeed        string
-	HMACKey        *[32]byte
-	AppKey         string
-	SSBListenAddr  string
-	PublishWorkers int
-	FirehoseEnable bool
-	RelayURL       string
-	XRPCReadHost   string
-	RoomEnable     bool
-	RoomListenAddr string
-	RoomHTTPAddr   string
-	RoomMode       string
-	RoomDomain     string
+	DBPath          string
+	RepoPath        string
+	BotSeed         string
+	HMACKey         *[32]byte
+	AppKey          string
+	SSBListenAddr   string
+	PublishWorkers  int
+	FirehoseEnable  bool
+	RelayURL        string
+	XRPCReadHost    string
+	RoomEnable      bool
+	RoomListenAddr  string
+	RoomHTTPAddr    string
+	RoomMode        string
+	RoomDomain      string
+	PLCURL          string
+	AtprotoInsecure bool
 }
 
 func NewBridgeApp(cfg AppConfig, logger *log.Logger) *BridgeApp {
@@ -81,15 +85,29 @@ func (a *BridgeApp) Init(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	xrpcClient := &xrpc.Client{Host: xrpcHost}
 
-	blobHostResolver, err := resolveLiveBlobHostResolver(a.cfg.XRPCReadHost, a.cfg.XRPCReadHost != "")
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+	if a.cfg.AtprotoInsecure {
+		httpClient.Transport = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
+	}
+
+	xrpcClient := &xrpc.Client{
+		Host:   xrpcHost,
+		Client: httpClient,
+	}
+
+	blobHostResolver, err := resolveLiveBlobHostResolver(a.cfg.XRPCReadHost, a.cfg.PLCURL, a.cfg.AtprotoInsecure)
 	if err != nil {
 		return err
 	}
 
-	blobBridge := blobbridge.NewWithResolver(a.db, a.ssbRuntime.BlobStore(), blobHostResolver, nil, a.logger)
-	pdsResolver := backfill.DIDPDSResolver{PLCURL: "https://plc.directory"}
+	blobBridge := blobbridge.NewWithResolver(a.db, a.ssbRuntime.BlobStore(), blobHostResolver, httpClient, a.logger)
+	pdsResolver := backfill.DIDPDSResolver{
+		PLCURL:     a.cfg.PLCURL,
+		HTTPClient: httpClient,
+	}
 	recordFetcher := bridge.NewPDSAwareRecordFetcher(pdsResolver, xrpcClient)
 
 	dependencyResolver := bridge.NewATProtoDependencyResolver(
@@ -161,7 +179,7 @@ func (a *BridgeApp) Start(ctx context.Context) error {
 
 	go runRetryScheduler(ctx, a.processor, a.logger)
 	go runDeferredResolverScheduler(ctx, a.processor, a.logger)
-	go runAutoBackfillScheduler(ctx, a.db, a.processor, a.logger)
+	go runAutoBackfillScheduler(ctx, a.db, a.processor, a.logger, a.cfg.PLCURL, a.cfg.AtprotoInsecure)
 	go runRuntimeHeartbeatScheduler(ctx, a.db, a.logger, 10*time.Second)
 
 	setBridgeStateBestEffort(ctx, a.db, bridgeRuntimeStatusKey, "live", a.logger)

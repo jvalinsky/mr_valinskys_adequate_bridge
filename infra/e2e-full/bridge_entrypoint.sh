@@ -10,6 +10,8 @@ ROOM_HTTP_ADDR="${ROOM_HTTP_ADDR:-0.0.0.0:8976}"
 ROOM_MODE="${ROOM_MODE:-open}"
 ROOM_HTTPS_DOMAIN="${ROOM_HTTPS_DOMAIN:-bridge}"
 BRIDGE_RELAY_URL="${BRIDGE_RELAY_URL:-}"
+BRIDGE_PLC_URL="${BRIDGE_PLC_URL:-https://plc.directory}"
+BRIDGE_ATPROTO_INSECURE="${BRIDGE_ATPROTO_INSECURE:-0}"
 BRIDGE_CLEAN_START="${BRIDGE_CLEAN_START:-1}"
 
 # In e2e, wipe stale state to avoid FutureCursor errors from prior runs.
@@ -20,7 +22,9 @@ fi
 
 echo "[bridge-entry] starting bridge engine connecting to ${BRIDGE_RELAY_URL} ..."
 
-bridge_start_args=(
+# Note: Global flags must come before 'start'
+# Subcommand flags must come after 'start'
+bridge_cli_args=(
   --db "${DB_PATH}"
   --bot-seed "${BOT_ID}"
   --relay-url "${BRIDGE_RELAY_URL}"
@@ -34,6 +38,11 @@ bridge_start_args=(
   --room-mode "${ROOM_MODE}"
   --room-https-domain "${ROOM_HTTPS_DOMAIN}"
   --publish-workers 2
+  --plc-url "${BRIDGE_PLC_URL}"
 )
 
-exec bridge-cli "${bridge_start_args[@]}"
+if [ "${BRIDGE_ATPROTO_INSECURE}" = "1" ]; then
+  bridge_cli_args+=(--atproto-insecure)
+fi
+
+exec bridge-cli "${bridge_cli_args[@]}"

@@ -2,10 +2,15 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -18,6 +23,7 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/room"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomdb"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssbruntime"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/web/handlers"
 	"github.com/urfave/cli/v2"
 )
 
@@ -85,18 +91,29 @@ func resolveLiveXRPCHost(explicitHost string) (string, error) {
 	return backfill.NormalizeServiceEndpoint(explicitHost)
 }
 
-func resolveLiveBlobHostResolver(explicitHost string, explicitlySet bool) (blobbridge.HostResolver, error) {
-	if explicitlySet && strings.TrimSpace(explicitHost) != "" {
+func resolveLiveBlobHostResolver(explicitHost, plcURL string, insecure bool) (blobbridge.HostResolver, error) {
+	if strings.TrimSpace(explicitHost) != "" {
 		host, err := backfill.NormalizeServiceEndpoint(explicitHost)
 		if err != nil {
 			return nil, err
 		}
 		return backfill.FixedHostResolver{Host: host}, nil
 	}
-	return backfill.DIDPDSResolver{}, nil
+
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+	if insecure {
+		httpClient.Transport = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
+	}
+
+	return backfill.DIDPDSResolver{
+		PLCURL:     plcURL,
+		HTTPClient: httpClient,
+	}, nil
 }
 
-func resolveBackfillHostResolver(fixedHost string) (backfill.HostResolver, error) {
+func resolveBackfillHostResolver(fixedHost, plcURL string, insecure bool) (backfill.HostResolver, error) {
 	if strings.TrimSpace(fixedHost) != "" {
 		host, err := backfill.NormalizeServiceEndpoint(fixedHost)
 		if err != nil {
@@ -104,7 +121,18 @@ func resolveBackfillHostResolver(fixedHost string) (backfill.HostResolver, error
 		}
 		return backfill.FixedHostResolver{Host: host}, nil
 	}
-	return backfill.DIDPDSResolver{}, nil
+
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+	if insecure {
+		httpClient.Transport = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
+	}
+
+	return backfill.DIDPDSResolver{
+		PLCURL:     plcURL,
+		HTTPClient: httpClient,
+	}, nil
 }
 
 func fallbackValue(value, fallback string) string {
@@ -180,6 +208,24 @@ func resolveSharedRepoPath(c *cli.Context) (string, error) {
 		return "", fmt.Errorf("repo path must not be empty")
 	}
 	return repoPath, nil
+}
+
+type compositeBlobStore struct {
+	primary handlers.BlobStore
+	fsPath  string
+}
+
+func (c *compositeBlobStore) Get(hash []byte) (io.ReadCloser, error) {
+	if c.primary != nil {
+		rc, err := c.primary.Get(hash)
+		if err == nil {
+			return rc, nil
+		}
+	}
+	if c.fsPath != "" {
+		return os.Open(filepath.Join(c.fsPath, fmt.Sprintf("%x", hash)))
+	}
+	return nil, os.ErrNotExist
 }
 
 func setBridgeStateBestEffort(ctx context.Context, database *db.DB, key, value string, logger *log.Logger) {
@@ -328,7 +374,7 @@ func runDeferredResolverScheduler(ctx context.Context, processor *bridge.Process
 	}
 }
 
-func runAutoBackfillScheduler(ctx context.Context, database *db.DB, processor *bridge.Processor, logger *log.Logger) {
+func runAutoBackfillScheduler(ctx context.Context, database *db.DB, processor *bridge.Processor, logger *log.Logger, plcURL string, insecure bool) {
 	if database == nil || processor == nil {
 		return
 	}
@@ -340,8 +386,19 @@ func runAutoBackfillScheduler(ctx context.Context, database *db.DB, processor *b
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 
-	hostResolver := backfill.DIDPDSResolver{PLCURL: "https://plc.directory"}
-	repoFetcher := backfill.XRPCRepoFetcher{}
+	hostResolver := backfill.DIDPDSResolver{
+		PLCURL: plcURL,
+	}
+	if insecure {
+		hostResolver.HTTPClient = &http.Client{
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			},
+		}
+	}
+	repoFetcher := backfill.XRPCRepoFetcher{
+		HTTPClient: hostResolver.HTTPClient,
+	}
 
 	for {
 		select {

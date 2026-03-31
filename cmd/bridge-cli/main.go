@@ -4,7 +4,6 @@
 package main
 
 import (
-	"context"
 	"log"
 	"os"
 	"time"
@@ -13,14 +12,16 @@ import (
 )
 
 var (
-	dbPath         string
-	relayURL       string
-	botSeed        string
-	otelEndpoint   string
-	otelProtocol   string
-	otelInsecure   bool
-	otelService    string
-	localLogOutput string
+	dbPath          string
+	relayURL        string
+	botSeed         string
+	otelEndpoint    string
+	otelProtocol    string
+	otelInsecure    bool
+	otelService     string
+	localLogOutput  string
+	plcURL          string
+	atprotoInsecure bool
 )
 
 const (
@@ -190,6 +191,17 @@ func main() {
 						Value: true,
 						Usage: "enable ATProto firehose subscribeRepos ingestion loop",
 					},
+					&cli.StringFlag{
+						Name:        "plc-url",
+						Value:       "https://plc.directory",
+						EnvVars:     []string{"BRIDGE_PLC_URL"},
+						Usage:       "ATProto PLC directory URL (local/test stacks only)",
+					},
+					&cli.BoolFlag{
+						Name:    "atproto-insecure",
+						EnvVars: []string{"BRIDGE_ATPROTO_INSECURE"},
+						Usage:   "disable TLS verification for all ATProto/XRPC connections (local/test stacks only)",
+					},
 				},
 				Action: runStart,
 			},
@@ -229,6 +241,17 @@ func main() {
 						Name:  "publish-workers",
 						Value: 1,
 						Usage: "publish worker count (default 1 keeps deterministic ordering)",
+					},
+					&cli.StringFlag{
+						Name:        "plc-url",
+						Value:       "https://plc.directory",
+						EnvVars:     []string{"BRIDGE_PLC_URL"},
+						Usage:       "ATProto PLC directory URL (local/test stacks only)",
+					},
+					&cli.BoolFlag{
+						Name:    "atproto-insecure",
+						EnvVars: []string{"BRIDGE_ATPROTO_INSECURE"},
+						Usage:   "disable TLS verification for all ATProto/XRPC connections (local/test stacks only)",
 					},
 				},
 				Action: runBackfill,
@@ -298,13 +321,17 @@ func main() {
 						Usage: "optional PDS host for manual posting (defaults to live AppView)",
 					},
 					&cli.StringFlag{
-						Name:    "pds-password",
-						Usage:   "password for PDS accounts when manual posting",
-						EnvVars: []string{"BRIDGE_PDS_PASSWORD"},
+						Name:  "pds-password",
+						Usage: "PDS password for manual posting",
 					},
 					&cli.StringFlag{
 						Name:  "repo-path",
-						Usage: "path to SSB repo for blob viewing",
+						Usage: "shared SSB repo path for blob serving fallback",
+					},
+					&cli.BoolFlag{
+						Name:    "atproto-insecure",
+						EnvVars: []string{"BRIDGE_ATPROTO_INSECURE"},
+						Usage:   "disable TLS verification for ATProto/XRPC connections (local/test stacks only)",
 					},
 				},
 				Action: runServeUI,
@@ -312,7 +339,7 @@ func main() {
 		},
 	}
 
-	if err := app.RunContext(context.Background(), os.Args); err != nil {
+	if err := app.Run(os.Args); err != nil {
 		log.Fatal(err)
 	}
 }
