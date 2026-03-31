@@ -254,7 +254,11 @@ func ParseBlobRef(s string) (*BlobRef, error) {
 
 	data, err := base64.StdEncoding.DecodeString(s)
 	if err != nil {
-		return nil, ErrInvalidBlobRef
+		// Fallback to raw (unpadded) for robustness
+		data, err = base64.RawStdEncoding.DecodeString(s)
+		if err != nil {
+			return nil, ErrInvalidBlobRef
+		}
 	}
 
 	return NewBlobRef(data)
