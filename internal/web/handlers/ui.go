@@ -64,6 +64,7 @@ type BlobStore interface {
 type SSBStatusProvider interface {
 	GetPeers() []PeerStatus
 	GetEBTState() map[string]map[string]int64
+	ConnectPeer(ctx context.Context, addr string, pubKey []byte) error
 }
 
 type PeerStatus struct {
@@ -111,6 +112,7 @@ func (h *UIHandler) Mount(r chi.Router) {
 	r.Get("/blobs/view", h.handleBlobView)
 	r.Get("/connections", h.handleConnections)
 	r.Post("/connections/add", h.handleConnectionAdd)
+	r.Post("/connections/connect", h.handleConnectionConnect)
 }
 
 func (h *UIHandler) handleConnections(w http.ResponseWriter, r *http.Request) {
@@ -198,6 +200,34 @@ func (h *UIHandler) handleConnectionAdd(w http.ResponseWriter, r *http.Request) 
 
 	if err := h.db.AddKnownPeer(r.Context(), p); err != nil {
 		h.writeInternalError(w, "handleConnectionAdd", "failed to save peer", err)
+		return
+	}
+
+	http.Redirect(w, r, "/connections", http.StatusSeeOther)
+}
+
+func (h *UIHandler) handleConnectionConnect(w http.ResponseWriter, r *http.Request) {
+	addr := strings.TrimSpace(r.FormValue("addr"))
+	pubkeyB64 := strings.TrimSpace(r.FormValue("pubkey"))
+
+	if addr == "" || pubkeyB64 == "" {
+		http.Error(w, "missing addr or pubkey", http.StatusBadRequest)
+		return
+	}
+
+	pubkey, err := base64.StdEncoding.DecodeString(pubkeyB64)
+	if err != nil {
+		http.Error(w, "invalid pubkey base64", http.StatusBadRequest)
+		return
+	}
+
+	if h.ssbStatus == nil {
+		http.Error(w, "ssb status provider not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	if err := h.ssbStatus.ConnectPeer(r.Context(), addr, pubkey); err != nil {
+		h.writeInternalError(w, "handleConnectionConnect", "failed to connect to peer", err)
 		return
 	}
 

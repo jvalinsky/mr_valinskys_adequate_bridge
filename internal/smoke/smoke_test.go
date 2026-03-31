@@ -30,6 +30,9 @@ type mockSSBStatus struct{}
 
 func (m *mockSSBStatus) GetPeers() []handlers.PeerStatus          { return nil }
 func (m *mockSSBStatus) GetEBTState() map[string]map[string]int64 { return nil }
+func (m *mockSSBStatus) ConnectPeer(ctx context.Context, addr string, pubKey []byte) error {
+	return nil
+}
 
 func TestBridgeSmoke(t *testing.T) {
 	ctx := context.Background()

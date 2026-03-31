@@ -216,6 +216,16 @@ func (r *Runtime) GetEBTState() map[string]map[string]int64 {
 	return r.sbotNode.StateMatrix().Export()
 }
 
+func (r *Runtime) ConnectPeer(ctx context.Context, addr string, pubKey []byte) error {
+	if r.sbotNode == nil || r.sbotNode.Gossip() == nil {
+		return fmt.Errorf("ssb: node or gossip manager not initialized")
+	}
+	if len(pubKey) != 32 {
+		return fmt.Errorf("ssb: invalid public key length: %d", len(pubKey))
+	}
+	return r.sbotNode.Gossip().Connect(ctx, addr, ed25519.PublicKey(pubKey))
+}
+
 func (r *Runtime) Close() error {
 	if r.sbotNode != nil {
 		return r.sbotNode.Shutdown()

@@ -657,6 +657,7 @@ const connectionsContent = `
                     <th>Address</th>
                     <th>Public Key (B64)</th>
                     <th>Created</th>
+                    <th>Actions</th>
                 </tr>
             </thead>
             <tbody>
@@ -665,6 +666,13 @@ const connectionsContent = `
                     <td class="mono">{{.Addr}}</td>
                     <td class="mono truncate" title="{{.PubKey}}">{{.PubKey}}</td>
                     <td>{{fmtTime .CreatedAt}}</td>
+                    <td>
+                        <form action="/connections/connect" method="POST" style="margin:0">
+                            <input type="hidden" name="addr" value="{{.Addr}}">
+                            <input type="hidden" name="pubkey" value="{{.PubKey}}">
+                            <button type="submit" class="button button-small">Connect</button>
+                        </form>
+                    </td>
                 </tr>
                 {{end}}
             </tbody>

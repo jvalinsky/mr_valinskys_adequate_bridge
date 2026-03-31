@@ -41,6 +41,9 @@ func (m *mockSSBStatus) GetEBTState() map[string]map[string]int64 {
 		},
 	}
 }
+func (m *mockSSBStatus) ConnectPeer(ctx context.Context, addr string, pubKey []byte) error {
+	return nil
+}
 
 func TestHandleConnections(t *testing.T) {
 	database := openTestDB(t)
