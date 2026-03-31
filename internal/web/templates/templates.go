@@ -1095,31 +1095,35 @@ const messageDetailContent = `
     </article>
 </section>
 
-{{if .RawWireFormat}}
+{{if .AssociatedBlobs}}
 <section class="section section-pad">
-    <div class="toolbar">
-        <h2 class="page-title" style="font-size:1.2rem">Diagnostic Wire Log</h2>
-        <button id="toggle-raw-wire-btn" class="button-link" onclick="toggleRawWire()">Show Raw Wire Format</button>
-    </div>
-    <div id="raw-wire-section" style="display:none;margin-top:12px">
-        <p class="subtitle">Simulated MuxRPC framing hex dump for diagnostic verification.</p>
-        <pre class="mono" style="background:#1a1a1a;color:#00ff00;overflow:auto;max-height:400px;font-size:0.8rem;padding:16px;border:none;border-radius:8px">{{.RawWireFormat}}</pre>
+    <h2 class="page-title" style="font-size:1.2rem">Associated Blobs</h2>
+    <div class="table-wrap" style="margin-top:10px">
+        <table>
+            <thead>
+                <tr><th>AT CID</th><th>SSB Blob Ref</th><th>Size</th><th>MIME</th><th>Actions</th></tr>
+            </thead>
+            <tbody>
+                {{range .AssociatedBlobs}}
+                <tr>
+                    <td class="mono"><span class="truncate" title="{{.ATCID}}">{{.ATCID}}</span></td>
+                    <td class="mono"><span class="truncate" title="{{.SSBBlobRef}}">{{.SSBBlobRef}}</span></td>
+                    <td>{{humanizeBytes .Size}}</td>
+                    <td>{{.MimeType}}</td>
+                    <td>
+                        <a href="/blobs/view?ref={{.SSBBlobRef}}" target="_blank" class="button button-small">View</a>
+                        {{if hasPrefix .MimeType "image/"}}
+                        <div style="margin-top:8px">
+                            <img src="/blobs/view?ref={{.SSBBlobRef}}" style="max-width:200px; max-height:200px; border-radius:4px; border:1px solid var(--line)" alt="Preview">
+                        </div>
+                        {{end}}
+                    </td>
+                </tr>
+                {{end}}
+            </tbody>
+        </table>
     </div>
 </section>
-
-<script>
-function toggleRawWire() {
-    const rawWireSection = document.getElementById('raw-wire-section');
-    if (!rawWireSection) return;
-    
-    const isVisible = rawWireSection.style.display !== 'none';
-    rawWireSection.style.display = isVisible ? 'none' : 'block';
-    const toggleButton = document.getElementById('toggle-raw-wire-btn');
-    if (toggleButton) {
-        toggleButton.textContent = isVisible ? "Show Raw Wire Format" : "Hide Raw Wire";
-    }
-}
-</script>
 {{end}}
 {{end}}
 `
@@ -1250,16 +1254,24 @@ const blobsContent = `
     <div class="table-wrap">
         <table>
             <thead>
-                <tr><th>AT CID</th><th>SSB Blob Ref</th><th>Size</th><th>MIME</th><th>Downloaded</th></tr>
+                <tr><th>AT CID</th><th>SSB Blob Ref</th><th>Size</th><th>MIME</th><th>Downloaded</th><th>Actions</th></tr>
             </thead>
             <tbody>
                 {{range .Blobs}}
                 <tr>
                     <td class="mono"><span class="truncate" title="{{.ATCID}}">{{.ATCID}}</span></td>
                     <td class="mono"><span class="truncate" title="{{.SSBBlobRef}}">{{.SSBBlobRef}}</span></td>
-                    <td>{{.Size}}</td>
+                    <td>{{humanizeBytes .Size}}</td>
                     <td>{{.MimeType}}</td>
                     <td>{{fmtTime .DownloadedAt}}</td>
+                    <td>
+                        <a href="/blobs/view?ref={{.SSBBlobRef}}" target="_blank" class="button button-small">View</a>
+                        {{if hasPrefix .MimeType "image/"}}
+                        <div style="margin-top:8px">
+                            <img src="/blobs/view?ref={{.SSBBlobRef}}" style="max-width:100px; max-height:100px; border-radius:4px; border:1px solid var(--line)" alt="Preview">
+                        </div>
+                        {{end}}
+                    </td>
                 </tr>
                 {{else}}
                 <tr><td colspan="5" class="empty">No blobs bridged yet.</td></tr>
@@ -1532,6 +1544,7 @@ type MessageDetailData struct {
 	FilterByDIDURL        string
 	FilterByStateURL      string
 	FilterByTypeURL       string
+	AssociatedBlobs       []BlobRow
 }
 
 // FailureRow is one failed/deferred row in the failures table.
@@ -1599,8 +1612,9 @@ type StateData struct {
 
 // PostData is the template model for the compose post page.
 type PostData struct {
-	Chrome   PageChrome
-	Accounts []AccountRow
+	Chrome         PageChrome
+	Accounts       []AccountRow
+	PostingEnabled bool
 }
 
 // ConnectionsData is the template model for the connections page.
@@ -1635,10 +1649,20 @@ const postContent = `
 </section>
 
 <section class="section section-pad" style="max-width:800px">
+    {{if not .PostingEnabled}}
+    <div class="alert tone-warning" style="margin-bottom:24px;padding:16px;border-radius:8px;border:1px solid var(--line)">
+        <h3 style="margin-top:0;font-size:1.1rem;display:flex;align-items:center;gap:8px">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0zM12 9v4M12 17h.01"/></svg>
+            ATProto Posting Disabled
+        </h3>
+        <p style="margin-bottom:0">The PDS client is not configured. To enable posting, please restart the bridge-cli with <code>--pds-host</code> and <code>--pds-password</code> flags.</p>
+    </div>
+    {{end}}
+
     <form action="/post" method="POST" enctype="multipart/form-data" style="display:grid;gap:20px">
         <div class="form-group">
             <label class="metric-label" style="display:block;margin-bottom:8px">Author Account</label>
-            <select name="at_did" required style="width:100%;padding:12px;border:1px solid var(--line);border-radius:8px">
+            <select name="at_did" required {{if not .PostingEnabled}}disabled{{end}} style="width:100%;padding:12px;border:1px solid var(--line);border-radius:8px">
                 <option value="">Select an account...</option>
                 {{range .Accounts}}
                 <option value="{{.ATDID}}">{{.ATDID}}</option>
@@ -1648,16 +1672,16 @@ const postContent = `
 
         <div class="form-group">
             <label class="metric-label" style="display:block;margin-bottom:8px">Message Text</label>
-            <textarea name="text" required rows="4" style="width:100%;padding:12px;border:1px solid var(--line);border-radius:8px;font-family:inherit" placeholder="What's happening?"></textarea>
+            <textarea name="text" required rows="4" {{if not .PostingEnabled}}disabled{{end}} style="width:100%;padding:12px;border:1px solid var(--line);border-radius:8px;font-family:inherit" placeholder="What's happening?"></textarea>
         </div>
 
         <div class="form-group">
             <label class="metric-label" style="display:block;margin-bottom:8px">Image (Optional)</label>
-            <input type="file" name="image" accept="image/*" style="width:100%;padding:8px">
+            <input type="file" name="image" accept="image/*" {{if not .PostingEnabled}}disabled{{end}} style="width:100%;padding:8px">
         </div>
 
         <div style="margin-top:10px">
-            <button type="submit" class="button-link tone-success" style="padding:12px 24px;font-size:1rem;font-weight:700;cursor:pointer">Publish to ATProto</button>
+            <button type="submit" class="button-link tone-success" {{if not .PostingEnabled}}disabled style="opacity:0.5;cursor:not-allowed"{{else}}style="padding:12px 24px;font-size:1rem;font-weight:700;cursor:pointer"{{end}}>Publish to ATProto</button>
             <a href="/" class="button-link" style="margin-left:12px">Cancel</a>
         </div>
     </form>
@@ -1736,6 +1760,7 @@ func mustPageTemplate(name, content string) *template.Template {
 			}
 			return t.Format("2006-01-02 15:04:05")
 		},
+		"hasPrefix": strings.HasPrefix,
 		"humanizeBytes": func(b int64) string {
 			const unit = 1024
 			if b < unit {

@@ -12,8 +12,10 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
+
 	"strings"
 	"time"
 
@@ -165,6 +167,24 @@ func (h *UIHandler) handleConnections(w http.ResponseWriter, r *http.Request) {
 	if err := templates.RenderConnections(w, data); err != nil {
 		h.writeInternalError(w, "handleConnections", "failed to render connections page", err)
 	}
+}
+
+func findBlobRefs(ssbJSON string) []string {
+	re := regexp.MustCompile(`&[A-Za-z0-9+/=]+\.sha256`)
+	matches := re.FindAllString(ssbJSON, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	// Dedupe
+	seen := make(map[string]struct{})
+	var res []string
+	for _, m := range matches {
+		if _, ok := seen[m]; !ok {
+			seen[m] = struct{}{}
+			res = append(res, m)
+		}
+	}
+	return res
 }
 
 func (h *UIHandler) writeInternalError(w http.ResponseWriter, handler, message string, err error) {
@@ -565,6 +585,21 @@ func (h *UIHandler) handleMessageDetail(w http.ResponseWriter, r *http.Request) 
 		FilterByTypeURL:       "/messages?type=" + url.QueryEscape(message.Type),
 	}
 
+	// Extract blob references from SSB JSON and look them up
+	blobRefs := findBlobRefs(message.RawSSBJson)
+	for _, ref := range blobRefs {
+		blob, err := h.db.GetBlobBySSBRef(r.Context(), ref)
+		if err == nil && blob != nil {
+			data.AssociatedBlobs = append(data.AssociatedBlobs, templates.BlobRow{
+				ATCID:        blob.ATCID,
+				SSBBlobRef:   blob.SSBBlobRef,
+				Size:         blob.Size,
+				MimeType:     blob.MimeType,
+				DownloadedAt: blob.DownloadedAt,
+			})
+		}
+	}
+
 	w.Header().Set("Content-Type", "text/html")
 	if err := templates.RenderMessageDetail(w, data); err != nil {
 		h.writeInternalError(w, "message_detail", "Template error", err)
@@ -855,7 +890,8 @@ func (h *UIHandler) handlePost(w http.ResponseWriter, r *http.Request) {
 				{Label: "Compose Post", Href: ""},
 			},
 		},
-		Accounts: accountRows,
+		Accounts:       accountRows,
+		PostingEnabled: h.atpClient != nil,
 	}
 
 	w.Header().Set("Content-Type", "text/html")
@@ -865,6 +901,11 @@ func (h *UIHandler) handlePost(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *UIHandler) handlePostAction(w http.ResponseWriter, r *http.Request) {
+	if h.atpClient == nil {
+		http.Error(w, "ATProto posting is not configured on this bridge instance; please restart with --pds-host and --pds-password", http.StatusServiceUnavailable)
+		return
+	}
+
 	if err := r.ParseMultipartForm(10 << 20); err != nil { // 10MB limit
 		http.Error(w, "Unable to parse form", http.StatusBadRequest)
 		return
