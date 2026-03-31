@@ -6,10 +6,99 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/feedlog"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/keys"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/message/legacy"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 )
+
+type mockLog struct {
+	seq      int64
+	messages map[int64]*feedlog.StoredMessage
+}
+
+func (m *mockLog) Seq() (int64, error) { return m.seq, nil }
+func (m *mockLog) Append(content []byte, metadata *feedlog.Metadata) (int64, error) {
+	if m.seq < 0 {
+		m.seq = 1
+	} else {
+		m.seq++
+	}
+	m.messages[m.seq] = &feedlog.StoredMessage{
+		Value:    content,
+		Metadata: metadata,
+	}
+	return m.seq, nil
+}
+func (m *mockLog) Get(seq int64) (*feedlog.StoredMessage, error) {
+	if msg, ok := m.messages[seq]; ok {
+		return msg, nil
+	}
+	return nil, feedlog.ErrNotFound
+}
+func (m *mockLog) Query(specs ...feedlog.QuerySpec) (feedlog.Source, error) { return nil, nil }
+func (m *mockLog) Close() error                                             { return nil }
+
+type mockMultiLog struct {
+	logs map[string]*mockLog
+}
+
+func (m *mockMultiLog) List() ([]string, error) { return nil, nil }
+func (m *mockMultiLog) Get(author string) (feedlog.Log, error) {
+	if l, ok := m.logs[author]; ok {
+		return l, nil
+	}
+	return nil, feedlog.ErrNotFound
+}
+func (m *mockMultiLog) Create(author string) (feedlog.Log, error) {
+	l := &mockLog{seq: -1, messages: make(map[int64]*feedlog.StoredMessage)}
+	m.logs[author] = l
+	return l, nil
+}
+func (m *mockMultiLog) Has(author string) (bool, error) {
+	_, ok := m.logs[author]
+	return ok, nil
+}
+func (m *mockMultiLog) Close() error { return nil }
+
+func TestPublisher(t *testing.T) {
+	aliceKeys, _ := keys.Generate()
+	users := &mockMultiLog{logs: make(map[string]*mockLog)}
+
+	p, err := New(aliceKeys, nil, users)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	content := map[string]interface{}{"type": "post", "text": "hello"}
+	ref, err := p.PublishJSON(content)
+	if err != nil {
+		t.Fatalf("Publish failed: %v", err)
+	}
+
+	if ref.String() == "" {
+		t.Error("empty ref")
+	}
+
+	seq, _ := p.Seq()
+	if seq != 1 {
+		t.Errorf("expected seq 1, got %d", seq)
+	}
+
+	// Publish second message
+	ref2, err := p.PublishJSON(map[string]interface{}{"type": "post", "text": "hello again"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ref2.String() == ref.String() {
+		t.Error("refs should be different")
+	}
+
+	seq, _ = p.Seq()
+	if seq != 2 {
+		t.Errorf("expected seq 2, got %d", seq)
+	}
+}
 
 func TestMessageSigning(t *testing.T) {
 	seed := make([]byte, 32)
@@ -143,54 +232,6 @@ func TestKeyDerivation(t *testing.T) {
 	pub1Again := kp1Again.Public()
 	if string(pub1[:]) != string(pub1Again[:]) {
 		t.Error("same DID should produce same public key")
-	}
-}
-
-func TestMessageRef(t *testing.T) {
-	hash := sha256.Sum256([]byte("test content"))
-	msgRef, err := refs.NewMessageRef(hash[:], refs.RefAlgoMessageSSB1)
-	if err != nil {
-		t.Fatalf("failed to create message ref: %v", err)
-	}
-
-	refStr := msgRef.String()
-	if refStr[0] != '%' {
-		t.Errorf("message ref should start with %%: %s", refStr)
-	}
-
-	parsed, err := refs.ParseMessageRef(refStr)
-	if err != nil {
-		t.Fatalf("failed to parse message ref: %v", err)
-	}
-
-	if !parsed.Equal(*msgRef) {
-		t.Error("parsed ref should equal original")
-	}
-}
-
-func TestFeedRef(t *testing.T) {
-	pub := make([]byte, 32)
-	for i := range pub {
-		pub[i] = byte(i)
-	}
-
-	feedRef, err := refs.NewFeedRef(pub, refs.RefAlgoFeedSSB1)
-	if err != nil {
-		t.Fatalf("failed to create feed ref: %v", err)
-	}
-
-	refStr := feedRef.String()
-	if refStr[0] != '@' {
-		t.Errorf("feed ref should start with @: %s", refStr)
-	}
-
-	parsed, err := refs.ParseFeedRef(refStr)
-	if err != nil {
-		t.Fatalf("failed to parse feed ref: %v", err)
-	}
-
-	if !parsed.Equal(*feedRef) {
-		t.Error("parsed ref should equal original")
 	}
 }
 

@@ -50,7 +50,18 @@ func (m *Message) Copy() *Message {
 }
 
 func (m *SignedMessage) Verify() error {
-	contentToSign := m.SignedMessageWithoutSignature()
+	msg := &Message{
+		Previous:  m.Previous,
+		Author:    m.Author,
+		Sequence:  m.Sequence,
+		Timestamp: m.Timestamp,
+		Hash:      m.Hash,
+		Content:   m.Content,
+	}
+	contentToSign, err := msg.marshalForSigning()
+	if err != nil {
+		return err
+	}
 
 	algo := m.Author.Algo()
 	if algo != refs.RefAlgoFeedSSB1 && algo != refs.RefAlgoFeedBendyButt {
@@ -133,7 +144,7 @@ func formatObject(buf *bytes.Buffer, data []byte, depth int, indent string) erro
 	}
 
 	buf.WriteString("{\n")
-	
+
 	// Preserve key order using a manual scan of the raw data.
 	// Go's json.Unmarshal sorts map keys, which breaks SSB verification.
 	keys := getKeysInOrder(data)

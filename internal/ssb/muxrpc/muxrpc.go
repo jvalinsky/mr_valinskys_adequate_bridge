@@ -400,7 +400,9 @@ func (r *rpc) HandlePacket(p *codec.Packet) {
 		req, ok := r.streams[-p.Req]
 		r.mu.Unlock()
 		if ok {
-			if err := req.source.WritePacket(p); err != nil {
+			if len(p.Body) > 0 {
+				if err := req.source.WritePacket(p); err != nil {
+				}
 			}
 			// Stream end: FlagEndErr signals termination regardless of FlagStream.
 			// Both stream end (EndErr+Stream) and async error (EndErr only) should close.

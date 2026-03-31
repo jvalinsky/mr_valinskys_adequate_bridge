@@ -261,7 +261,7 @@ func (h *Handler) handleGet(ctx context.Context, req *muxrpc.Request) {
 		return
 	}
 
-	var args struct {
+	var args []struct {
 		Hash string `json:"hash"`
 	}
 	if err := decodeArgs(req.RawArgs, &args); err != nil {
@@ -269,14 +269,15 @@ func (h *Handler) handleGet(ctx context.Context, req *muxrpc.Request) {
 		return
 	}
 
-	if args.Hash == "" {
+	if len(args) == 0 || args[0].Hash == "" {
 		req.CloseWithError(errors.New("blobs.get: no hash provided"))
 		return
 	}
 
-	log.Printf("[BLOB DEBUG] blobs.get: hash=%s", args.Hash)
+	hashStr := args[0].Hash
+	log.Printf("[BLOB DEBUG] blobs.get: hash=%s", hashStr)
 
-	ref, err := refs.ParseBlobRef(args.Hash)
+	ref, err := refs.ParseBlobRef(hashStr)
 	if err != nil {
 		req.CloseWithError(fmt.Errorf("blobs.get: invalid ref: %w", err))
 		return
@@ -284,13 +285,13 @@ func (h *Handler) handleGet(ctx context.Context, req *muxrpc.Request) {
 
 	rc, err := h.bs.Get(ref.Hash())
 	if err != nil {
-		log.Printf("[BLOB DEBUG] blobs.get: hash=%s not found", args.Hash)
+		log.Printf("[BLOB DEBUG] blobs.get: hash=%s not found", hashStr)
 		req.CloseWithError(fmt.Errorf("blobs.get: not found"))
 		return
 	}
 	defer rc.Close()
 
-	log.Printf("[BLOB DEBUG] blobs.get: hash=%s found, streaming", args.Hash)
+	log.Printf("[BLOB DEBUG] blobs.get: hash=%s found, streaming", hashStr)
 
 	sink, err := req.ResponseSink()
 	if err != nil {
@@ -313,7 +314,7 @@ func (h *Handler) handleGet(ctx context.Context, req *muxrpc.Request) {
 			return
 		}
 	}
-	log.Printf("[BLOB DEBUG] blobs.get: hash=%s done", args.Hash)
+	log.Printf("[BLOB DEBUG] blobs.get: hash=%s done", hashStr)
 }
 
 func (h *Handler) handleAdd(ctx context.Context, req *muxrpc.Request) {
