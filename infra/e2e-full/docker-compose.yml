@@ -1,5 +1,19 @@
 services:
   # ── ATProto Stack ────────────────────────────────────────────────
+  relay_pg:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: relay
+      POSTGRES_PASSWORD: relay
+      POSTGRES_DB: relay
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U relay"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    networks:
+      - atproto-network
+
   plc:
     image: node:20-alpine
     command: ["node", "/app/plc/server.mjs"]
@@ -8,42 +22,35 @@ services:
       PLC_DATA_FILE: /data/state.json
     volumes:
       - ../local-atproto/plc:/app/plc:ro
-      - plc-data:/data
+      - plc_data:/data
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:2582/_health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
-      interval: 3s
-      timeout: 3s
+      interval: 2s
+      timeout: 2s
       retries: 30
+    networks:
+      - atproto-network
 
   plc-proxy:
     image: caddy:alpine
-    command: caddy run --config /etc/caddy/Caddyfile
+    ports:
+      - "2582:2582"
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - plc_proxy_data:/data
+    depends_on:
+      plc:
+        condition: service_healthy
     networks:
       default:
         aliases:
           - plc.directory
+      atproto-network:
+        aliases:
+          - plc.directory
           - pds.test
-        ipv4_address: 10.42.0.11
-    depends_on:
-      plc:
-        condition: service_healthy
-    volumes:
-      - plc_proxy_data:/data
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-
-  relay_pg:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_USER: relay
-      POSTGRES_PASSWORD: relay
-      POSTGRES_DB: relay
-    volumes:
-      - relay-pg-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U relay"]
-      interval: 3s
-      timeout: 3s
-      retries: 30
 
   relay:
     image: blebbit/relay:latest
@@ -52,63 +59,48 @@ services:
         condition: service_healthy
       plc:
         condition: service_healthy
-      plc-proxy:
-        condition: service_started
     environment:
       RELAY_ADMIN_PASSWORD: local-dev-relay-admin
       RELAY_PLC_HOST: http://plc:2582
       DATABASE_URL: postgres://relay:relay@relay_pg:5432/relay?sslmode=disable
       RELAY_PERSIST_DIR: /data
       RELAY_INITIAL_SEQ_NUMBER: "1"
-      RELAY_TRUSTED_DOMAINS: "pds.test"
+      RELAY_TRUSTED_DOMAINS: ""
       RELAY_ALLOW_INSECURE_HOSTS: "true"
-      RELAY_ALLOW_NONPUBLIC: "true"
-      ATP_RELAY_ALLOW_NONPUBLIC_IPS: "true"
-      SSL_CERT_FILE: /certs/caddy/pki/authorities/local/root.crt
     volumes:
-      - relay-data:/data
-      - plc_proxy_data:/certs:ro
-      - ./relay_startup.sh:/relay_startup.sh:ro
-    extra_hosts:
-      - "pds.test:10.42.0.11"
-      - "plc.directory:10.42.0.11"
-    networks:
-      default:
-        aliases:
-          - relay
-    entrypoint: ["/bin/sh", "/relay_startup.sh"]
+      - relay_data:/data
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:2470/ || exit 1"]
-      interval: 3s
-      timeout: 3s
-      retries: 30
-
-  relay-seed:
-    image: postgres:16-alpine
-    depends_on:
-      relay: { condition: service_healthy }
-    environment:
-      PGPASSWORD: relay
-    volumes:
-      - ./relay_seed.sh:/scripts/relay_seed.sh:ro
-    entrypoint: ["/bin/sh", "-c", "/scripts/relay_seed.sh && touch /tmp/relay_seeded && tail -f /dev/null"]
-    healthcheck:
-      test: ["CMD", "test", "-f", "/tmp/relay_seeded"]
       interval: 2s
       timeout: 2s
-      retries: 5
+      retries: 30
+    networks:
+      - atproto-network
+
+  relay-init-host:
+    image: postgres:16-alpine
+    depends_on:
+      relay:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: relay
+    command: >
+      /bin/sh -c "psql -h relay_pg -U relay -d relay -c \"INSERT INTO host (hostname, status, no_ssl) VALUES ('pds.test', 'active', true) ON CONFLICT (hostname) DO UPDATE SET no_ssl = true;\""
+    networks:
+      - atproto-network
 
   init-keys:
     image: ghcr.io/haileyok/cocoon:latest
-    entrypoint: ["/bin/sh", "-c", "/scripts/cocoon-init-keys.sh && touch /keys/done && tail -f /dev/null"]
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        if [ ! -f /keys/rotation.key ]; then /cocoon create-rotation-key --out /keys/rotation.key; fi
+        if [ ! -f /keys/jwk.key ]; then /cocoon create-private-jwk --out /keys/jwk.key; fi
     volumes:
-      - ../local-atproto/cocoon-init-keys.sh:/scripts/cocoon-init-keys.sh:ro
-      - cocoon-keys:/keys
-    healthcheck:
-      test: ["CMD", "test", "-f", "/keys/done"]
-      interval: 2s
-      timeout: 2s
-      retries: 5
+      - cocoon_keys:/keys
+    networks:
+      - atproto-network
 
   pds:
     image: ghcr.io/haileyok/cocoon:latest
@@ -116,8 +108,7 @@ services:
     depends_on:
       plc: { condition: service_healthy }
       relay: { condition: service_healthy }
-      init-keys: { condition: service_healthy }
-      plc-proxy: { condition: service_started }
+      init-keys: { condition: service_completed_successfully }
     environment:
       COCOON_ADDR: ":80"
       COCOON_HOSTNAME: pds.test
@@ -137,16 +128,18 @@ services:
       default:
         aliases:
           - pds.test
-          - pds
+      atproto-network:
+        aliases:
+          - pds.test
     volumes:
-      - cocoon-keys:/keys:ro
-      - pds-data:/data
+      - cocoon_keys:/keys:ro
+      - pds_run_data:/data
       - plc_proxy_data:/data/plc_proxy:ro
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://127.0.0.1:80/xrpc/_health"]
-      interval: 5s
-      timeout: 5s
-      retries: 100
+      interval: 2s
+      timeout: 2s
+      retries: 60
 
   # ── Bridge ───────────────────────────────────────────────────────
   bridge:
@@ -163,20 +156,27 @@ services:
       ROOM_MODE: open
       ROOM_HTTPS_DOMAIN: bridge
       BRIDGE_FIREHOSE_ENABLE: "1"
-      BRIDGE_RELAY_URL: "ws://relay:2470/xrpc/com.atproto.sync.subscribeRepos"
+      BRIDGE_RELAY_URL: "ws://pds:80/xrpc/com.atproto.sync.subscribeRepos"
+      BRIDGE_PLC_URL: "http://plc:2582"
+      BRIDGE_ATPROTO_INSECURE: "1"
+      BRIDGE_CLEAN_START: "1"
+    ports:
+      - "8976:8976"
     volumes:
       - bridge-data:/data
       - ./bridge_entrypoint.sh:/scripts/bridge_entrypoint.sh:ro
     depends_on:
       relay:
         condition: service_healthy
-      relay-seed:
+      pds:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://127.0.0.1:8976/healthz"]
       interval: 3s
       timeout: 3s
       retries: 30
+    networks:
+      - atproto-network
 
   # ── Seeder ───────────────────────────────────────────────────────
   seeder:
@@ -195,48 +195,39 @@ services:
         condition: service_healthy
       pds:
         condition: service_healthy
+    networks:
+      - atproto-network
 
-  # ── Test Runner (Tildefriends) ──────────────────────────────────
-  test-runner:
+  # ── Admin UI ──────────────────────────────────────────────────────
+  bridge-admin-ui:
     build:
-      context: ../../reference/tildefriends
-      dockerfile: ../../infra/e2e-tildefriends/Dockerfile.tildefriends
-    entrypoint: ["/bin/bash", "/scripts/test_runner.sh"]
-    ports:
-      - "12345:12345"
-    environment:
-      BRIDGE_HTTP_ADDR: bridge:8976
-      BRIDGE_MUXRPC_ADDR: bridge:8989
-      BRIDGE_DB_PATH: /bridge-data/bridge.sqlite
-      BRIDGE_REPO_PATH: /bridge-data/ssb-repo
-      TF_DB_PATH: /tf-data/db.sqlite
-      TF_BIN: /app/out/release/tildefriends
-      BOT_SEED: e2e-full-seed
-      MAX_WAIT_SECS: 180
-      POLL_INTERVAL: 5
-    volumes:
-      - bridge-data:/bridge-data
-      - tf-data:/tf-data
-      - ./test_runner.sh:/scripts/test_runner.sh:ro
+      context: ../..
+      dockerfile: infra/e2e-tildefriends/Dockerfile.bridge
     depends_on:
       bridge:
-        condition: service_healthy
-      seeder:
         condition: service_started
-
-
-volumes:
-  plc-data:
-  relay-pg-data:
-  relay-data:
-  pds-data:
-  cocoon-keys:
-  plc_proxy_data:
-  bridge-data:
-  tf-data:
+    environment:
+      DB_PATH: /data/bridge.sqlite
+      REPO_PATH: /data/ssb-repo
+      BRIDGE_UI_AUTH_PASS: e2e-password
+      BRIDGE_PDS_ADMIN_PASSWORD: password
+    ports:
+      - "8080:8080"
+    volumes:
+      - bridge-data:/data
+    command: ["--db", "/data/bridge.sqlite", "serve-ui", "--listen-addr", "0.0.0.0:8080", "--repo-path", "/data/ssb-repo", "--ui-auth-user", "admin", "--ui-auth-pass-env", "BRIDGE_UI_AUTH_PASS", "--pds-host", "http://pds:80", "--pds-password", "password", "--atproto-insecure"]
+    networks:
+      - atproto-network
 
 networks:
-  default:
-    ipam:
-      config:
-        - subnet: 10.42.0.0/24
+  atproto-network:
+    driver: bridge
+
+volumes:
+  relay_pg_data:
+  relay_data:
+  plc_data:
+  plc_proxy_data:
+  pds_run_data:
+  cocoon_keys:
+  bridge-data:
