@@ -376,13 +376,21 @@ func (b *Bridge) ensureBlob(ctx context.Context, atDID string, cand blobCandidat
 		return "", fmt.Errorf("store blob cid=%s: %w", cand.CID, err)
 	}
 
-	blobRefStr := fmt.Sprintf("&%s.sha256", base64.RawStdEncoding.EncodeToString(blobHash))
+	blobRefStr := fmt.Sprintf("&%s.sha256", base64.StdEncoding.EncodeToString(blobHash))
+	mimeType := strings.TrimSpace(cand.MimeType)
+	if mimeType == "" || mimeType == "*/*" || mimeType == "application/octet-stream" {
+		detected := http.DetectContentType(payload)
+		// Only override if we found something more specific than octet-stream
+		if detected != "application/octet-stream" {
+			mimeType = detected
+		}
+	}
 
 	if err := b.db.AddBlob(ctx, db.Blob{
 		ATCID:      cand.CID,
 		SSBBlobRef: blobRefStr,
 		Size:       int64(len(payload)),
-		MimeType:   cand.MimeType,
+		MimeType:   mimeType,
 	}); err != nil {
 		return "", fmt.Errorf("persist blob mapping cid=%s: %w", cand.CID, err)
 	}
