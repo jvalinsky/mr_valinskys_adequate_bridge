@@ -57,21 +57,34 @@ type BlobStore interface {
 	Get(hash []byte) (io.ReadCloser, error)
 }
 
+// SSBStatusProvider provides real-time status of the internal SSB node.
+type SSBStatusProvider interface {
+	GetPeers() []PeerStatus
+	GetEBTState() map[string]map[string]int64
+}
+
+type PeerStatus struct {
+	Addr string
+	Feed string
+}
+
 // UIHandler serves admin pages backed by bridge database state.
 type UIHandler struct {
 	db        Database
 	logger    *log.Logger
 	atpClient PDSClientInterface
 	blobStore BlobStore
+	ssbStatus SSBStatusProvider
 }
 
 // NewUIHandler creates a UIHandler bound to database.
-func NewUIHandler(database Database, logger *log.Logger, atpClient PDSClientInterface, blobStore BlobStore) *UIHandler {
+func NewUIHandler(database Database, logger *log.Logger, atpClient PDSClientInterface, blobStore BlobStore, ssbStatus SSBStatusProvider) *UIHandler {
 	return &UIHandler{
 		db:        database,
 		logger:    logutil.Ensure(logger),
 		atpClient: atpClient,
 		blobStore: blobStore,
+		ssbStatus: ssbStatus,
 	}
 }
 
@@ -90,6 +103,36 @@ func (h *UIHandler) Mount(r chi.Router) {
 	r.Post("/post", h.handlePostAction)
 	r.Get("/feed", h.handleFeed)
 	r.Get("/blobs/view", h.handleBlobView)
+	r.Get("/connections", h.handleConnections)
+}
+
+func (h *UIHandler) handleConnections(w http.ResponseWriter, r *http.Request) {
+	peers := h.ssbStatus.GetPeers()
+	ebtState := h.ssbStatus.GetEBTState()
+
+	tplPeers := make([]templates.PeerStatus, 0, len(peers))
+	for _, p := range peers {
+		tplPeers = append(tplPeers, templates.PeerStatus{
+			Addr: p.Addr,
+			Feed: p.Feed,
+		})
+	}
+
+	data := templates.ConnectionsData{
+		Chrome: templates.PageChrome{
+			ActiveNav: "connections",
+			Breadcrumbs: []templates.Breadcrumb{
+				{Label: "Admin", Href: "/"},
+				{Label: "Connections"},
+			},
+		},
+		Peers:    tplPeers,
+		EBTState: ebtState,
+	}
+
+	if err := templates.RenderConnections(w, data); err != nil {
+		h.writeInternalError(w, "handleConnections", "failed to render connections page", err)
+	}
 }
 
 func (h *UIHandler) writeInternalError(w http.ResponseWriter, handler, message string, err error) {

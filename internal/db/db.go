@@ -593,6 +593,15 @@ func (db *DB) CountMessages(ctx context.Context) (int, error) {
 	return count, nil
 }
 
+// CountMessagesByDID returns the total number of stored messages for a specific author.
+func (db *DB) CountMessagesByDID(ctx context.Context, atDID string) (int, error) {
+	var count int
+	if err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE at_did = ?`, atDID).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count messages for did %s: %w", atDID, err)
+	}
+	return count, nil
+}
+
 // GetRecentMessages returns the newest messages up to limit.
 func (db *DB) GetRecentMessages(ctx context.Context, limit int) ([]Message, error) {
 	if limit <= 0 {

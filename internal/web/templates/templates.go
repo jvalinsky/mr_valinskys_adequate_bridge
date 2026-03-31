@@ -550,10 +550,12 @@ const pageLayout = `
                 <a href="/messages" class="{{navClass .Chrome.ActiveNav "messages"}}" {{navCurrent .Chrome.ActiveNav "messages"}}>Messages</a>
                 <a href="/feed" class="{{navClass .Chrome.ActiveNav "feed"}}" {{navCurrent .Chrome.ActiveNav "feed"}}>Global Feed</a>
                 <a href="/post" class="{{navClass .Chrome.ActiveNav "post"}}" {{navCurrent .Chrome.ActiveNav "post"}}>Compose Post</a>
-                <a href="/failures" class="{{navClass .Chrome.ActiveNav "failures"}}" {{navCurrent .Chrome.ActiveNav "failures"}}>Failures</a>
-                <a href="/blobs" class="{{navClass .Chrome.ActiveNav "blobs"}}" {{navCurrent .Chrome.ActiveNav "blobs"}}>Blobs</a>
-                <a href="/state" class="{{navClass .Chrome.ActiveNav "state"}}" {{navCurrent .Chrome.ActiveNav "state"}}>State</a>
-            </nav>
+                 <a href="/failures" class="{{navClass .Chrome.ActiveNav "failures"}}" {{navCurrent .Chrome.ActiveNav "failures"}}>Failures</a>
+                 <a href="/blobs" class="{{navClass .Chrome.ActiveNav "blobs"}}" {{navCurrent .Chrome.ActiveNav "blobs"}}>Blobs</a>
+                 <a href="/connections" class="{{navClass .Chrome.ActiveNav "connections"}}" {{navCurrent .Chrome.ActiveNav "connections"}}>Connections</a>
+                 <a href="/state" class="{{navClass .Chrome.ActiveNav "state"}}" {{navCurrent .Chrome.ActiveNav "state"}}>State</a>
+             </nav>
+
         </div>
     </header>
 
@@ -603,6 +605,73 @@ const pageLayout = `
     </script>
 </body>
 </html>
+`
+
+const connectionsContent = `
+{{define "content"}}
+<section class="section section-pad">
+    <h1 class="page-title">SSB Connections & Replication</h1>
+    <p class="subtitle">Live MUXRPC peers and EBT frontier synchronization state.</p>
+</section>
+
+<section class="section section-pad">
+    <h2 class="page-title" style="font-size:1.2rem">Active Peers</h2>
+    {{if .Peers}}
+    <div class="table-wrap" style="margin-top:10px">
+        <table>
+            <thead>
+                <tr>
+                    <th>Remote Address</th>
+                    <th>SSB Feed ID</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{range .Peers}}
+                <tr>
+                    <td class="mono">{{.Addr}}</td>
+                    <td class="mono">{{.Feed}}</td>
+                </tr>
+                {{end}}
+            </tbody>
+        </table>
+    </div>
+    {{else}}
+    <div class="empty">No active SSB peers connected.</div>
+    {{end}}
+</section>
+
+<section class="section section-pad">
+    <h2 class="page-title" style="font-size:1.2rem">EBT Frontiers</h2>
+    <p class="subtitle">Latest sequence numbers tracked for each feed, grouped by tracking context (local or remote peer).</p>
+    {{if .EBTState}}
+    {{range $context, $frontier := .EBTState}}
+    <div style="margin-top:20px">
+        <h3 class="metric-label">{{$context}}</h3>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Feed</th>
+                        <th>Sequence</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{range $feed, $seq := $frontier}}
+                    <tr>
+                        <td class="mono">{{$feed}}</td>
+                        <td>{{$seq}}</td>
+                    </tr>
+                    {{end}}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {{end}}
+    {{else}}
+    <div class="empty">No EBT state available.</div>
+    {{end}}
+</section>
+{{end}}
 `
 
 const dashboardContent = `
@@ -1476,6 +1545,19 @@ type PostData struct {
 	Accounts []AccountRow
 }
 
+// ConnectionsData is the template model for the connections page.
+type ConnectionsData struct {
+	Chrome   PageChrome
+	Peers    []PeerStatus
+	EBTState map[string]map[string]int64
+}
+
+// PeerStatus represents the status of a single connected SSB peer.
+type PeerStatus struct {
+	Addr string
+	Feed string
+}
+
 const postContent = `
 {{define "content"}}
 <section class="section section-pad">
@@ -1559,6 +1641,11 @@ func RenderPost(w io.Writer, data PostData) error {
 	return postTemplate.Execute(w, data)
 }
 
+// RenderConnections renders the connections page.
+func RenderConnections(w io.Writer, data ConnectionsData) error {
+	return connectionsTemplate.Execute(w, data)
+}
+
 var (
 	dashboardTemplate     = mustPageTemplate("dashboard", dashboardContent)
 	accountsTemplate      = mustPageTemplate("accounts", accountsContent)
@@ -1569,6 +1656,7 @@ var (
 	blobsTemplate         = mustPageTemplate("blobs", blobsContent)
 	stateTemplate         = mustPageTemplate("state", stateContent)
 	postTemplate          = mustPageTemplate("post", postContent)
+	connectionsTemplate   = mustPageTemplate("connections", connectionsContent)
 )
 
 func mustPageTemplate(name, content string) *template.Template {

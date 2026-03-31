@@ -252,6 +252,20 @@ func (sm *StateMatrix) Changed(self, peer *refs.FeedRef) (NetworkFrontier, error
 	return relevant, nil
 }
 
+func (sm *StateMatrix) Export() map[string]map[string]int64 {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	res := make(map[string]map[string]int64)
+	for peer, nf := range sm.frontiers {
+		res[peer] = make(map[string]int64)
+		for feed, note := range nf {
+			res[peer][feed] = note.Seq
+		}
+	}
+	return res
+}
+
 func (sm *StateMatrix) Close() error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -300,7 +314,14 @@ func (s *Sessions) Started(addr string) *Session {
 func (s *Sessions) Ended(addr string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	delete(s.open, addr)
+	if session, ok := s.open[addr]; ok {
+		session.mu.Lock()
+		for _, cancel := range session.subscribed {
+			cancel()
+		}
+		session.mu.Unlock()
+		delete(s.open, addr)
+	}
 }
 
 func (s *Sessions) WaitFor(ctx context.Context, addr string, dur time.Duration) bool {

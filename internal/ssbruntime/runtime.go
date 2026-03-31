@@ -13,6 +13,7 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/feedlog"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/keys"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/sbot"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/web/handlers"
 )
 
 type Runtime struct {
@@ -152,6 +153,28 @@ func (r *Runtime) ResolveFeed(_ context.Context, atDID string) (string, error) {
 
 func (r *Runtime) BlobStore() feedlog.BlobStore {
 	return r.blobStore
+}
+
+func (r *Runtime) GetPeers() []handlers.PeerStatus {
+	if r.sbotNode == nil {
+		return nil
+	}
+	peers := r.sbotNode.Peers()
+	res := make([]handlers.PeerStatus, 0, len(peers))
+	for _, p := range peers {
+		res = append(res, handlers.PeerStatus{
+			Addr: p.Conn.RemoteAddr().String(),
+			Feed: p.ID.String(),
+		})
+	}
+	return res
+}
+
+func (r *Runtime) GetEBTState() map[string]map[string]int64 {
+	if r.sbotNode == nil || r.sbotNode.StateMatrix() == nil {
+		return nil
+	}
+	return r.sbotNode.StateMatrix().Export()
 }
 
 func (r *Runtime) Close() error {

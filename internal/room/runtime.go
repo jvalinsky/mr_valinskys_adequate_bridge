@@ -82,118 +82,35 @@ func Start(parentCtx context.Context, cfg Config, logger *log.Logger) (*Runtime,
 
 	ctx, cancel := context.WithCancel(parentCtx)
 
-	if err := os.MkdirAll(cfg.RepoPath, 0700); err != nil {
-		cancel()
-		return nil, fmt.Errorf("room: failed to create repo directory: %w", err)
-	}
-
-	if cfg.KeyPair == nil {
-		secretPath := filepath.Join(cfg.RepoPath, "secret")
-		kp, err := keys.Load(secretPath)
-		if err != nil {
-			kp, err = keys.Generate()
-			if err != nil {
-				cancel()
-				return nil, fmt.Errorf("room: failed to generate key pair: %w", err)
-			}
-			if err := keys.Save(kp, secretPath); err != nil {
-				cancel()
-				return nil, fmt.Errorf("room: failed to save key pair: %w", err)
-			}
-		}
-		cfg.KeyPair = kp
-	}
-
-	roomDB, err := sqlite.Open(filepath.Join(cfg.RepoPath, "room.sqlite"))
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("room: failed to open room db: %w", err)
-	}
-
-	privacyMode := roomdb.ParsePrivacyMode(strings.ToLower(strings.TrimSpace(cfg.Mode)))
-	if err := roomDB.RoomConfig().SetPrivacyMode(ctx, privacyMode); err != nil {
-		roomDB.Close()
-		cancel()
-		return nil, fmt.Errorf("room: failed to set privacy mode: %w", err)
-	}
-
-	state := roomstate.NewManager()
-
-	feedRef := cfg.KeyPair.FeedRef()
-	roomSrv := roomhandlers.NewRoomServer(
-		&feedRef,
-		roomDB.Members(),
-		roomDB.Aliases(),
-		roomDB.Invites(),
-		roomDB.DeniedKeys(),
-		roomDB.RoomConfig(),
-		state,
-	)
-
-	var handlerMux *muxrpc.HandlerMux
-	if cfg.HandlerMux != nil {
-		handlerMux = cfg.HandlerMux.(*muxrpc.HandlerMux)
-		cfg.HandlerMux.Register(muxrpc.Method{"whoami"}, &whoamiHandler{roomSrv})
-		cfg.HandlerMux.Register(muxrpc.Method{"room"}, roomhandlers.NewAliasHandler(roomSrv))
-
-		tunnelHandler := roomhandlers.NewTunnelHandler(roomSrv, cfg.KeyPair, cfg.AppKey)
-		cfg.HandlerMux.Register(muxrpc.Method{"tunnel", "announce"}, tunnelHandler)
-		cfg.HandlerMux.Register(muxrpc.Method{"tunnel", "leave"}, tunnelHandler)
-		cfg.HandlerMux.Register(muxrpc.Method{"tunnel", "connect"}, tunnelHandler)
-		cfg.HandlerMux.Register(muxrpc.Method{"tunnel", "endpoints"}, tunnelHandler)
-		cfg.HandlerMux.Register(muxrpc.Method{"tunnel", "isRoom"}, tunnelHandler)
-		cfg.HandlerMux.Register(muxrpc.Method{"tunnel", "ping"}, tunnelHandler)
-	} else {
-		handlerMux = &muxrpc.HandlerMux{}
-		registerRoomHandlers(handlerMux, roomSrv, cfg.KeyPair, cfg.AppKey)
-	}
-
-	manifest := &muxrpc.Manifest{} // Room currently doesn't use a formal manifest for discovery
-
-	httpListener, err := net.Listen("tcp", cfg.HTTPListenAddr)
-	if err != nil {
-		roomDB.Close()
-		cancel()
-		return nil, fmt.Errorf("room: listen http: %w", err)
-	}
-
-	muxrpcListener, err := net.Listen("tcp", cfg.ListenAddr)
-	if err != nil {
-		httpListener.Close()
-		roomDB.Close()
-		cancel()
-		return nil, fmt.Errorf("room: listen muxrpc: %w", err)
-	}
-
-	muxHandler := newServeMux(ctx, roomDB, state, cfg.KeyPair)
-	httpServer := &http.Server{
-		Handler:           newBridgeRoomHandler(muxHandler, roomDB.RoomConfig(), cfg.BridgeAccountLister, cfg.BridgeAccountDetailer),
-		ReadHeaderTimeout: 15 * time.Second,
-		WriteTimeout:      3 * time.Minute,
-		IdleTimeout:       3 * time.Minute,
-	}
-
 	rt := &Runtime{
-		logger:         logger,
-		cfg:            cfg,
-		keyPair:        cfg.KeyPair,
-		roomDB:         roomDB,
-		state:          state,
-		httpServer:     httpServer,
-		httpListener:   httpListener,
-		muxrpcListener: muxrpcListener,
-		ctx:            ctx,
-		cancel:         cancel,
-		muxrpcAddr:     muxrpcListener.Addr().String(),
-		httpAddr:       httpListener.Addr().String(),
-		shutdownCh:     make(chan struct{}),
-		handler:        handlerMux,
-		manifest:       manifest,
+		logger:     logger,
+		cfg:        cfg,
+		ctx:        ctx,
+		cancel:     cancel,
+		shutdownCh: make(chan struct{}),
+	}
+
+	if err := rt.initRepo(); err != nil {
+		cancel()
+		return nil, err
+	}
+
+	if err := rt.initDB(); err != nil {
+		cancel()
+		return nil, err
+	}
+
+	rt.initHandlers()
+
+	if err := rt.initNetwork(); err != nil {
+		rt.roomDB.Close()
+		cancel()
+		return nil, err
 	}
 
 	rt.wg.Add(2)
 	go rt.serveHTTP()
-	go rt.serveMUXRPC(ctx, rt.shutdownCh, muxrpcListener)
+	go rt.serveMUXRPC(ctx, rt.shutdownCh, rt.muxrpcListener)
 
 	go func() {
 		<-ctx.Done()
@@ -202,6 +119,106 @@ func Start(parentCtx context.Context, cfg Config, logger *log.Logger) (*Runtime,
 
 	rt.logger.Printf("event=room_runtime_started muxrpc_addr=%s http_addr=%s mode=%s", rt.muxrpcAddr, rt.httpAddr, strings.ToLower(cfg.Mode))
 	return rt, nil
+}
+
+func (r *Runtime) initRepo() error {
+	if err := os.MkdirAll(r.cfg.RepoPath, 0700); err != nil {
+		return fmt.Errorf("room: failed to create repo directory: %w", err)
+	}
+
+	if r.cfg.KeyPair == nil {
+		secretPath := filepath.Join(r.cfg.RepoPath, "secret")
+		kp, err := keys.Load(secretPath)
+		if err != nil {
+			kp, err = keys.Generate()
+			if err != nil {
+				return fmt.Errorf("room: failed to generate key pair: %w", err)
+			}
+			if err := keys.Save(kp, secretPath); err != nil {
+				return fmt.Errorf("room: failed to save key pair: %w", err)
+			}
+		}
+		r.cfg.KeyPair = kp
+	}
+	r.keyPair = r.cfg.KeyPair
+	return nil
+}
+
+func (r *Runtime) initDB() error {
+	roomDB, err := sqlite.Open(filepath.Join(r.cfg.RepoPath, "room.sqlite"))
+	if err != nil {
+		return fmt.Errorf("room: failed to open room db: %w", err)
+	}
+	r.roomDB = roomDB
+
+	privacyMode := roomdb.ParsePrivacyMode(r.cfg.Mode)
+	if err := r.roomDB.RoomConfig().SetPrivacyMode(r.ctx, privacyMode); err != nil {
+		return fmt.Errorf("room: failed to set privacy mode: %w", err)
+	}
+
+	r.state = roomstate.NewManager()
+	return nil
+}
+
+func (r *Runtime) initHandlers() {
+	feedRef := r.keyPair.FeedRef()
+	roomSrv := roomhandlers.NewRoomServer(
+		&feedRef,
+		r.roomDB.Members(),
+		r.roomDB.Aliases(),
+		r.roomDB.Invites(),
+		r.roomDB.DeniedKeys(),
+		r.roomDB.RoomConfig(),
+		r.state,
+	)
+
+	var handlerMux *muxrpc.HandlerMux
+	if r.cfg.HandlerMux != nil {
+		handlerMux = r.cfg.HandlerMux.(*muxrpc.HandlerMux)
+		r.cfg.HandlerMux.Register(muxrpc.Method{"whoami"}, &whoamiHandler{roomSrv})
+		r.cfg.HandlerMux.Register(muxrpc.Method{"room"}, roomhandlers.NewAliasHandler(roomSrv))
+
+		tunnelHandler := roomhandlers.NewTunnelHandler(roomSrv, r.keyPair, r.cfg.AppKey)
+		r.cfg.HandlerMux.Register(muxrpc.Method{"tunnel", "announce"}, tunnelHandler)
+		r.cfg.HandlerMux.Register(muxrpc.Method{"tunnel", "leave"}, tunnelHandler)
+		r.cfg.HandlerMux.Register(muxrpc.Method{"tunnel", "connect"}, tunnelHandler)
+		r.cfg.HandlerMux.Register(muxrpc.Method{"tunnel", "endpoints"}, tunnelHandler)
+		r.cfg.HandlerMux.Register(muxrpc.Method{"tunnel", "isRoom"}, tunnelHandler)
+		r.cfg.HandlerMux.Register(muxrpc.Method{"tunnel", "ping"}, tunnelHandler)
+	} else {
+		handlerMux = &muxrpc.HandlerMux{}
+		registerRoomHandlers(handlerMux, roomSrv, r.keyPair, r.cfg.AppKey)
+	}
+
+	r.handler = handlerMux
+	r.manifest = &muxrpc.Manifest{}
+}
+
+func (r *Runtime) initNetwork() error {
+	httpListener, err := net.Listen("tcp", r.cfg.HTTPListenAddr)
+	if err != nil {
+		return fmt.Errorf("room: listen http: %w", err)
+	}
+	r.httpListener = httpListener
+	r.httpAddr = httpListener.Addr().String()
+
+	muxrpcListener, err := net.Listen("tcp", r.cfg.ListenAddr)
+	if err != nil {
+		httpListener.Close()
+		return fmt.Errorf("room: listen muxrpc: %w", err)
+	}
+	r.muxrpcListener = muxrpcListener
+	r.muxrpcAddr = muxrpcListener.Addr().String()
+
+	muxHandler := newServeMux(r.ctx, r.roomDB, r.state, r.keyPair)
+	r.httpServer = &http.Server{
+		Handler:           newBridgeRoomHandler(muxHandler, r.roomDB.RoomConfig(), r.cfg.BridgeAccountLister, r.cfg.BridgeAccountDetailer),
+		ReadHeaderTimeout: 15 * time.Second,
+		WriteTimeout:      3 * time.Minute,
+		IdleTimeout:       3 * time.Minute,
+	}
+
+	return nil
 }
 
 func (r *Runtime) Addr() string {
