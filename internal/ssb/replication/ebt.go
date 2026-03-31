@@ -386,7 +386,7 @@ func NewEBTHandler(self *refs.FeedRef, store FeedManager, matrix *StateMatrix, r
 }
 
 func (h *EBTHandler) HandleDuplex(ctx context.Context, tx Writer, rx ByteSourceReader, remoteAddr string, remoteFeed *refs.FeedRef) error {
-	log.Printf("[EBT DEBUG] HandleDuplex: START remote=%s", remoteAddr)
+	log.Printf("[EBT DEBUG] HandleDuplex: START remote=%s remoteFeed=%v", remoteAddr, remoteFeed)
 
 	session := h.sessions.Started(remoteAddr)
 	defer h.sessions.Ended(remoteAddr)
@@ -462,13 +462,15 @@ func (h *EBTHandler) HandleDuplex(ctx context.Context, tx Writer, rx ByteSourceR
 			}
 
 			subCtx, cancel := context.WithCancel(ctx)
-			err = h.createStreamHistory(subCtx, tx, arg)
-			if err != nil {
-				log.Printf("[EBT DEBUG] HandleDuplex: createStreamHistory error for %s: %v", feedStr, err)
-				cancel()
-				continue
-			}
 			session.Subscribed(feedStr, cancel)
+
+			go func(fStr string, cxt context.Context, a CreateHistArgs) {
+				if err := h.createStreamHistory(cxt, tx, a); err != nil {
+					if !errors.Is(err, context.Canceled) {
+						log.Printf("[EBT DEBUG] createStreamHistory error for %s: %v", fStr, err)
+					}
+				}
+			}(feedStr, subCtx, arg)
 		}
 	}
 }

@@ -462,7 +462,7 @@ func (s *State) GetBoxstreamEncKeys() ([32]byte, [24]byte) {
 	copy(enKey[:], h.Sum(nil))
 
 	var nonce [24]byte
-	copy(nonce[:], s.remoteAppMac[:])
+	copy(nonce[:], s.localAppMac[:])
 	return enKey, nonce
 }
 
@@ -475,7 +475,7 @@ func (s *State) GetBoxstreamDecKeys() ([32]byte, [24]byte) {
 	copy(deKey[:], h.Sum(nil))
 
 	var nonce [24]byte
-	copy(nonce[:], s.localAppMac[:])
+	copy(nonce[:], s.remoteAppMac[:])
 	return deKey, nonce
 }
 

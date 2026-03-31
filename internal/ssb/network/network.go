@@ -125,10 +125,12 @@ func (s *Server) handleConn(conn net.Conn) {
 
 	shs, err := secretstream.NewServer(conn, secretstream.NewAppKey(s.opts.AppKey), s.keyPair.Private())
 	if err != nil {
+		fmt.Printf("network: shs init failed: %v\n", err)
 		return
 	}
 
 	if err := shs.Handshake(); err != nil {
+		fmt.Printf("network: shs handshake failed: %v\n", err)
 		return
 	}
 
@@ -141,7 +143,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	s.addPeer(peer)
 	defer s.removePeer(peer)
 
-	var secretConn muxrpc.Conn = &secretConnWrapper{conn}
+	var secretConn muxrpc.Conn = shs
 
 	_ = muxrpc.NewServer(s.ctx, secretConn, s.handler, s.newManifest())
 

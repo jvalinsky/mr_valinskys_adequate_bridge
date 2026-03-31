@@ -85,10 +85,13 @@ type Handler interface {
 }
 
 type HandlerMux struct {
+	mu       sync.RWMutex
 	handlers map[string]Handler
 }
 
 func (hm *HandlerMux) Handled(m Method) bool {
+	hm.mu.RLock()
+	defer hm.mu.RUnlock()
 	if hm == nil || hm.handlers == nil {
 		return false
 	}
@@ -101,6 +104,8 @@ func (hm *HandlerMux) Handled(m Method) bool {
 }
 
 func (hm *HandlerMux) HandleCall(ctx context.Context, req *Request) {
+	hm.mu.RLock()
+	defer hm.mu.RUnlock()
 	for i := len(req.Method); i > 0; i-- {
 		m := req.Method[:i]
 		key := m.String()
@@ -114,12 +119,16 @@ func (hm *HandlerMux) HandleCall(ctx context.Context, req *Request) {
 }
 
 func (hm *HandlerMux) HandleConnect(ctx context.Context, edp Endpoint) {
+	hm.mu.RLock()
+	defer hm.mu.RUnlock()
 	for _, h := range hm.handlers {
 		go h.HandleConnect(ctx, edp)
 	}
 }
 
 func (hm *HandlerMux) Register(m Method, h Handler) {
+	hm.mu.Lock()
+	defer hm.mu.Unlock()
 	if hm.handlers == nil {
 		hm.handlers = make(map[string]Handler)
 	}

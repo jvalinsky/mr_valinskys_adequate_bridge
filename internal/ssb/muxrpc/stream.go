@@ -361,6 +361,7 @@ func (bs *ByteSink) Writer() PacketWriter {
 }
 
 type PacketStream struct {
+	mu     sync.Mutex
 	packer PacketWriter
 	req    int32
 	flag   codec.Flag
@@ -369,19 +370,27 @@ type PacketStream struct {
 }
 
 func (ps *PacketStream) SetRequest(req *Request) {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
 	ps.reqPtr = req
 }
 
 func (ps *PacketStream) SetPackerAndReq(pkr PacketWriter, req int32) {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
 	ps.packer = pkr
 	ps.req = req
 }
 
 func (ps *PacketStream) SetFlag(flag codec.Flag) {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
 	ps.flag = flag
 }
 
 func (ps *PacketStream) Read(p []byte) (int, error) {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
 	if ps.buf == nil {
 		return 0, io.EOF
 	}
@@ -389,6 +398,9 @@ func (ps *PacketStream) Read(p []byte) (int, error) {
 }
 
 func (ps *PacketStream) Write(p []byte) (int, error) {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+
 	if ps.packer == nil {
 		return len(p), nil
 	}
@@ -583,6 +595,11 @@ func NewPacketStreamWriter(ps *PacketStream) *PacketStreamWriter {
 }
 
 func (w *PacketStreamWriter) Write(ctx context.Context, data []byte) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
 	n, err := w.ps.Write(data)
 	if err != nil {
 		return err
