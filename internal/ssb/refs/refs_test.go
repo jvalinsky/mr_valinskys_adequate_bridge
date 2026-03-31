@@ -1,6 +1,7 @@
 package refs
 
 import (
+	"encoding/json"
 	"testing"
 )
 
@@ -142,5 +143,42 @@ func TestInvalidBlobRef(t *testing.T) {
 	_, err = ParseBlobRef("@abc123=.ed25519")
 	if err == nil {
 		t.Errorf("expected error parsing wrong sigil as blob ref")
+	}
+}
+
+func TestFeedRefJSON(t *testing.T) {
+	original := MustNewFeedRef([]byte("abcdefghijklmnopqrstuvwxyz123456"), RefAlgoFeedSSB1)
+
+	b, err := json.Marshal(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var parsed FeedRef
+	if err := json.Unmarshal(b, &parsed); err != nil {
+		t.Fatal(err)
+	}
+
+	if !parsed.Equal(*original) {
+		t.Errorf("JSON roundtrip failed")
+	}
+}
+
+func TestSSBURI(t *testing.T) {
+	alice := MustNewFeedRef(make([]byte, 32), RefAlgoFeedSSB1)
+	furi := &FeedURI{Ref: alice}
+	s := furi.String()
+
+	parsed, err := ParseSSBURI(s)
+	if err != nil {
+		t.Fatalf("failed to parse feed URI: %v", err)
+	}
+
+	if parsed.Type() != URITypeFeed {
+		t.Errorf("expected feed type, got %v", parsed.Type())
+	}
+
+	if !parsed.(*FeedURI).Ref.Equal(*alice) {
+		t.Errorf("parsed ref doesn't match")
 	}
 }

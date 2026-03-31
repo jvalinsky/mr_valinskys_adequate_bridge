@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	_ "modernc.org/sqlite"
 
@@ -553,7 +554,7 @@ func (b *blobStore) Put(r io.Reader) ([]byte, error) {
 	hash := sha256Hash(data)
 
 	if b.blobPath != "" {
-		blobFile := filepath.Join(b.blobPath, fmt.Sprintf("%x", hash[:1]))
+		blobFile := filepath.Join(b.blobPath, fmt.Sprintf("%x", hash))
 		if err := os.MkdirAll(filepath.Dir(blobFile), 0755); err != nil {
 			return nil, err
 		}
@@ -637,7 +638,7 @@ func (b *blobStore) Delete(hash []byte) error {
 }
 
 func now() int64 {
-	return 0
+	return time.Now().UnixMilli()
 }
 
 func sha256Hash(data []byte) []byte {

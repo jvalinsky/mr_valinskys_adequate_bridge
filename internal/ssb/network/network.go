@@ -134,8 +134,14 @@ func (s *Server) handleConn(conn net.Conn) {
 		return
 	}
 
+	remoteFeed, err := GetFeedRefFromAddr(shs.RemoteAddr())
+	if err != nil {
+		fmt.Printf("network: failed to get remote feed ref: %v\n", err)
+		return
+	}
+
 	peer := &Peer{
-		ID:      refs.FeedRef{},
+		ID:      *remoteFeed,
 		Conn:    conn,
 		KeyPair: s.keyPair,
 	}
@@ -268,6 +274,9 @@ func (a Addr) String() string {
 }
 
 func GetFeedRefFromAddr(addr net.Addr) (*refs.FeedRef, error) {
+	if a, ok := addr.(secretstream.Addr); ok {
+		return refs.ParseFeedRef("@" + base64.StdEncoding.EncodeToString(a.PubKey) + ".ed25519")
+	}
 	if a, ok := addr.(Addr); ok {
 		return refs.ParseFeedRef("@" + base64.StdEncoding.EncodeToString(a.PubKey) + ".ed25519")
 	}

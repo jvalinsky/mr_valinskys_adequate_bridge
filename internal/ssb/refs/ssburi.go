@@ -77,7 +77,11 @@ func ParseSSBURI(uri string) (SSBURI, error) {
 		return nil, ErrInvalidScheme
 	}
 
-	parts := strings.Split(strings.TrimPrefix(u.Path, "/"), "/")
+	path := u.Path
+	if path == "" {
+		path = u.Opaque
+	}
+	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
 	if len(parts) < 2 {
 		return nil, ErrInvalidResource
 	}
