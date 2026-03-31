@@ -3,14 +3,17 @@ package ssbruntime
 
 import (
 	"context"
+	"crypto/ed25519"
 	"fmt"
 	"log"
 	"os"
 	"sync"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/bots"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/feedlog"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/gossip"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/keys"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/sbot"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/web/handlers"
@@ -33,6 +36,33 @@ type Config struct {
 	HMACKey    *[32]byte
 	KeyPair    *keys.KeyPair
 	AppKey     string
+	GossipDB   *db.DB
+}
+
+type GossipDBAdapter struct {
+	db *db.DB
+}
+
+func (a *GossipDBAdapter) AddKnownPeer(ctx context.Context, addr string, pubKey []byte) error {
+	return a.db.AddKnownPeer(ctx, db.KnownPeer{
+		Addr:   addr,
+		PubKey: pubKey,
+	})
+}
+
+func (a *GossipDBAdapter) GetKnownPeers(ctx context.Context) ([]gossip.PeerInfo, error) {
+	peers, err := a.db.GetKnownPeers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	res := make([]gossip.PeerInfo, 0, len(peers))
+	for _, p := range peers {
+		res = append(res, gossip.PeerInfo{
+			Addr:   p.Addr,
+			PubKey: ed25519.PublicKey(p.PubKey),
+		})
+	}
+	return res, nil
 }
 
 func Open(ctx context.Context, cfg Config, logger *log.Logger) (*Runtime, error) {
@@ -50,6 +80,11 @@ func Open(ctx context.Context, cfg Config, logger *log.Logger) (*Runtime, error)
 		appKey = string(cfg.HMACKey[:])
 	}
 
+	var gossipDB gossip.Database
+	if cfg.GossipDB != nil {
+		gossipDB = &GossipDBAdapter{db: cfg.GossipDB}
+	}
+
 	node, err := sbot.New(sbot.Options{
 		RepoPath:   cfg.RepoPath,
 		ListenAddr: cfg.ListenAddr,
@@ -57,6 +92,7 @@ func Open(ctx context.Context, cfg Config, logger *log.Logger) (*Runtime, error)
 		AppKey:     appKey,
 		EnableEBT:  true,
 		Hops:       2,
+		GossipDB:   gossipDB,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("initialize sbot: %w", err)
@@ -163,8 +199,11 @@ func (r *Runtime) GetPeers() []handlers.PeerStatus {
 	res := make([]handlers.PeerStatus, 0, len(peers))
 	for _, p := range peers {
 		res = append(res, handlers.PeerStatus{
-			Addr: p.Conn.RemoteAddr().String(),
-			Feed: p.ID.String(),
+			Addr:       p.Conn.RemoteAddr().String(),
+			Feed:       p.ID.String(),
+			ReadBytes:  p.ReadBytes(),
+			WriteBytes: p.WriteBytes(),
+			Latency:    p.Latency(),
 		})
 	}
 	return res

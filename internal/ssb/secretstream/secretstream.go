@@ -240,7 +240,8 @@ func NewAppKey(s string) AppKey {
 }
 
 type State struct {
-	appKey [32]byte
+	isClient bool
+	appKey   [32]byte
 
 	secHash      []byte
 	localAppMac  [32]byte
@@ -264,12 +265,18 @@ func NewClientState(appKey AppKey, local ed25519.PrivateKey, remotePublic ed2551
 	if err != nil {
 		return nil, err
 	}
+	s.isClient = true
 	s.remotePublic = remotePublic
 	return s, nil
 }
 
 func NewServerState(appKey AppKey, local ed25519.PrivateKey) (*State, error) {
-	return newState(appKey, local)
+	s, err := newState(appKey, local)
+	if err != nil {
+		return nil, err
+	}
+	s.isClient = false
+	return s, nil
 }
 
 func newState(appKey AppKey, local ed25519.PrivateKey) (*State, error) {
@@ -462,7 +469,7 @@ func (s *State) GetBoxstreamEncKeys() ([32]byte, [24]byte) {
 	copy(enKey[:], h.Sum(nil))
 
 	var nonce [24]byte
-	copy(nonce[:], s.localAppMac[:])
+	copy(nonce[:], s.remoteAppMac[:])
 	return enKey, nonce
 }
 
@@ -475,7 +482,7 @@ func (s *State) GetBoxstreamDecKeys() ([32]byte, [24]byte) {
 	copy(deKey[:], h.Sum(nil))
 
 	var nonce [24]byte
-	copy(nonce[:], s.remoteAppMac[:])
+	copy(nonce[:], s.localAppMac[:])
 	return deKey, nonce
 }
 

@@ -47,3 +47,10 @@ CREATE TABLE IF NOT EXISTS bridge_state (
     value TEXT NOT NULL,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS known_peers (
+    addr TEXT PRIMARY KEY,
+    pubkey BLOB NOT NULL,
+    last_seen DATETIME,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);

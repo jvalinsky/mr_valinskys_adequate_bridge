@@ -9,6 +9,7 @@ import (
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/blobs"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/feedlog"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/gossip"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/keys"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc/handlers"
@@ -31,6 +32,8 @@ type Options struct {
 
 	EnableRoom bool
 	RoomMode   string
+
+	GossipDB gossip.Database
 }
 
 type Sbot struct {
@@ -39,10 +42,11 @@ type Sbot struct {
 	KeyPair *keys.KeyPair
 	opts    Options
 
-	store *feedlog.StoreImpl
-	ebt   *replication.EBTHandler
-	state *replication.StateMatrix
-	blobs *blobs.Store
+	store  *feedlog.StoreImpl
+	ebt    *replication.EBTHandler
+	state  *replication.StateMatrix
+	blobs  *blobs.Store
+	gossip *gossip.Manager
 
 	netServer  *network.Server
 	netClient  *network.Client
@@ -131,6 +135,8 @@ func New(opts Options) (*Sbot, error) {
 
 	registerHandlers(handlerMux, feedStore, ebtHandler, blobStore, opts.KeyPair)
 
+	gossipMgr := gossip.NewManager(netClient, ebtHandler, handlerMux, opts.GossipDB, nil)
+
 	var roomDB *sqlite.DB
 	var roomState *roomstate.Manager
 	var roomSrv *room.RoomServer
@@ -184,6 +190,7 @@ func New(opts Options) (*Sbot, error) {
 		ebt:        ebtHandler,
 		state:      stateMatrix,
 		blobs:      blobStore,
+		gossip:     gossipMgr,
 		netServer:  netServer,
 		netClient:  netClient,
 		Network:    net,
@@ -267,6 +274,10 @@ func (s *Sbot) Serve() error {
 		}
 	}()
 
+	if s.gossip != nil {
+		go s.gossip.Run(s.ctx)
+	}
+
 	<-s.ctx.Done()
 	return s.ctx.Err()
 }
@@ -307,7 +318,7 @@ func (s *Sbot) Shutdown() error {
 }
 
 func (s *Sbot) Connect(ctx context.Context, addr string, remote ed25519.PublicKey) (*network.Peer, error) {
-	return s.netClient.Connect(ctx, addr, remote)
+	return s.netClient.Connect(ctx, addr, remote, s.handlerMux)
 }
 
 func (s *Sbot) Node() *Sbot {
@@ -372,6 +383,10 @@ func (s *Sbot) StateMatrix() *replication.StateMatrix {
 	return s.state
 }
 
+func (s *Sbot) Gossip() *gossip.Manager {
+	return s.gossip
+}
+
 func (s *Sbot) BlobStore() *blobs.Store {
 	return s.blobs
 }
@@ -390,7 +405,7 @@ func (s *Sbot) GetNet() *SbotNetwork {
 }
 
 func (n *SbotNetwork) Connect(ctx context.Context, addr string, remote ed25519.PublicKey) error {
-	_, err := n.client.Connect(ctx, addr, remote)
+	_, err := n.client.Connect(ctx, addr, remote, nil) // or some default handler
 	return err
 }
 

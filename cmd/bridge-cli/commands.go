@@ -443,6 +443,7 @@ func runServeUI(c *cli.Context) error {
 		ssbRuntime, err := ssbruntime.Open(c.Context, ssbruntime.Config{
 			RepoPath:   c.String("repo-path"),
 			MasterSeed: []byte(botSeed),
+			GossipDB:   database,
 		}, logRuntime.Logger("ssb"))
 		if err != nil {
 			return fmt.Errorf("open ssb runtime for blobs: %w", err)

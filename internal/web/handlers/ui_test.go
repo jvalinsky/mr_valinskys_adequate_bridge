@@ -25,7 +25,13 @@ type mockSSBStatus struct{}
 
 func (m *mockSSBStatus) GetPeers() []PeerStatus {
 	return []PeerStatus{
-		{Addr: "1.2.3.4:8008", Feed: "@alice.ed25519"},
+		{
+			Addr:       "1.2.3.4:8008",
+			Feed:       "@alice.ed25519",
+			ReadBytes:  1024 * 1024 * 5, // 5MB
+			WriteBytes: 1024 * 500,      // 500KB
+			Latency:    150 * time.Millisecond,
+		},
 	}
 }
 func (m *mockSSBStatus) GetEBTState() map[string]map[string]int64 {
@@ -43,6 +49,9 @@ func TestHandleConnections(t *testing.T) {
 	body := fetchUI(t, database, "/connections")
 	if !strings.Contains(body, "1.2.3.4:8008") || !strings.Contains(body, "@alice.ed25519") {
 		t.Fatalf("connections page missing peer data: %s", body)
+	}
+	if !strings.Contains(body, "5.0 MB") || !strings.Contains(body, "500.0 KB") || !strings.Contains(body, "150ms") {
+		t.Fatalf("connections page missing bandwidth/latency data: %s", body)
 	}
 	if !strings.Contains(body, "EBT Frontiers") || !strings.Contains(body, "10") {
 		t.Fatalf("connections page missing EBT state: %s", body)
@@ -1517,6 +1526,12 @@ func (m *mockDatabase) ListPublishedMessagesGlobal(ctx context.Context, limit in
 func (m *mockDatabase) GetBlobBySSBRef(ctx context.Context, ssbBlobRef string) (*db.Blob, error) {
 	return nil, m.err
 }
+func (m *mockDatabase) GetKnownPeers(ctx context.Context) ([]db.KnownPeer, error) {
+	return nil, m.err
+}
+func (m *mockDatabase) AddKnownPeer(ctx context.Context, p db.KnownPeer) error {
+	return m.err
+}
 
 type mockPDSClient struct {
 	err error
@@ -1900,6 +1915,12 @@ func (m *granularMockDatabase) ListPublishedMessagesGlobal(ctx context.Context, 
 }
 func (m *granularMockDatabase) GetBlobBySSBRef(ctx context.Context, ssbBlobRef string) (*db.Blob, error) {
 	return nil, m.err
+}
+func (m *granularMockDatabase) GetKnownPeers(ctx context.Context) ([]db.KnownPeer, error) {
+	return nil, m.err
+}
+func (m *granularMockDatabase) AddKnownPeer(ctx context.Context, p db.KnownPeer) error {
+	return m.err
 }
 
 func TestUIHandlerDashboardAllErrors(t *testing.T) {

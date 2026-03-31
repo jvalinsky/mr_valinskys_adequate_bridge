@@ -67,8 +67,11 @@ type SSBStatusProvider interface {
 }
 
 type PeerStatus struct {
-	Addr string
-	Feed string
+	Addr       string
+	Feed       string
+	ReadBytes  int64
+	WriteBytes int64
+	Latency    time.Duration
 }
 
 // UIHandler serves admin pages backed by bridge database state.
@@ -127,8 +130,11 @@ func (h *UIHandler) handleConnections(w http.ResponseWriter, r *http.Request) {
 	tplPeers := make([]templates.PeerStatus, 0, len(peers))
 	for _, p := range peers {
 		tplPeers = append(tplPeers, templates.PeerStatus{
-			Addr: p.Addr,
-			Feed: p.Feed,
+			Addr:       p.Addr,
+			Feed:       p.Feed,
+			ReadBytes:  p.ReadBytes,
+			WriteBytes: p.WriteBytes,
+			Latency:    p.Latency,
 		})
 	}
 

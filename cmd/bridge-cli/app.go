@@ -69,6 +69,7 @@ func (a *BridgeApp) Init(ctx context.Context) error {
 		MasterSeed: []byte(a.cfg.BotSeed),
 		HMACKey:    a.cfg.HMACKey,
 		AppKey:     a.cfg.AppKey,
+		GossipDB:   a.db,
 	}, a.logger)
 	if err != nil {
 		return fmt.Errorf("init ssb runtime: %w", err)

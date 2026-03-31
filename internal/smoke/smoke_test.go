@@ -26,6 +26,11 @@ import (
 	websecurity "github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/web/security"
 )
 
+type mockSSBStatus struct{}
+
+func (m *mockSSBStatus) GetPeers() []handlers.PeerStatus          { return nil }
+func (m *mockSSBStatus) GetEBTState() map[string]map[string]int64 { return nil }
+
 func TestBridgeSmoke(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()
@@ -61,6 +66,7 @@ func TestBridgeSmoke(t *testing.T) {
 	ssbRuntime, err := ssbruntime.Open(ctx, ssbruntime.Config{
 		RepoPath:   filepath.Join(tmpDir, "ssb-repo"),
 		MasterSeed: []byte(seed),
+		GossipDB:   database,
 	}, log.New(io.Discard, "", 0))
 	if err != nil {
 		t.Fatalf("open ssb runtime: %v", err)
@@ -186,7 +192,7 @@ func TestBridgeSmoke(t *testing.T) {
 
 	router := chi.NewRouter()
 	router.Use(websecurity.BasicAuthMiddleware("admin", "smoke-pass"))
-	ui := handlers.NewUIHandler(database, log.New(io.Discard, "", 0), nil, nil)
+	ui := handlers.NewUIHandler(database, log.New(io.Discard, "", 0), nil, nil, &mockSSBStatus{})
 	ui.Mount(router)
 
 	fetch := func(path string) string {

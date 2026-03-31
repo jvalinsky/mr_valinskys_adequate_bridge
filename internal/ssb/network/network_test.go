@@ -47,7 +47,7 @@ func TestNetwork(t *testing.T) {
 	})
 
 	alicePub := aliceKeys.Public()
-	peer, err := client.Connect(ctx, addr, ed25519.PublicKey(alicePub[:]))
+	peer, err := client.Connect(ctx, addr, ed25519.PublicKey(alicePub[:]), nil)
 	if err != nil {
 		t.Fatalf("failed to connect: %v", err)
 	}

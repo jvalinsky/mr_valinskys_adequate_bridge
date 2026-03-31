@@ -3,13 +3,13 @@ module github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb
 go 1.25.0
 
 require (
+	filippo.io/edwards25519 v1.2.0
 	github.com/mattn/go-sqlite3 v1.14.16
 	golang.org/x/crypto v0.49.0
 	modernc.org/sqlite v1.23.0
 )
 
 require (
-	filippo.io/edwards25519 v1.2.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.3.0 // indirect
 	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51 // indirect

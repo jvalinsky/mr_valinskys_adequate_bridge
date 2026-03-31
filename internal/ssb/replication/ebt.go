@@ -68,6 +68,7 @@ type StateMatrix struct {
 	mu        sync.Mutex
 	frontiers map[string]NetworkFrontier
 	store     feedlog.FeedStore
+	updateCh  chan struct{}
 }
 
 func NewStateMatrix(basePath string, self *refs.FeedRef, store feedlog.FeedStore) (*StateMatrix, error) {
@@ -75,11 +76,23 @@ func NewStateMatrix(basePath string, self *refs.FeedRef, store feedlog.FeedStore
 		basePath:  basePath,
 		frontiers: make(map[string]NetworkFrontier),
 		store:     store,
+		updateCh:  make(chan struct{}, 1),
 	}
 	if self != nil {
 		sm.self = self.String()
 	}
 	return sm, nil
+}
+
+func (sm *StateMatrix) notify() {
+	select {
+	case sm.updateCh <- struct{}{}:
+	default:
+	}
+}
+
+func (sm *StateMatrix) WaitForUpdate(ctx context.Context) <-chan struct{} {
+	return sm.updateCh
 }
 
 func (sm *StateMatrix) initializeFeed(feed *refs.FeedRef, seq int64) {
@@ -102,6 +115,7 @@ func (sm *StateMatrix) initializeFeed(feed *refs.FeedRef, seq int64) {
 	}
 
 	sm.frontiers[sm.self] = selfFrontier
+	sm.notify()
 	log.Printf("[EBT DEBUG] initializeFeed: feed=%s seq=%d, Receive=true", feed.String(), seq)
 }
 
@@ -187,6 +201,7 @@ func (sm *StateMatrix) SetFeedSeq(feed *refs.FeedRef, seq int64) {
 	}
 
 	sm.frontiers[sm.self] = selfFrontier
+	sm.notify()
 	log.Printf("[EBT DEBUG] SetFeedSeq: feed=%s seq=%d, self_frontier now has %d feeds", feed.String(), seq, len(selfFrontier))
 }
 
@@ -418,6 +433,26 @@ func (h *EBTHandler) HandleDuplex(ctx context.Context, tx Writer, rx ByteSourceR
 		return err
 	}
 	log.Printf("[EBT DEBUG] HandleDuplex: initial state sent, waiting for peer frontier...")
+
+	// Launch background loop to monitor for local state changes and notify peer
+	go func() {
+		updateCh := h.stateMatrix.WaitForUpdate(ctx)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-updateCh:
+				// Something changed locally, check if we need to send new notes to peer
+				wants, err := h.stateMatrix.Changed(h.self, remoteFeed)
+				if err == nil && len(wants) > 0 {
+					data, err := json.Marshal(wants)
+					if err == nil {
+						_ = tx.Write(ctx, data)
+					}
+				}
+			}
+		}
+	}()
 
 	for {
 		log.Printf("[EBT DEBUG] HandleDuplex: about to call rx.Next(ctx)...")

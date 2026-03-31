@@ -125,6 +125,7 @@ func main() {
 			rt, err := ssbruntime.Open(c.Context, ssbruntime.Config{
 				RepoPath:   repoPath,
 				MasterSeed: []byte(botSeed),
+				GossipDB:   nil,
 			}, logger)
 			if err != nil {
 				return fmt.Errorf("open ssb runtime: %w", err)

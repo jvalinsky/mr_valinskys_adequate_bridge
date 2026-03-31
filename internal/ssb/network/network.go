@@ -13,6 +13,7 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/secretstream"
 	"golang.org/x/crypto/ed25519"
+	"sync/atomic"
 )
 
 type Conn struct {
@@ -26,6 +27,43 @@ type Peer struct {
 	KeyPair  *keys.KeyPair
 	rpc      *muxrpc.Server
 	manifest *muxrpc.Manifest
+
+	readBytes  atomic.Int64
+	writeBytes atomic.Int64
+	latency    atomic.Int64 // nanoseconds
+}
+
+func (p *Peer) ReadBytes() int64 {
+	return p.readBytes.Load()
+}
+
+func (p *Peer) WriteBytes() int64 {
+	return p.writeBytes.Load()
+}
+
+func (p *Peer) Latency() time.Duration {
+	return time.Duration(p.latency.Load())
+}
+
+func (p *Peer) SetLatency(d time.Duration) {
+	p.latency.Store(int64(d))
+}
+
+type statsConn struct {
+	net.Conn
+	p *Peer
+}
+
+func (s *statsConn) Read(p []byte) (n int, err error) {
+	n, err = s.Conn.Read(p)
+	s.p.readBytes.Add(int64(n))
+	return n, err
+}
+
+func (s *statsConn) Write(p []byte) (n int, err error) {
+	n, err = s.Conn.Write(p)
+	s.p.writeBytes.Add(int64(n))
+	return n, err
 }
 
 type secretConn struct {
@@ -142,14 +180,14 @@ func (s *Server) handleConn(conn net.Conn) {
 
 	peer := &Peer{
 		ID:      *remoteFeed,
-		Conn:    conn,
+		Conn:    shs,
 		KeyPair: s.keyPair,
 	}
 
 	s.addPeer(peer)
 	defer s.removePeer(peer)
 
-	var secretConn muxrpc.Conn = shs
+	var secretConn muxrpc.Conn = &statsConn{Conn: shs, p: peer}
 
 	_ = muxrpc.NewServer(s.ctx, secretConn, s.handler, s.newManifest())
 
@@ -174,6 +212,10 @@ func (s *secretConnWrapper) Close() error {
 
 func (s *secretConnWrapper) RemoteAddr() net.Addr {
 	return s.conn.RemoteAddr()
+}
+
+func (p *Peer) RPC() *muxrpc.Server {
+	return p.rpc
 }
 
 func (s *Server) addPeer(p *Peer) {
@@ -239,7 +281,7 @@ func NewClient(opts Options) *Client {
 	}
 }
 
-func (c *Client) Connect(ctx context.Context, addr string, remote ed25519.PublicKey) (*Peer, error) {
+func (c *Client) Connect(ctx context.Context, addr string, remote ed25519.PublicKey, handler muxrpc.Handler) (*Peer, error) {
 	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("network: failed to dial %s: %w", addr, err)
@@ -256,9 +298,21 @@ func (c *Client) Connect(ctx context.Context, addr string, remote ed25519.Public
 		return nil, fmt.Errorf("network: handshake failed: %w", err)
 	}
 
+	remoteFeed, err := GetFeedRefFromAddr(shs.RemoteAddr())
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("network: failed to get remote feed ref: %w", err)
+	}
+
 	peer := &Peer{
-		Conn:    conn,
+		ID:      *remoteFeed,
+		Conn:    shs,
 		KeyPair: c.keyPair,
+	}
+
+	sc := &statsConn{Conn: shs, p: peer}
+	if handler != nil {
+		peer.rpc = muxrpc.NewServer(ctx, sc, handler, nil)
 	}
 
 	return peer, nil

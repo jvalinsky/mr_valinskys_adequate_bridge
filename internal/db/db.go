@@ -593,6 +593,60 @@ func (db *DB) CountMessages(ctx context.Context) (int, error) {
 	return count, nil
 }
 
+// KnownPeer stores information about an SSB peer for gossip.
+type KnownPeer struct {
+	Addr      string
+	PubKey    []byte
+	LastSeen  *time.Time
+	CreatedAt time.Time
+}
+
+// AddKnownPeer inserts or updates a known peer.
+func (db *DB) AddKnownPeer(ctx context.Context, p KnownPeer) error {
+	_, err := db.conn.ExecContext(
+		ctx,
+		`INSERT INTO known_peers (addr, pubkey, last_seen)
+		 VALUES (?, ?, ?)
+		 ON CONFLICT(addr) DO UPDATE SET pubkey=excluded.pubkey, last_seen=excluded.last_seen`,
+		p.Addr, p.PubKey, p.LastSeen,
+	)
+	if err != nil {
+		return fmt.Errorf("add known peer %s: %w", p.Addr, err)
+	}
+	return nil
+}
+
+// AddKnownPeerAddr is a helper for gossip.Database interface.
+func (db *DB) AddKnownPeerAddr(ctx context.Context, addr string, pubKey []byte) error {
+	return db.AddKnownPeer(ctx, KnownPeer{
+		Addr:   addr,
+		PubKey: pubKey,
+	})
+}
+
+// GetKnownPeersBasic returns simple info for gossip.Database interface.
+// Since we can't import gossip.PeerInfo here due to module boundaries,
+// we might need a middle layer or just keep it as is.
+
+// GetKnownPeers returns all known peers.
+func (db *DB) GetKnownPeers(ctx context.Context) ([]KnownPeer, error) {
+	return querySlice(ctx, db.conn,
+		"list known peers",
+		`SELECT addr, pubkey, last_seen, created_at FROM known_peers ORDER BY created_at DESC`,
+		nil, scanKnownPeerRow,
+	)
+}
+
+func scanKnownPeerRow(rows *sql.Rows) (KnownPeer, error) {
+	var p KnownPeer
+	var lastSeen sql.NullTime
+	err := rows.Scan(&p.Addr, &p.PubKey, &lastSeen, &p.CreatedAt)
+	if lastSeen.Valid {
+		p.LastSeen = &lastSeen.Time
+	}
+	return p, err
+}
+
 // CountMessagesByDID returns the total number of stored messages for a specific author.
 func (db *DB) CountMessagesByDID(ctx context.Context, atDID string) (int, error) {
 	var count int

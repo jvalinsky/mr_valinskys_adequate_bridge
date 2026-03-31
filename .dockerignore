@@ -8,6 +8,11 @@ out
 *.sqlite
 *.db
 *.log
+*.out
+cover.out
+bridge-cli
+atproto-seed
+e2e-seed
 VARS
 mvab-local-atproto-live.env
 knowledge

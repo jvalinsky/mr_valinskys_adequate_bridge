@@ -623,6 +623,9 @@ const connectionsContent = `
                 <tr>
                     <th>Remote Address</th>
                     <th>SSB Feed ID</th>
+                    <th>Received</th>
+                    <th>Sent</th>
+                    <th>Latency</th>
                 </tr>
             </thead>
             <tbody>
@@ -630,6 +633,9 @@ const connectionsContent = `
                 <tr>
                     <td class="mono">{{.Addr}}</td>
                     <td class="mono">{{.Feed}}</td>
+                    <td>{{humanizeBytes .ReadBytes}}</td>
+                    <td>{{humanizeBytes .WriteBytes}}</td>
+                    <td>{{if .Latency}}{{.Latency}}{{else}}-{{end}}</td>
                 </tr>
                 {{end}}
             </tbody>
@@ -638,6 +644,50 @@ const connectionsContent = `
     {{else}}
     <div class="empty">No active SSB peers connected.</div>
     {{end}}
+</section>
+
+<section class="section section-pad">
+    <h2 class="page-title" style="font-size:1.2rem">Known Peers</h2>
+    <p class="subtitle">Persisted peers that the bridge will attempt to maintain connections with.</p>
+    {{if .KnownPeers}}
+    <div class="table-wrap" style="margin-top:10px">
+        <table>
+            <thead>
+                <tr>
+                    <th>Address</th>
+                    <th>Public Key (B64)</th>
+                    <th>Created</th>
+                </tr>
+            </thead>
+            <tbody>
+                {{range .KnownPeers}}
+                <tr>
+                    <td class="mono">{{.Addr}}</td>
+                    <td class="mono truncate" title="{{.PubKey}}">{{.PubKey}}</td>
+                    <td>{{fmtTime .CreatedAt}}</td>
+                </tr>
+                {{end}}
+            </tbody>
+        </table>
+    </div>
+    {{else}}
+    <div class="empty">No known peers saved.</div>
+    {{end}}
+
+    <div style="margin-top:24px; border-top:1px solid var(--line); padding-top:20px">
+        <h3 class="metric-label">Add Known Peer</h3>
+        <form action="/connections/add" method="POST" style="display:grid; gap:12px; grid-template-columns: 1fr 1fr auto; align-items: end; margin-top:8px">
+            <div class="field">
+                <label>Address (host:port)</label>
+                <input type="text" name="addr" placeholder="1.2.3.4:8008" required>
+            </div>
+            <div class="field">
+                <label>Public Key (Base64)</label>
+                <input type="text" name="pubkey" placeholder="...ed25519" required>
+            </div>
+            <button type="submit" class="button">Add Peer</button>
+        </form>
+    </div>
 </section>
 
 <section class="section section-pad">
@@ -1547,15 +1597,26 @@ type PostData struct {
 
 // ConnectionsData is the template model for the connections page.
 type ConnectionsData struct {
-	Chrome   PageChrome
-	Peers    []PeerStatus
-	EBTState map[string]map[string]int64
+	Chrome     PageChrome
+	Peers      []PeerStatus
+	KnownPeers []KnownPeer
+	EBTState   map[string]map[string]int64
 }
 
 // PeerStatus represents the status of a single connected SSB peer.
 type PeerStatus struct {
-	Addr string
-	Feed string
+	Addr       string
+	Feed       string
+	ReadBytes  int64
+	WriteBytes int64
+	Latency    time.Duration
+}
+
+// KnownPeer represents a persisted known peer in the database.
+type KnownPeer struct {
+	Addr      string
+	PubKey    string
+	CreatedAt time.Time
 }
 
 const postContent = `
@@ -1663,9 +1724,21 @@ func mustPageTemplate(name, content string) *template.Template {
 	return template.Must(template.New(name).Funcs(template.FuncMap{
 		"fmtTime": func(t time.Time) string {
 			if t.IsZero() {
-				return ""
+				return "-"
 			}
-			return t.Format(time.RFC3339)
+			return t.Format("2006-01-02 15:04:05")
+		},
+		"humanizeBytes": func(b int64) string {
+			const unit = 1024
+			if b < unit {
+				return fmt.Sprintf("%d B", b)
+			}
+			div, exp := int64(unit), 0
+			for n := b / unit; n >= unit; n /= unit {
+				div *= unit
+				exp++
+			}
+			return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
 		},
 		"navClass": func(activeNav, tab string) string {
 			if activeNav == tab {
