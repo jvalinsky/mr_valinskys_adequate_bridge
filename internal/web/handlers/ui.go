@@ -3,6 +3,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -45,11 +46,13 @@ type Database interface {
 	GetPublishFailures(ctx context.Context, limit int) ([]db.Message, error)
 	GetRecentBlobs(ctx context.Context, limit int) ([]db.Blob, error)
 	GetAllBridgeState(ctx context.Context) ([]db.BridgeState, error)
-	GetLatestDeferredReason(ctx context.Context) (string, bool, error)
+	GetKnownPeers(ctx context.Context) ([]db.KnownPeer, error)
+	AddKnownPeer(ctx context.Context, p db.KnownPeer) error
 	ResetMessageForRetry(ctx context.Context, atURI string) error
+	GetBlobBySSBRef(ctx context.Context, ssbBlobRef string) (*db.Blob, error)
+	GetLatestDeferredReason(ctx context.Context) (string, bool, error)
 	GetBridgedAccount(ctx context.Context, atDID string) (*db.BridgedAccount, error)
 	ListPublishedMessagesGlobal(ctx context.Context, limit int) ([]db.Message, error)
-	GetBlobBySSBRef(ctx context.Context, ssbBlobRef string) (*db.Blob, error)
 }
 
 // BlobStore defines the blob retrieval surface for the UI.
@@ -104,17 +107,37 @@ func (h *UIHandler) Mount(r chi.Router) {
 	r.Get("/feed", h.handleFeed)
 	r.Get("/blobs/view", h.handleBlobView)
 	r.Get("/connections", h.handleConnections)
+	r.Post("/connections/add", h.handleConnectionAdd)
 }
 
 func (h *UIHandler) handleConnections(w http.ResponseWriter, r *http.Request) {
-	peers := h.ssbStatus.GetPeers()
-	ebtState := h.ssbStatus.GetEBTState()
+	var peers []PeerStatus
+	var ebtState map[string]map[string]int64
+	if h.ssbStatus != nil {
+		peers = h.ssbStatus.GetPeers()
+		ebtState = h.ssbStatus.GetEBTState()
+	}
+
+	knownPeers, err := h.db.GetKnownPeers(r.Context())
+	if err != nil {
+		h.writeInternalError(w, "handleConnections", "failed to load known peers", err)
+		return
+	}
 
 	tplPeers := make([]templates.PeerStatus, 0, len(peers))
 	for _, p := range peers {
 		tplPeers = append(tplPeers, templates.PeerStatus{
 			Addr: p.Addr,
 			Feed: p.Feed,
+		})
+	}
+
+	tplKnown := make([]templates.KnownPeer, 0, len(knownPeers))
+	for _, p := range knownPeers {
+		tplKnown = append(tplKnown, templates.KnownPeer{
+			Addr:      p.Addr,
+			PubKey:    base64.StdEncoding.EncodeToString(p.PubKey),
+			CreatedAt: p.CreatedAt,
 		})
 	}
 
@@ -126,8 +149,9 @@ func (h *UIHandler) handleConnections(w http.ResponseWriter, r *http.Request) {
 				{Label: "Connections"},
 			},
 		},
-		Peers:    tplPeers,
-		EBTState: ebtState,
+		Peers:      tplPeers,
+		KnownPeers: tplKnown,
+		EBTState:   ebtState,
 	}
 
 	if err := templates.RenderConnections(w, data); err != nil {
@@ -138,6 +162,40 @@ func (h *UIHandler) handleConnections(w http.ResponseWriter, r *http.Request) {
 func (h *UIHandler) writeInternalError(w http.ResponseWriter, handler, message string, err error) {
 	h.logger.Printf("event=handler_error handler=%s error=%v", handler, err)
 	http.Error(w, message, http.StatusInternalServerError)
+}
+
+func (h *UIHandler) handleConnectionAdd(w http.ResponseWriter, r *http.Request) {
+	addr := strings.TrimSpace(r.FormValue("addr"))
+	pubkeyB64 := strings.TrimSpace(r.FormValue("pubkey"))
+
+	if addr == "" || pubkeyB64 == "" {
+		http.Error(w, "missing addr or pubkey", http.StatusBadRequest)
+		return
+	}
+
+	// Pubkey should be base64
+	pubkey, err := base64.StdEncoding.DecodeString(pubkeyB64)
+	if err != nil {
+		http.Error(w, "invalid pubkey base64", http.StatusBadRequest)
+		return
+	}
+
+	if len(pubkey) != 32 {
+		http.Error(w, "pubkey must be 32 bytes", http.StatusBadRequest)
+		return
+	}
+
+	p := db.KnownPeer{
+		Addr:   addr,
+		PubKey: pubkey,
+	}
+
+	if err := h.db.AddKnownPeer(r.Context(), p); err != nil {
+		h.writeInternalError(w, "handleConnectionAdd", "failed to save peer", err)
+		return
+	}
+
+	http.Redirect(w, r, "/connections", http.StatusSeeOther)
 }
 
 func (h *UIHandler) handleHealthz(w http.ResponseWriter, r *http.Request) {

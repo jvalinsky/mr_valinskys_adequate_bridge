@@ -130,30 +130,55 @@ func (b *Bridge) bridgeProfileBlobs(ctx context.Context, atDID string, mapped ma
 	if err := json.Unmarshal(rawRecordJSON, &profile); err != nil {
 		return fmt.Errorf("decode profile blobs: %w", err)
 	}
-	if profile.Avatar == nil {
-		return nil
+
+	if profile.Avatar != nil {
+		candidate := blobCandidate{
+			CID:      profile.Avatar.Ref.String(),
+			MimeType: profile.Avatar.MimeType,
+			Size:     profile.Avatar.Size,
+			Label:    "avatar",
+		}
+		blobRef, err := b.ensureBlob(ctx, atDID, candidate)
+		if err != nil {
+			return err
+		}
+
+		image := map[string]interface{}{
+			"link": blobRef,
+		}
+		if candidate.MimeType != "" {
+			image["type"] = candidate.MimeType
+		}
+		if candidate.Size > 0 {
+			image["size"] = candidate.Size
+		}
+		mapped["image"] = image
 	}
 
-	candidate := blobCandidate{
-		CID:      profile.Avatar.Ref.String(),
-		MimeType: profile.Avatar.MimeType,
-		Size:     profile.Avatar.Size,
-	}
-	blobRef, err := b.ensureBlob(ctx, atDID, candidate)
-	if err != nil {
-		return err
+	if profile.Banner != nil {
+		candidate := blobCandidate{
+			CID:      profile.Banner.Ref.String(),
+			MimeType: profile.Banner.MimeType,
+			Size:     profile.Banner.Size,
+			Label:    "banner",
+		}
+		blobRef, err := b.ensureBlob(ctx, atDID, candidate)
+		if err != nil {
+			return err
+		}
+
+		banner := map[string]interface{}{
+			"link": blobRef,
+		}
+		if candidate.MimeType != "" {
+			banner["type"] = candidate.MimeType
+		}
+		if candidate.Size > 0 {
+			banner["size"] = candidate.Size
+		}
+		mapped["banner"] = banner
 	}
 
-	image := map[string]interface{}{
-		"link": blobRef,
-	}
-	if candidate.MimeType != "" {
-		image["type"] = candidate.MimeType
-	}
-	if candidate.Size > 0 {
-		image["size"] = candidate.Size
-	}
-	mapped["image"] = image
 	return nil
 }
 
@@ -165,7 +190,10 @@ func postBlobCandidates(post *appbsky.FeedPost) []blobCandidate {
 		return imageCandidates(post.Embed.EmbedImages.Images)
 	}
 	if post.Embed.EmbedVideo != nil {
-		return []blobCandidate{videoCandidate(post.Embed.EmbedVideo, 0)}
+		return videoCandidates(post.Embed.EmbedVideo, 0)
+	}
+	if post.Embed.EmbedExternal != nil && post.Embed.EmbedExternal.External != nil && post.Embed.EmbedExternal.External.Thumb != nil {
+		return []blobCandidate{externalCandidate(post.Embed.EmbedExternal.External, 0)}
 	}
 	if post.Embed.EmbedRecordWithMedia != nil && post.Embed.EmbedRecordWithMedia.Media != nil {
 		media := post.Embed.EmbedRecordWithMedia.Media
@@ -173,7 +201,10 @@ func postBlobCandidates(post *appbsky.FeedPost) []blobCandidate {
 			return imageCandidates(media.EmbedImages.Images)
 		}
 		if media.EmbedVideo != nil {
-			return []blobCandidate{videoCandidate(media.EmbedVideo, 0)}
+			return videoCandidates(media.EmbedVideo, 0)
+		}
+		if media.EmbedExternal != nil && media.EmbedExternal.External != nil && media.EmbedExternal.External.Thumb != nil {
+			return []blobCandidate{externalCandidate(media.EmbedExternal.External, 0)}
 		}
 	}
 	return nil
@@ -189,7 +220,7 @@ func imageCandidates(images []*appbsky.EmbedImages_Image) []blobCandidate {
 			CID:      image.Image.Ref.String(),
 			MimeType: image.Image.MimeType,
 			Size:     image.Image.Size,
-			Label:    labelOrFallback(image.Alt, i+1),
+			Label:    labelOrFallback(image.Alt, "image", i+1),
 		}
 		if image.AspectRatio != nil {
 			candidate.Width = int(image.AspectRatio.Width)
@@ -200,31 +231,48 @@ func imageCandidates(images []*appbsky.EmbedImages_Image) []blobCandidate {
 	return candidates
 }
 
-func videoCandidate(video *appbsky.EmbedVideo, index int) blobCandidate {
-	label := ""
-	if video != nil && video.Alt != nil {
-		label = *video.Alt
+func videoCandidates(video *appbsky.EmbedVideo, index int) []blobCandidate {
+	if video == nil {
+		return nil
 	}
+	candidates := make([]blobCandidate, 0, 1)
+	if video.Video != nil {
+		label := ""
+		if video.Alt != nil {
+			label = *video.Alt
+		}
+		cand := blobCandidate{
+			CID:      video.Video.Ref.String(),
+			MimeType: video.Video.MimeType,
+			Size:     video.Video.Size,
+			Label:    labelOrFallback(label, "video", index+1),
+		}
+		if video.AspectRatio != nil {
+			cand.Width = int(video.AspectRatio.Width)
+			cand.Height = int(video.AspectRatio.Height)
+		}
+		candidates = append(candidates, cand)
+	}
+	return candidates
+}
+
+func externalCandidate(external *appbsky.EmbedExternal_External, index int) blobCandidate {
 	candidate := blobCandidate{
-		Label: labelOrFallback(label, index+1),
+		Label: labelOrFallback(external.Title, "external thumbnail", index+1),
 	}
-	if video == nil || video.Video == nil {
+	if external.Thumb == nil {
 		return candidate
 	}
-	candidate.CID = video.Video.Ref.String()
-	candidate.MimeType = video.Video.MimeType
-	candidate.Size = video.Video.Size
-	if video.AspectRatio != nil {
-		candidate.Width = int(video.AspectRatio.Width)
-		candidate.Height = int(video.AspectRatio.Height)
-	}
+	candidate.CID = external.Thumb.Ref.String()
+	candidate.MimeType = external.Thumb.MimeType
+	candidate.Size = external.Thumb.Size
 	return candidate
 }
 
-func labelOrFallback(label string, index int) string {
+func labelOrFallback(label, fallbackType string, index int) string {
 	label = strings.TrimSpace(label)
 	if label == "" {
-		return fmt.Sprintf("bridged attachment %d", index)
+		return fmt.Sprintf("bridged %s %d", fallbackType, index)
 	}
 	return label
 }
@@ -255,6 +303,7 @@ func appendMention(mapped map[string]interface{}, mention map[string]interface{}
 	}
 	if name := strings.TrimSpace(asString(mention["name"])); name != "" {
 		normalized["name"] = name
+		normalized["alt"] = name
 	}
 	if size, ok := mention["size"].(int64); ok && size > 0 {
 		normalized["size"] = size

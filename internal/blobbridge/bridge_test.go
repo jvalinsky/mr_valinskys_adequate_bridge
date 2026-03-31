@@ -153,7 +153,7 @@ func TestBridgeRecordBlobsMapsPostImagesToMentionsAndMarkdown(t *testing.T) {
 	}
 }
 
-func TestBridgeRecordBlobsIgnoresExternalThumbs(t *testing.T) {
+func TestBridgeRecordBlobsMapsExternalThumbsToMentionsAndMarkdown(t *testing.T) {
 	database, err := db.Open(":memory:")
 	if err != nil {
 		t.Fatalf("open db: %v", err)
@@ -162,20 +162,25 @@ func TestBridgeRecordBlobsIgnoresExternalThumbs(t *testing.T) {
 
 	blobStore := newTestBlobStore()
 
-	bridge := New(database, blobStore, nil, log.New(io.Discard, "", 0))
+	bridge := New(
+		database,
+		blobStore,
+		&fakeLexClient{payload: []byte("fake-thumb-bytes")},
+		log.New(io.Discard, "", 0),
+	)
 
 	mapped := map[string]interface{}{
 		"type": "post",
-		"text": "hello",
+		"text": "Check this out",
 	}
 	raw := []byte(`{
-		"text":"hello",
+		"text":"Check this out",
 		"embed":{
 			"$type":"app.bsky.embed.external",
 			"external":{
 				"uri":"https://example.com",
-				"title":"Example",
-				"description":"Desc",
+				"title":"Example Title",
+				"description":"Example Description",
 				"thumb":{"$type":"blob","ref":{"$link":"bafyreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"},"mimeType":"image/jpeg","size":321}
 			}
 		},
@@ -186,11 +191,15 @@ func TestBridgeRecordBlobsIgnoresExternalThumbs(t *testing.T) {
 		t.Fatalf("bridge record blobs: %v", err)
 	}
 
-	if _, ok := mapped["mentions"]; ok {
-		t.Fatalf("expected no blob mention for external thumb: %+v", mapped)
+	mentions, ok := mapped["mentions"].([]map[string]interface{})
+	if !ok || len(mentions) != 1 {
+		t.Fatalf("expected one blob mention for external thumb, got %+v", mapped["mentions"])
 	}
-	if mapped["text"] != "hello" {
-		t.Fatalf("expected unchanged text, got %v", mapped["text"])
+	if mentions[0]["name"] != "Example Title" || mentions[0]["type"] != "image/jpeg" {
+		t.Fatalf("unexpected blob mention metadata: %+v", mentions[0])
+	}
+	if !strings.Contains(mapped["text"].(string), "![Example Title]") {
+		t.Fatalf("expected markdown attachment in text, got %v", mapped["text"])
 	}
 }
 
@@ -373,17 +382,18 @@ func TestImageCandidatesWithAspectRatio(t *testing.T) {
 func TestLabelOrFallback(t *testing.T) {
 	tests := []struct {
 		label string
+		typ   string
 		index int
 		want  string
 	}{
-		{"", 1, "bridged attachment 1"},
-		{"  ", 2, "bridged attachment 2"},
-		{"Description", 3, "Description"},
+		{"", "attachment", 1, "bridged attachment 1"},
+		{"  ", "blob", 2, "bridged blob 2"},
+		{"Description", "any", 3, "Description"},
 	}
 	for _, tt := range tests {
-		got := labelOrFallback(tt.label, tt.index)
+		got := labelOrFallback(tt.label, tt.typ, tt.index)
 		if got != tt.want {
-			t.Errorf("labelOrFallback(%q, %d) = %q, want %q", tt.label, tt.index, got, tt.want)
+			t.Errorf("labelOrFallback(%q, %q, %d) = %q, want %q", tt.label, tt.typ, tt.index, got, tt.want)
 		}
 	}
 }
@@ -479,22 +489,38 @@ func TestBridgeProfileBlobsUnmarshalError(t *testing.T) {
 	}
 }
 
-func TestBridgeProfileBlobsNoAvatar(t *testing.T) {
+func TestBridgeRecordBlobsMapsProfileAvatarAndBanner(t *testing.T) {
 	database, err := db.Open(":memory:")
 	if err != nil {
 		t.Fatalf("open db: %v", err)
 	}
 	defer database.Close()
 
-	bridge := New(database, newTestBlobStore(), &fakeLexClient{}, log.New(io.Discard, "", 0))
-	mapped := map[string]interface{}{}
-	raw := []byte(`{"displayName":"Alice"}`)
-	err = bridge.BridgeRecordBlobs(context.Background(), "did:plc:alice", mapper.RecordTypeProfile, mapped, raw)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	blobStore := newTestBlobStore()
+	bridge := New(
+		database,
+		blobStore,
+		&fakeLexClient{payload: []byte("fake-blob")},
+		log.New(io.Discard, "", 0),
+	)
+
+	mapped := map[string]interface{}{"type": "about"}
+	validCID := "bafyreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"
+	raw := []byte(fmt.Sprintf(`{
+		"displayName":"Alice",
+		"avatar":{"$type":"blob","ref":{"$link":"%s"},"mimeType":"image/png","size":10},
+		"banner":{"$type":"blob","ref":{"$link":"%s"},"mimeType":"image/jpeg","size":20}
+	}`, validCID, validCID))
+
+	if err := bridge.BridgeRecordBlobs(context.Background(), "did:plc:alice", mapper.RecordTypeProfile, mapped, raw); err != nil {
+		t.Fatalf("bridge record blobs: %v", err)
 	}
-	if _, ok := mapped["image"]; ok {
-		t.Fatal("expected no image for profile without avatar")
+
+	if img, ok := mapped["image"].(map[string]interface{}); !ok || img["type"] != "image/png" {
+		t.Errorf("avatar missing or wrong: %+v", mapped["image"])
+	}
+	if bnr, ok := mapped["banner"].(map[string]interface{}); !ok || bnr["type"] != "image/jpeg" {
+		t.Errorf("banner missing or wrong: %+v", mapped["banner"])
 	}
 }
 
@@ -581,32 +607,37 @@ func TestPostBlobCandidatesRecordWithMediaNilMedia(t *testing.T) {
 }
 
 func TestVideoCandidateNilVideo(t *testing.T) {
-	c := videoCandidate(nil, 0)
-	if c.CID != "" {
-		t.Errorf("expected empty CID for nil video, got %s", c.CID)
-	}
-	if c.Label != "bridged attachment 1" {
-		t.Errorf("expected fallback label, got %s", c.Label)
+	cs := videoCandidates(nil, 0)
+	if len(cs) != 0 {
+		t.Errorf("expected 0 candidates for nil video, got %d", len(cs))
 	}
 }
 
 func TestVideoCandidateNilAlt(t *testing.T) {
-	c := videoCandidate(&appbsky.EmbedVideo{
+	cs := videoCandidates(&appbsky.EmbedVideo{
 		Alt:   nil,
 		Video: &lexutil.LexBlob{MimeType: "video/mp4", Size: 100},
 	}, 2)
-	if c.Label != "bridged attachment 3" {
+	if len(cs) == 0 {
+		t.Fatal("expected at least 1 candidate")
+	}
+	c := cs[0]
+	if c.Label != "bridged video 3" {
 		t.Errorf("expected fallback label for nil alt, got %s", c.Label)
 	}
 }
 
 func TestVideoCandidateWithAspectRatio(t *testing.T) {
 	alt := "clip"
-	c := videoCandidate(&appbsky.EmbedVideo{
+	cs := videoCandidates(&appbsky.EmbedVideo{
 		Alt:         &alt,
 		Video:       &lexutil.LexBlob{MimeType: "video/mp4", Size: 999},
 		AspectRatio: &appbsky.EmbedDefs_AspectRatio{Width: 1280, Height: 720},
 	}, 0)
+	if len(cs) == 0 {
+		t.Fatal("expected at least 1 candidate")
+	}
+	c := cs[0]
 	if c.Width != 1280 || c.Height != 720 {
 		t.Errorf("expected 1280x720, got %dx%d", c.Width, c.Height)
 	}
@@ -614,15 +645,12 @@ func TestVideoCandidateWithAspectRatio(t *testing.T) {
 
 func TestVideoCandidateNilVideoBlob(t *testing.T) {
 	alt := "no blob"
-	c := videoCandidate(&appbsky.EmbedVideo{
+	cs := videoCandidates(&appbsky.EmbedVideo{
 		Alt:   &alt,
 		Video: nil,
 	}, 0)
-	if c.CID != "" {
-		t.Errorf("expected empty CID for nil video blob, got %s", c.CID)
-	}
-	if c.Label != "no blob" {
-		t.Errorf("expected label 'no blob', got %s", c.Label)
+	if len(cs) != 0 {
+		t.Errorf("expected 0 candidates for nil video blob, got %d", len(cs))
 	}
 }
 
