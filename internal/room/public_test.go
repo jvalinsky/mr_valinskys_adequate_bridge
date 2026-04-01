@@ -3,7 +3,6 @@ package room
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -348,12 +347,13 @@ func TestBridgeRoomHandlerBotDetailPage404ForInactiveDID(t *testing.T) {
 	}
 }
 
-func TestBridgeRoomHandlerCreateInviteJSONFailsOutsideOpenMode(t *testing.T) {
+func TestBridgeRoomHandlerCreateInviteDelegatesToStockOutsideOpenMode(t *testing.T) {
 	roomConfig := newTestRoomConfig(roomdb.ModeRestricted)
 	var delegated bool
 	stockHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		delegated = true
-		w.WriteHeader(http.StatusOK)
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = io.WriteString(w, "stock invite route")
 	})
 	handler := newBridgeRoomHandler(stockHandler, roomConfig, nil, nil)
 
@@ -362,25 +362,14 @@ func TestBridgeRoomHandlerCreateInviteJSONFailsOutsideOpenMode(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, req)
 
-	if delegated {
-		t.Fatal("expected wrapper to block stock create-invite route outside open mode")
+	if !delegated {
+		t.Fatal("expected wrapper to delegate create-invite route")
 	}
-	if recorder.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d", recorder.Code)
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("expected delegated status code, got %d", recorder.Code)
 	}
-
-	var response struct {
-		Status string `json:"status"`
-		Error  string `json:"error"`
-	}
-	if err := json.NewDecoder(bytes.NewReader(recorder.Body.Bytes())).Decode(&response); err != nil {
-		t.Fatalf("decode json response: %v", err)
-	}
-	if response.Status != "failed" {
-		t.Fatalf("expected failed status, got %q", response.Status)
-	}
-	if !strings.Contains(response.Error, "room mode is open") {
-		t.Fatalf("expected explanatory error, got %q", response.Error)
+	if !strings.Contains(recorder.Body.String(), "stock invite route") {
+		t.Fatalf("expected delegated response body, got %q", recorder.Body.String())
 	}
 }
 

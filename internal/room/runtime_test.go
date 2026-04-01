@@ -9,9 +9,11 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -286,11 +288,625 @@ func TestRuntimeCreateInviteJSONFailsOutsideOpenMode(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		t.Fatalf("decode invite response: %v", err)
 	}
-	if payload.Status != "failed" {
-		t.Fatalf("expected failed status, got %q", payload.Status)
+	if payload.Status != "error" {
+		t.Fatalf("expected error status, got %q", payload.Status)
 	}
-	if !strings.Contains(payload.Error, "room mode is open") {
+	if !strings.Contains(payload.Error, "authenticated member role") {
 		t.Fatalf("expected explanatory error, got %q", payload.Error)
+	}
+}
+
+func TestRuntimeCreateInviteHTMLRedirectsToLoginOutsideOpenMode(t *testing.T) {
+	rt := startTestRuntime(t, "community", nil)
+	client := newNoRedirectClient(2 * time.Second)
+
+	req, err := http.NewRequest(http.MethodGet, "http://"+rt.HTTPAddr()+"/create-invite", nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("create invite request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d", resp.StatusCode)
+	}
+	loc := resp.Header.Get("Location")
+	if !strings.Contains(loc, "/login?next=%2Fcreate-invite") {
+		t.Fatalf("expected login redirect with next parameter, got %q", loc)
+	}
+}
+
+func TestRuntimeCreateInviteCommunityModeAllowsAuthenticatedMember(t *testing.T) {
+	rt := startTestRuntime(t, "community", nil)
+	username := seedFallbackMember(t, rt, roomdb.RoleMember, 0x21, "pw-member")
+	client := loginRuntimeMember(t, rt, username, "pw-member", "/create-invite")
+
+	req, err := http.NewRequest(http.MethodPost, "http://"+rt.HTTPAddr()+"/create-invite", nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("create invite request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d\nbody: %s", resp.StatusCode, string(body))
+	}
+}
+
+func TestRuntimeCreateInviteRestrictedModeRolePolicy(t *testing.T) {
+	tests := []struct {
+		name       string
+		role       roomdb.Role
+		expectCode int
+	}{
+		{name: "member denied", role: roomdb.RoleMember, expectCode: http.StatusForbidden},
+		{name: "moderator allowed", role: roomdb.RoleModerator, expectCode: http.StatusOK},
+		{name: "admin allowed", role: roomdb.RoleAdmin, expectCode: http.StatusOK},
+	}
+
+	for i, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := startTestRuntime(t, "restricted", nil)
+			username := seedFallbackMember(t, rt, tc.role, byte(0x30+i), "pw-restricted")
+			client := loginRuntimeMember(t, rt, username, "pw-restricted", "/create-invite")
+
+			req, err := http.NewRequest(http.MethodPost, "http://"+rt.HTTPAddr()+"/create-invite", nil)
+			if err != nil {
+				t.Fatalf("build request: %v", err)
+			}
+			req.Header.Set("Accept", "application/json")
+
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatalf("create invite request failed: %v", err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != tc.expectCode {
+				body, _ := io.ReadAll(resp.Body)
+				t.Fatalf("expected %d, got %d\nbody: %s", tc.expectCode, resp.StatusCode, string(body))
+			}
+		})
+	}
+}
+
+func TestRuntimeJoinFacadeSupportsTokenAndInviteAliases(t *testing.T) {
+	rt := startTestRuntime(t, "open", nil)
+	client := &http.Client{Timeout: 2 * time.Second}
+	token := createInviteAndExtractToken(t, client, rt.HTTPAddr())
+
+	facadeResp, err := client.Get("http://" + rt.HTTPAddr() + "/join?invite=" + url.QueryEscape(token) + "&encoding=json")
+	if err != nil {
+		t.Fatalf("join facade json request failed: %v", err)
+	}
+	defer facadeResp.Body.Close()
+
+	if facadeResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(facadeResp.Body)
+		t.Fatalf("expected 200, got %d\nbody: %s", facadeResp.StatusCode, string(body))
+	}
+
+	var payload struct {
+		Status string `json:"status"`
+		Invite string `json:"invite"`
+		PostTo string `json:"postTo"`
+	}
+	if err := json.NewDecoder(facadeResp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode façade payload: %v", err)
+	}
+	if payload.Invite != token {
+		t.Fatalf("expected invite token %q, got %q", token, payload.Invite)
+	}
+	if !strings.Contains(payload.PostTo, "/invite/consume") {
+		t.Fatalf("expected postTo consume endpoint, got %q", payload.PostTo)
+	}
+
+	htmlResp, err := client.Get("http://" + rt.HTTPAddr() + "/join?token=" + url.QueryEscape(token) + "&invite=bad-token")
+	if err != nil {
+		t.Fatalf("join html request failed: %v", err)
+	}
+	defer htmlResp.Body.Close()
+
+	if htmlResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(htmlResp.Body)
+		t.Fatalf("expected 200, got %d\nbody: %s", htmlResp.StatusCode, string(body))
+	}
+
+	body, _ := io.ReadAll(htmlResp.Body)
+	bodyStr := string(body)
+	if !strings.Contains(bodyStr, `id="claim-invite-uri"`) {
+		t.Fatalf("join page missing claim link\nbody:\n%s", bodyStr)
+	}
+	if !strings.Contains(bodyStr, "claim-http-invite") {
+		t.Fatalf("join page missing claim-http-invite action\nbody:\n%s", bodyStr)
+	}
+	if !strings.Contains(bodyStr, "/join-fallback?token=") {
+		t.Fatalf("join page missing fallback link\nbody:\n%s", bodyStr)
+	}
+}
+
+func TestRuntimeJoinFallbackAndManualRoutes(t *testing.T) {
+	rt := startTestRuntime(t, "open", nil)
+	client := &http.Client{Timeout: 2 * time.Second}
+	token := createInviteAndExtractToken(t, client, rt.HTTPAddr())
+
+	fallbackResp, err := client.Get("http://" + rt.HTTPAddr() + "/join-fallback?token=" + url.QueryEscape(token))
+	if err != nil {
+		t.Fatalf("fallback route failed: %v", err)
+	}
+	defer fallbackResp.Body.Close()
+
+	if fallbackResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for fallback page, got %d", fallbackResp.StatusCode)
+	}
+
+	manualResp, err := client.Get("http://" + rt.HTTPAddr() + "/join-manually?token=" + url.QueryEscape(token))
+	if err != nil {
+		t.Fatalf("manual route failed: %v", err)
+	}
+	defer manualResp.Body.Close()
+
+	if manualResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for manual page, got %d", manualResp.StatusCode)
+	}
+	body, _ := io.ReadAll(manualResp.Body)
+	if !strings.Contains(string(body), `action="/invite/consume"`) {
+		t.Fatalf("manual page missing consume form action\nbody:\n%s", string(body))
+	}
+}
+
+func TestRuntimeInviteConsumeJSONSuccess(t *testing.T) {
+	rt := startTestRuntime(t, "open", nil)
+	client := &http.Client{Timeout: 2 * time.Second}
+	token := createInviteAndExtractToken(t, client, rt.HTTPAddr())
+
+	memberKey, err := keys.Generate()
+	if err != nil {
+		t.Fatalf("generate member key: %v", err)
+	}
+
+	body := fmt.Sprintf(`{"invite":%q,"id":%q}`, token, memberKey.FeedRef().String())
+	req, err := http.NewRequest(http.MethodPost, "http://"+rt.HTTPAddr()+"/invite/consume", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("build consume request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("consume request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d\nbody: %s", resp.StatusCode, string(body))
+	}
+
+	var payload struct {
+		Status             string `json:"status"`
+		MultiserverAddress string `json:"multiserverAddress"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode consume response: %v", err)
+	}
+	if payload.Status != "successful" {
+		t.Fatalf("expected successful status, got %q", payload.Status)
+	}
+	wantAddr := "net:" + rt.Addr() + "~shs:" + rt.RoomFeed().String()
+	if payload.MultiserverAddress != wantAddr {
+		t.Fatalf("expected multiserver address %q, got %q", wantAddr, payload.MultiserverAddress)
+	}
+
+	joinResp, err := client.Get("http://" + rt.HTTPAddr() + "/join?token=" + url.QueryEscape(token))
+	if err != nil {
+		t.Fatalf("join request failed: %v", err)
+	}
+	defer joinResp.Body.Close()
+	if joinResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected token to be consumed, got status %d", joinResp.StatusCode)
+	}
+}
+
+func TestRuntimeInviteConsumeDeniedKeyDoesNotConsumeInvite(t *testing.T) {
+	rt := startTestRuntime(t, "open", nil)
+	client := &http.Client{Timeout: 2 * time.Second}
+	token := createInviteAndExtractToken(t, client, rt.HTTPAddr())
+
+	memberKey, err := keys.Generate()
+	if err != nil {
+		t.Fatalf("generate member key: %v", err)
+	}
+	if err := rt.roomDB.DeniedKeys().Add(context.Background(), memberKey.FeedRef(), "test denied"); err != nil {
+		t.Fatalf("add denied key: %v", err)
+	}
+
+	body := fmt.Sprintf(`{"invite":%q,"id":%q}`, token, memberKey.FeedRef().String())
+	req, err := http.NewRequest(http.MethodPost, "http://"+rt.HTTPAddr()+"/invite/consume", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("build consume request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("consume request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 403, got %d\nbody: %s", resp.StatusCode, string(body))
+	}
+
+	var payload struct {
+		Status string `json:"status"`
+		Error  string `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode denied response: %v", err)
+	}
+	if payload.Status != "error" || !strings.Contains(strings.ToLower(payload.Error), "denied") {
+		t.Fatalf("unexpected denied response: %+v", payload)
+	}
+
+	joinResp, err := client.Get("http://" + rt.HTTPAddr() + "/join?token=" + url.QueryEscape(token))
+	if err != nil {
+		t.Fatalf("join request failed: %v", err)
+	}
+	defer joinResp.Body.Close()
+	if joinResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(joinResp.Body)
+		t.Fatalf("expected invite to remain active, got %d\nbody: %s", joinResp.StatusCode, string(body))
+	}
+}
+
+func TestRuntimeInviteConsumeAcceptsTokenAliasInForm(t *testing.T) {
+	rt := startTestRuntime(t, "open", nil)
+	client := &http.Client{Timeout: 2 * time.Second}
+	token := createInviteAndExtractToken(t, client, rt.HTTPAddr())
+
+	memberKey, err := keys.Generate()
+	if err != nil {
+		t.Fatalf("generate member key: %v", err)
+	}
+
+	resp, err := client.PostForm("http://"+rt.HTTPAddr()+"/invite/consume", url.Values{
+		"token": {token},
+		"id":    {memberKey.FeedRef().String()},
+	})
+	if err != nil {
+		t.Fatalf("form consume request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d\nbody: %s", resp.StatusCode, string(body))
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "Invite Consumed") {
+		t.Fatalf("expected consumed html page\nbody:\n%s", string(body))
+	}
+}
+
+func TestRuntimeJoinPostDelegatesToConsume(t *testing.T) {
+	rt := startTestRuntime(t, "open", nil)
+	client := &http.Client{Timeout: 2 * time.Second}
+	token := createInviteAndExtractToken(t, client, rt.HTTPAddr())
+
+	memberKey, err := keys.Generate()
+	if err != nil {
+		t.Fatalf("generate member key: %v", err)
+	}
+
+	resp, err := client.PostForm("http://"+rt.HTTPAddr()+"/join?token="+url.QueryEscape(token), url.Values{
+		"id": {memberKey.FeedRef().String()},
+	})
+	if err != nil {
+		t.Fatalf("join post request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d\nbody: %s", resp.StatusCode, string(body))
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "Invite Consumed") {
+		t.Fatalf("expected consumed html page\nbody:\n%s", string(body))
+	}
+}
+
+func TestRuntimeInviteManagementAccessMatrix(t *testing.T) {
+	tests := []struct {
+		name       string
+		mode       string
+		role       roomdb.Role
+		login      bool
+		expectCode int
+	}{
+		{name: "open anonymous allowed", mode: "open", login: false, expectCode: http.StatusOK},
+		{name: "community anonymous redirect", mode: "community", login: false, expectCode: http.StatusSeeOther},
+		{name: "community member allowed", mode: "community", role: roomdb.RoleMember, login: true, expectCode: http.StatusOK},
+		{name: "restricted member redirect", mode: "restricted", role: roomdb.RoleMember, login: true, expectCode: http.StatusSeeOther},
+		{name: "restricted moderator allowed", mode: "restricted", role: roomdb.RoleModerator, login: true, expectCode: http.StatusOK},
+		{name: "restricted admin allowed", mode: "restricted", role: roomdb.RoleAdmin, login: true, expectCode: http.StatusOK},
+	}
+
+	for i, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := startTestRuntime(t, tc.mode, nil)
+
+			client := newNoRedirectClient(2 * time.Second)
+			if tc.login {
+				username := seedFallbackMember(t, rt, tc.role, byte(0x60+i), "pw-management")
+				client = loginRuntimeMember(t, rt, username, "pw-management", "/invites")
+			}
+
+			resp, err := client.Get("http://" + rt.HTTPAddr() + "/invites")
+			if err != nil {
+				t.Fatalf("management page request failed: %v", err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != tc.expectCode {
+				body, _ := io.ReadAll(resp.Body)
+				t.Fatalf("expected %d, got %d\nbody: %s", tc.expectCode, resp.StatusCode, string(body))
+			}
+		})
+	}
+}
+
+func TestRuntimeInviteManagementJSONUnauthorized(t *testing.T) {
+	rt := startTestRuntime(t, "community", nil)
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	req, err := http.NewRequest(http.MethodGet, "http://"+rt.HTTPAddr()+"/invites?encoding=json", nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("invite management request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 403, got %d\nbody: %s", resp.StatusCode, string(body))
+	}
+
+	var payload struct {
+		Status string `json:"status"`
+		Error  string `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload.Status != "error" {
+		t.Fatalf("expected error status, got %q", payload.Status)
+	}
+}
+
+func TestRuntimeInviteManagementRenderingAndJSON(t *testing.T) {
+	rt := startTestRuntime(t, "open", nil)
+	username := seedFallbackMember(t, rt, roomdb.RoleMember, 0x69, "pw-manage")
+	client := loginRuntimeMember(t, rt, username, "pw-manage", "/invites")
+	token := createInviteAndExtractToken(t, client, rt.HTTPAddr())
+	_ = createInviteAndExtractToken(t, client, rt.HTTPAddr()) // keep one active invite
+
+	memberKey, err := keys.Generate()
+	if err != nil {
+		t.Fatalf("generate member key: %v", err)
+	}
+	body := fmt.Sprintf(`{"invite":%q,"id":%q}`, token, memberKey.FeedRef().String())
+	consumeReq, _ := http.NewRequest(http.MethodPost, "http://"+rt.HTTPAddr()+"/invite/consume", strings.NewReader(body))
+	consumeReq.Header.Set("Content-Type", "application/json")
+	consumeResp, err := client.Do(consumeReq)
+	if err != nil {
+		t.Fatalf("consume request failed: %v", err)
+	}
+	consumeResp.Body.Close()
+	if consumeResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected consume 200, got %d", consumeResp.StatusCode)
+	}
+
+	htmlResp, err := client.Get("http://" + rt.HTTPAddr() + "/invites")
+	if err != nil {
+		t.Fatalf("management HTML request failed: %v", err)
+	}
+	defer htmlResp.Body.Close()
+
+	if htmlResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(htmlResp.Body)
+		t.Fatalf("expected 200, got %d\nbody: %s", htmlResp.StatusCode, string(body))
+	}
+	htmlBody, _ := io.ReadAll(htmlResp.Body)
+	bodyStr := string(htmlBody)
+	for _, want := range []string{
+		"Invite Management",
+		"Create Invite",
+		"Active Invites",
+		"Consumed / Inactive Invites",
+		"/invites/revoke",
+	} {
+		if !strings.Contains(bodyStr, want) {
+			t.Fatalf("management page missing %q\nbody:\n%s", want, bodyStr)
+		}
+	}
+	if strings.Contains(strings.ToLower(bodyStr), "copy old invite url") {
+		t.Fatalf("management page should not imply old invite URLs are recoverable\nbody:\n%s", bodyStr)
+	}
+
+	jsonResp, err := client.Get("http://" + rt.HTTPAddr() + "/invites?encoding=json")
+	if err != nil {
+		t.Fatalf("management JSON request failed: %v", err)
+	}
+	defer jsonResp.Body.Close()
+	if jsonResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(jsonResp.Body)
+		t.Fatalf("expected 200, got %d\nbody: %s", jsonResp.StatusCode, string(body))
+	}
+
+	var payload struct {
+		Status   string                `json:"status"`
+		Active   []inviteManagementRow `json:"active"`
+		Inactive []inviteManagementRow `json:"inactive"`
+	}
+	if err := json.NewDecoder(jsonResp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if payload.Status != "successful" {
+		t.Fatalf("expected successful status, got %q", payload.Status)
+	}
+	if len(payload.Inactive) == 0 {
+		t.Fatalf("expected at least one inactive invite after consume")
+	}
+}
+
+func TestRuntimeInviteRevokePolicyAndBehavior(t *testing.T) {
+	rt := startTestRuntime(t, "open", nil)
+	anonClient := newNoRedirectClient(2 * time.Second)
+
+	token := createInviteAndExtractToken(t, &http.Client{Timeout: 2 * time.Second}, rt.HTTPAddr())
+	_ = token
+	inviteID := latestInviteID(t, rt)
+
+	anonResp, err := anonClient.PostForm("http://"+rt.HTTPAddr()+"/invites/revoke", url.Values{
+		"id": {strconv.FormatInt(inviteID, 10)},
+	})
+	if err != nil {
+		t.Fatalf("anonymous revoke request failed: %v", err)
+	}
+	defer anonResp.Body.Close()
+	if anonResp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("expected anonymous revoke redirect, got %d", anonResp.StatusCode)
+	}
+	if !strings.Contains(anonResp.Header.Get("Location"), "/login?next=%2Finvites") {
+		t.Fatalf("expected login redirect, got %q", anonResp.Header.Get("Location"))
+	}
+
+	authUsername := seedFallbackMember(t, rt, roomdb.RoleMember, 0x70, "pw-revoke")
+	authClient := loginRuntimeMember(t, rt, authUsername, "pw-revoke", "/invites")
+	authRevokeResp, err := authClient.PostForm("http://"+rt.HTTPAddr()+"/invites/revoke", url.Values{
+		"id": {strconv.FormatInt(inviteID, 10)},
+	})
+	if err != nil {
+		t.Fatalf("authenticated revoke request failed: %v", err)
+	}
+	defer authRevokeResp.Body.Close()
+	if authRevokeResp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("expected 303 on successful revoke, got %d", authRevokeResp.StatusCode)
+	}
+	if !strings.Contains(authRevokeResp.Header.Get("Location"), "/invites?message=") {
+		t.Fatalf("expected success redirect to invites, got %q", authRevokeResp.Header.Get("Location"))
+	}
+
+	invite, err := rt.roomDB.Invites().GetByID(context.Background(), inviteID)
+	if err != nil {
+		t.Fatalf("load invite: %v", err)
+	}
+	if invite.Active {
+		t.Fatalf("expected invite to be inactive after revoke")
+	}
+}
+
+func TestRuntimeInviteRevokeJSONInvalidIDAndUnauthorized(t *testing.T) {
+	rt := startTestRuntime(t, "open", nil)
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	unauthReqBody := `{"id":1}`
+	unauthReq, _ := http.NewRequest(http.MethodPost, "http://"+rt.HTTPAddr()+"/invites/revoke", strings.NewReader(unauthReqBody))
+	unauthReq.Header.Set("Content-Type", "application/json")
+	unauthReq.Header.Set("Accept", "application/json")
+	unauthResp, err := client.Do(unauthReq)
+	if err != nil {
+		t.Fatalf("unauthorized JSON revoke request failed: %v", err)
+	}
+	defer unauthResp.Body.Close()
+	if unauthResp.StatusCode != http.StatusForbidden {
+		body, _ := io.ReadAll(unauthResp.Body)
+		t.Fatalf("expected 403, got %d\nbody: %s", unauthResp.StatusCode, string(body))
+	}
+
+	username := seedFallbackMember(t, rt, roomdb.RoleMember, 0x71, "pw-revoke-json")
+	authClient := loginRuntimeMember(t, rt, username, "pw-revoke-json", "/invites")
+
+	invalidReq, _ := http.NewRequest(http.MethodPost, "http://"+rt.HTTPAddr()+"/invites/revoke", strings.NewReader(`{"id":0}`))
+	invalidReq.Header.Set("Content-Type", "application/json")
+	invalidReq.Header.Set("Accept", "application/json")
+	invalidResp, err := authClient.Do(invalidReq)
+	if err != nil {
+		t.Fatalf("invalid JSON revoke request failed: %v", err)
+	}
+	defer invalidResp.Body.Close()
+	if invalidResp.StatusCode != http.StatusBadRequest {
+		body, _ := io.ReadAll(invalidResp.Body)
+		t.Fatalf("expected 400, got %d\nbody: %s", invalidResp.StatusCode, string(body))
+	}
+
+	var payload struct {
+		Status string `json:"status"`
+		Error  string `json:"error"`
+	}
+	if err := json.NewDecoder(invalidResp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode invalid response: %v", err)
+	}
+	if payload.Status != "error" {
+		t.Fatalf("expected error status, got %q", payload.Status)
+	}
+}
+
+func TestRuntimeInvitesNavVisibilityByModeAndAuth(t *testing.T) {
+	tests := []struct {
+		name          string
+		mode          string
+		role          roomdb.Role
+		login         bool
+		expectInvites bool
+	}{
+		{name: "open anonymous shows nav", mode: "open", login: false, expectInvites: true},
+		{name: "community anonymous hides nav", mode: "community", login: false, expectInvites: false},
+		{name: "community member shows nav", mode: "community", role: roomdb.RoleMember, login: true, expectInvites: true},
+		{name: "restricted member hides nav", mode: "restricted", role: roomdb.RoleMember, login: true, expectInvites: false},
+		{name: "restricted moderator shows nav", mode: "restricted", role: roomdb.RoleModerator, login: true, expectInvites: true},
+	}
+
+	for i, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := startTestRuntime(t, tc.mode, nil)
+
+			var client *http.Client
+			if tc.login {
+				username := seedFallbackMember(t, rt, tc.role, byte(0x80+i), "pw-nav")
+				client = loginRuntimeMember(t, rt, username, "pw-nav", "/")
+			} else {
+				client = &http.Client{Timeout: 2 * time.Second}
+			}
+
+			body, status := getRuntimePath(t, client, rt, "/")
+			if status != http.StatusOK {
+				t.Fatalf("expected 200, got %d", status)
+			}
+
+			hasInvitesNav := strings.Contains(body, `href="/invites"`)
+			if hasInvitesNav != tc.expectInvites {
+				t.Fatalf("expected invites nav=%v, got %v\nbody:\n%s", tc.expectInvites, hasInvitesNav, body)
+			}
+		})
 	}
 }
 
@@ -368,6 +984,120 @@ func getRuntimePath(t *testing.T, client *http.Client, rt *Runtime, path string)
 		t.Fatalf("read %s response: %v", path, err)
 	}
 	return string(body), resp.StatusCode
+}
+
+func newNoRedirectClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout: timeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
+func loginRuntimeMember(t *testing.T, rt *Runtime, username, password, next string) *http.Client {
+	t.Helper()
+
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatalf("create cookie jar: %v", err)
+	}
+
+	client := &http.Client{
+		Timeout: 2 * time.Second,
+		Jar:     jar,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
+	form := url.Values{
+		"username": {username},
+		"password": {password},
+	}
+	if next != "" {
+		form.Set("next", next)
+	}
+
+	resp, err := client.PostForm("http://"+rt.HTTPAddr()+"/login", form)
+	if err != nil {
+		t.Fatalf("login request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusSeeOther {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 303 from login, got %d\nbody: %s", resp.StatusCode, string(body))
+	}
+
+	return client
+}
+
+func seedFallbackMember(t *testing.T, rt *Runtime, role roomdb.Role, feedFill byte, password string) string {
+	t.Helper()
+
+	feed := mustRuntimeTestFeedRef(t, feedFill)
+	memberID, err := rt.roomDB.Members().Add(context.Background(), *feed, role)
+	if err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+
+	if err := rt.roomDB.AuthFallback().SetPassword(context.Background(), memberID, password); err != nil {
+		t.Fatalf("set fallback password: %v", err)
+	}
+
+	return fmt.Sprintf("member-%d", memberID)
+}
+
+func createInviteAndExtractToken(t *testing.T, client *http.Client, addr string) string {
+	t.Helper()
+
+	req, err := http.NewRequest(http.MethodPost, "http://"+addr+"/create-invite", nil)
+	if err != nil {
+		t.Fatalf("build create invite request: %v", err)
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("create invite failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200 creating invite, got %d\nbody: %s", resp.StatusCode, string(body))
+	}
+
+	var payload struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode invite response: %v", err)
+	}
+
+	parsed, err := url.Parse(payload.URL)
+	if err != nil {
+		t.Fatalf("parse invite url %q: %v", payload.URL, err)
+	}
+	token := parsed.Query().Get("token")
+	if token == "" {
+		t.Fatalf("invite URL missing token: %q", payload.URL)
+	}
+	return token
+}
+
+func latestInviteID(t *testing.T, rt *Runtime) int64 {
+	t.Helper()
+
+	invites, err := rt.roomDB.Invites().List(context.Background())
+	if err != nil {
+		t.Fatalf("list invites: %v", err)
+	}
+	if len(invites) == 0 {
+		t.Fatal("expected at least one invite")
+	}
+	return invites[0].ID
 }
 
 func openTestBridgeAccountsDB(t *testing.T, accounts []db.BridgedAccount) *db.DB {
@@ -575,8 +1305,8 @@ func TestHandleJoinSubmit(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/join?token=test", nil)
 	rr := httptest.NewRecorder()
 	h.handleJoinSubmit(rr, req, "test")
-	if rr.Code != http.StatusNotImplemented {
-		t.Errorf("expected 501, got %d", rr.Code)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", rr.Code)
 	}
 }
 
@@ -715,8 +1445,8 @@ func TestInviteHandlersErrors(t *testing.T) {
 	h2 := &inviteHandler{config: &mockRoomConfig{mode: roomdb.ModeCommunity}}
 	rr2 := httptest.NewRecorder()
 	h2.handleCreateInvite(rr2, req)
-	if rr2.Code != http.StatusForbidden {
-		t.Errorf("expected 403, got %d", rr2.Code)
+	if rr2.Code != http.StatusSeeOther {
+		t.Errorf("expected 303, got %d", rr2.Code)
 	}
 
 	// 3. create fail
@@ -724,8 +1454,10 @@ func TestInviteHandlersErrors(t *testing.T) {
 		config: &mockRoomConfig{mode: roomdb.ModeOpen},
 		roomDB: &mockInvitesService{createErr: fmt.Errorf("fail")},
 	}
+	reqPost := httptest.NewRequest(http.MethodPost, "/create-invite", nil)
+	reqPost.Header.Set("Accept", "application/json")
 	rr3 := httptest.NewRecorder()
-	h3.handleCreateInvite(rr3, req)
+	h3.handleCreateInvite(rr3, reqPost)
 	if rr3.Code != http.StatusInternalServerError {
 		t.Errorf("expected 500, got %d", rr3.Code)
 	}
@@ -764,8 +1496,8 @@ func TestHandleJoinPost(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/join?token=test", nil)
 	rr := httptest.NewRecorder()
 	h.handleJoin(rr, req)
-	if rr.Code != http.StatusNotImplemented {
-		t.Errorf("expected 501, got %d", rr.Code)
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", rr.Code)
 	}
 }
 
@@ -1383,17 +2115,24 @@ func TestHandleInviteCreationUnavailableRedirect(t *testing.T) {
 }
 
 func TestServeHTTPCreateInviteRestrictedMode(t *testing.T) {
+	var delegated bool
 	h := bridgeRoomHandler{
-		stock:      http.NotFoundHandler(),
+		stock: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			delegated = true
+			w.WriteHeader(http.StatusAccepted)
+		}),
 		roomConfig: &mockRoomConfig{mode: roomdb.ModeRestricted},
 	}
 
-	// POST create-invite in restricted mode should be blocked
+	// create-invite should delegate to stock handler.
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/create-invite", nil)
 	h.ServeHTTP(rr, req)
-	if rr.Code != http.StatusSeeOther {
-		t.Errorf("expected 303 redirect for restricted mode create-invite, got %d", rr.Code)
+	if !delegated {
+		t.Fatal("expected create-invite to delegate to stock handler")
+	}
+	if rr.Code != http.StatusAccepted {
+		t.Errorf("expected delegated status code, got %d", rr.Code)
 	}
 }
 
