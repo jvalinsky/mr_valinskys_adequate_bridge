@@ -23,6 +23,8 @@ type bridgeRoomHandler struct {
 	roomConfig        roomdb.RoomConfig
 	bridgeBotLister   ActiveBridgeAccountLister
 	bridgeBotDetailer ActiveBridgeAccountDetailer
+	members           roomdb.MembersService
+	authTokens        roomdb.AuthWithSSBService
 }
 
 type roomModeStatus struct {
@@ -32,22 +34,24 @@ type roomModeStatus struct {
 }
 
 type landingPageData struct {
-	Mode      roomModeStatus
-	InviteURL string
-	BotsURL   string
-	SignInURL string
-	BotCount  int
+	ShowInvitesNav bool
+	Mode           roomModeStatus
+	InviteURL      string
+	BotsURL        string
+	SignInURL      string
+	BotCount       int
 }
 
 type botPageData struct {
-	Mode        roomModeStatus
-	InviteURL   string
-	HomeURL     string
-	SignInURL   string
-	Bots        []botCardData
-	Query       string
-	Sort        string
-	SortOptions []botSortOption
+	ShowInvitesNav bool
+	Mode           roomModeStatus
+	InviteURL      string
+	HomeURL        string
+	SignInURL      string
+	Bots           []botCardData
+	Query          string
+	Sort           string
+	SortOptions    []botSortOption
 }
 
 type botSortOption struct {
@@ -72,6 +76,7 @@ type botCardData struct {
 }
 
 type botDetailPageData struct {
+	ShowInvitesNav    bool
 	Mode              roomModeStatus
 	InviteURL         string
 	HomeURL           string
@@ -104,6 +109,17 @@ var botsTemplate = template.Must(template.New("room-bots").Funcs(templateFuncs).
 var botDetailTemplate = template.Must(template.New("room-bot-detail").Funcs(templateFuncs).Parse(publicLayoutTemplate + botDetailContentTemplate))
 
 func newBridgeRoomHandler(stock http.Handler, roomConfig roomdb.RoomConfig, bridgeBotLister ActiveBridgeAccountLister, bridgeBotDetailer ActiveBridgeAccountDetailer) http.Handler {
+	return newBridgeRoomHandlerWithAuth(stock, roomConfig, bridgeBotLister, bridgeBotDetailer, nil, nil)
+}
+
+func newBridgeRoomHandlerWithAuth(
+	stock http.Handler,
+	roomConfig roomdb.RoomConfig,
+	bridgeBotLister ActiveBridgeAccountLister,
+	bridgeBotDetailer ActiveBridgeAccountDetailer,
+	members roomdb.MembersService,
+	authTokens roomdb.AuthWithSSBService,
+) http.Handler {
 	if stock == nil {
 		stock = http.NotFoundHandler()
 	}
@@ -112,6 +128,8 @@ func newBridgeRoomHandler(stock http.Handler, roomConfig roomdb.RoomConfig, brid
 		roomConfig:        roomConfig,
 		bridgeBotLister:   bridgeBotLister,
 		bridgeBotDetailer: bridgeBotDetailer,
+		members:           members,
+		authTokens:        authTokens,
 	}
 	return security.SecurityHeadersMiddleware(false)(inner)
 }
@@ -123,13 +141,6 @@ func (h bridgeRoomHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodHead {
 			_, _ = w.Write([]byte("ok"))
 		}
-		return
-	case r.URL.Path == "/create-invite" && inviteCreationMethod(r.Method):
-		if h.modeStatus(r.Context()).CanSelfServeInvite {
-			h.stock.ServeHTTP(w, r)
-			return
-		}
-		h.handleInviteCreationUnavailable(w, r)
 		return
 	case r.URL.Path == "/" && (r.Method == http.MethodGet || r.Method == http.MethodHead):
 		h.handleLanding(w, r)
@@ -186,11 +197,12 @@ func (h bridgeRoomHandler) handleLanding(w http.ResponseWriter, r *http.Request)
 	}
 
 	data := landingPageData{
-		Mode:      h.modeStatus(r.Context()),
-		InviteURL: "/create-invite",
-		BotsURL:   "/bots",
-		SignInURL: "/login",
-		BotCount:  len(bots),
+		ShowInvitesNav: h.showInvitesNav(r),
+		Mode:           h.modeStatus(r.Context()),
+		InviteURL:      "/create-invite",
+		BotsURL:        "/bots",
+		SignInURL:      "/login",
+		BotCount:       len(bots),
 	}
 
 	setPublicCacheHeaders(w)
@@ -212,14 +224,15 @@ func (h bridgeRoomHandler) handleBots(w http.ResponseWriter, r *http.Request) {
 	bots = filterAndSortBots(bots, searchQuery, sortMode)
 
 	data := botPageData{
-		Mode:        h.modeStatus(r.Context()),
-		InviteURL:   "/create-invite",
-		HomeURL:     "/",
-		SignInURL:   "/login",
-		Bots:        bots,
-		Query:       searchQuery,
-		Sort:        sortMode,
-		SortOptions: buildBotSortOptions(sortMode),
+		ShowInvitesNav: h.showInvitesNav(r),
+		Mode:           h.modeStatus(r.Context()),
+		InviteURL:      "/create-invite",
+		HomeURL:        "/",
+		SignInURL:      "/login",
+		Bots:           bots,
+		Query:          searchQuery,
+		Sort:           sortMode,
+		SortOptions:    buildBotSortOptions(sortMode),
 	}
 
 	setPublicCacheHeaders(w)
@@ -270,6 +283,7 @@ func (h bridgeRoomHandler) handleBotDetail(w http.ResponseWriter, r *http.Reques
 	}
 
 	data := botDetailPageData{
+		ShowInvitesNav:    h.showInvitesNav(r),
 		Mode:              h.modeStatus(r.Context()),
 		InviteURL:         "/create-invite",
 		HomeURL:           "/",
@@ -347,6 +361,51 @@ func (h bridgeRoomHandler) listActiveBotsWithStats(ctx context.Context, userAgen
 		bots = append(bots, toBotCardData(account, userAgent))
 	}
 	return bots, nil
+}
+
+func (h bridgeRoomHandler) showInvitesNav(r *http.Request) bool {
+	if h.roomConfig == nil {
+		return false
+	}
+
+	mode, err := h.roomConfig.GetPrivacyMode(r.Context())
+	if err != nil {
+		return false
+	}
+
+	switch mode {
+	case roomdb.ModeOpen:
+		return true
+	case roomdb.ModeCommunity:
+		member, ok := h.memberFromRequest(r)
+		return ok && isMemberOrHigher(member.Role)
+	case roomdb.ModeRestricted:
+		member, ok := h.memberFromRequest(r)
+		return ok && isModeratorOrHigher(member.Role)
+	default:
+		return false
+	}
+}
+
+func (h bridgeRoomHandler) memberFromRequest(r *http.Request) (roomdb.Member, bool) {
+	if h.authTokens == nil || h.members == nil {
+		return roomdb.Member{}, false
+	}
+	cookie, err := r.Cookie(authTokenCookieName)
+	if err != nil || strings.TrimSpace(cookie.Value) == "" {
+		return roomdb.Member{}, false
+	}
+
+	memberID, err := h.authTokens.CheckToken(r.Context(), cookie.Value)
+	if err != nil {
+		return roomdb.Member{}, false
+	}
+
+	member, err := h.members.GetByID(r.Context(), memberID)
+	if err != nil {
+		return roomdb.Member{}, false
+	}
+	return member, true
 }
 
 func normalizeBotSort(raw string) string {
@@ -581,6 +640,7 @@ const publicLayoutTemplate = `
       <nav>
         <a href="/">Room</a>
         <a href="/bots">Bots</a>
+        {{if .ShowInvitesNav}}<a href="/invites">Invites</a>{{end}}
         <a href="/login">Sign In</a>
       </nav>
     </header>

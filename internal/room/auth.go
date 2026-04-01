@@ -2,11 +2,14 @@ package room
 
 import (
 	"context"
+	"html/template"
 	"net/http"
+	"strings"
 )
 
 type authHandler struct {
 	authFallback authFallbackService
+	authTokens   authTokenService
 }
 
 type authFallbackService interface {
@@ -16,9 +19,16 @@ type authFallbackService interface {
 	SetPasswordWithToken(ctx context.Context, resetToken, password string) error
 }
 
-func newAuthHandler(authFallback authFallbackService) *authHandler {
+type authTokenService interface {
+	CreateToken(ctx context.Context, memberID int64) (string, error)
+}
+
+const authTokenCookieName = "auth_token"
+
+func newAuthHandler(authFallback authFallbackService, authTokens authTokenService) *authHandler {
 	return &authHandler{
 		authFallback: authFallback,
+		authTokens:   authTokens,
 	}
 }
 
@@ -37,9 +47,17 @@ func (h *authHandler) handleLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *authHandler) serveLoginPage(w http.ResponseWriter, r *http.Request) {
+	next := normalizeNextPath(r.URL.Query().Get("next"))
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(loginPageHTML))
+	if err := loginPageTemplate.Execute(w, struct {
+		Next string
+	}{
+		Next: next,
+	}); err != nil {
+		http.Error(w, "Template error", http.StatusInternalServerError)
+	}
 }
 
 func (h *authHandler) handleLoginSubmit(w http.ResponseWriter, r *http.Request) {
@@ -62,9 +80,28 @@ func (h *authHandler) handleLoginSubmit(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	_ = memberID
+	if h.authTokens != nil {
+		token, err := h.authTokens.CreateToken(r.Context(), memberID)
+		if err != nil {
+			http.Error(w, "Failed to create auth token", http.StatusInternalServerError)
+			return
+		}
 
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+		http.SetCookie(w, &http.Cookie{
+			Name:     authTokenCookieName,
+			Value:    token,
+			Path:     "/",
+			HttpOnly: true,
+			SameSite: http.SameSiteLaxMode,
+			Secure:   r.TLS != nil,
+		})
+	}
+
+	next := normalizeNextPath(r.FormValue("next"))
+	if next == "" {
+		next = "/"
+	}
+	http.Redirect(w, r, next, http.StatusSeeOther)
 }
 
 func (h *authHandler) handleResetPassword(w http.ResponseWriter, r *http.Request) {
@@ -129,6 +166,7 @@ const loginPageHTML = `
   <h1>Sign In</h1>
   <p>Sign in with your room member account.</p>
   <form method="post" action="/login">
+    {{if .Next}}<input type="hidden" name="next" value="{{.Next}}" />{{end}}
     <input type="text" name="username" placeholder="Username" required />
     <input type="password" name="password" placeholder="Password" required />
     <button type="submit">Sign In</button>
@@ -139,6 +177,25 @@ const loginPageHTML = `
 </body>
 </html>
 `
+
+var loginPageTemplate = template.Must(template.New("login-page").Parse(loginPageHTML))
+
+func normalizeNextPath(raw string) string {
+	next := strings.TrimSpace(raw)
+	if next == "" {
+		return ""
+	}
+	if !strings.HasPrefix(next, "/") {
+		return ""
+	}
+	if strings.HasPrefix(next, "//") {
+		return ""
+	}
+	if strings.Contains(next, "://") {
+		return ""
+	}
+	return next
+}
 
 const resetPasswordPageHTML = `
 <!DOCTYPE html>

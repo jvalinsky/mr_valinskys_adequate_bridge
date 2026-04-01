@@ -210,9 +210,16 @@ func (r *Runtime) initNetwork() error {
 	r.muxrpcListener = muxrpcListener
 	r.muxrpcAddr = muxrpcListener.Addr().String()
 
-	muxHandler := newServeMux(r.ctx, r.roomDB, r.state, r.keyPair)
+	muxHandler := newServeMux(r.ctx, r.roomDB, r.state, r.keyPair, r.cfg.HTTPSDomain, r.muxrpcAddr)
 	r.httpServer = &http.Server{
-		Handler:           newBridgeRoomHandler(muxHandler, r.roomDB.RoomConfig(), r.cfg.BridgeAccountLister, r.cfg.BridgeAccountDetailer),
+		Handler: newBridgeRoomHandlerWithAuth(
+			muxHandler,
+			r.roomDB.RoomConfig(),
+			r.cfg.BridgeAccountLister,
+			r.cfg.BridgeAccountDetailer,
+			r.roomDB.Members(),
+			r.roomDB.AuthTokens(),
+		),
 		ReadHeaderTimeout: 15 * time.Second,
 		WriteTimeout:      3 * time.Minute,
 		IdleTimeout:       3 * time.Minute,
@@ -398,18 +405,32 @@ func newRoomServer(keyPair *refs.FeedRef, db RoomDB, state *roomstate.Manager) *
 	}
 }
 
-func newServeMux(ctx context.Context, db RoomDB, state *roomstate.Manager, keyPair *keys.KeyPair) *http.ServeMux {
+func newServeMux(ctx context.Context, db RoomDB, state *roomstate.Manager, keyPair *keys.KeyPair, httpsDomain, muxrpcAddr string) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	})
 
-	inviteH := newInviteHandler(db.Invites(), db.RoomConfig(), keyPair, "")
+	inviteH := newInviteHandler(
+		db.Invites(),
+		db.Members(),
+		db.DeniedKeys(),
+		db.AuthTokens(),
+		db.RoomConfig(),
+		keyPair,
+		httpsDomain,
+		muxrpcAddr,
+	)
 	mux.HandleFunc("/create-invite", inviteH.handleCreateInvite)
+	mux.HandleFunc("/invites", inviteH.handleInvites)
+	mux.HandleFunc("/invites/revoke", inviteH.handleInviteRevoke)
 	mux.HandleFunc("/join", inviteH.handleJoin)
+	mux.HandleFunc("/join-fallback", inviteH.handleJoinFallback)
+	mux.HandleFunc("/join-manually", inviteH.handleJoinManually)
+	mux.HandleFunc("/invite/consume", inviteH.handleInviteConsumeRoute)
 
-	authH := newAuthHandler(db.AuthFallback())
+	authH := newAuthHandler(db.AuthFallback(), db.AuthTokens())
 	mux.HandleFunc("/login", authH.handleLogin)
 	mux.HandleFunc("/reset-password", authH.handleResetPassword)
 
