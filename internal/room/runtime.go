@@ -41,9 +41,7 @@ type Config struct {
 	AppKey                string
 	BridgeAccountLister   ActiveBridgeAccountLister
 	BridgeAccountDetailer ActiveBridgeAccountDetailer
-	HandlerMux            interface {
-		Register(method muxrpc.Method, h muxrpc.Handler)
-	}
+	HandlerMux            *muxrpc.HandlerMux
 }
 
 type Runtime struct {
@@ -174,23 +172,11 @@ func (r *Runtime) initHandlers() {
 	)
 	r.roomSrv = roomSrv
 
-	var handlerMux *muxrpc.HandlerMux
-	if r.cfg.HandlerMux != nil {
-		handlerMux = r.cfg.HandlerMux.(*muxrpc.HandlerMux)
-		r.cfg.HandlerMux.Register(muxrpc.Method{"whoami"}, &whoamiHandler{roomSrv})
-		r.cfg.HandlerMux.Register(muxrpc.Method{"room"}, roomhandlers.NewAliasHandler(roomSrv))
-
-		tunnelHandler := roomhandlers.NewTunnelHandler(roomSrv, r.keyPair, r.cfg.AppKey)
-		r.cfg.HandlerMux.Register(muxrpc.Method{"tunnel", "announce"}, tunnelHandler)
-		r.cfg.HandlerMux.Register(muxrpc.Method{"tunnel", "leave"}, tunnelHandler)
-		r.cfg.HandlerMux.Register(muxrpc.Method{"tunnel", "connect"}, tunnelHandler)
-		r.cfg.HandlerMux.Register(muxrpc.Method{"tunnel", "endpoints"}, tunnelHandler)
-		r.cfg.HandlerMux.Register(muxrpc.Method{"tunnel", "isRoom"}, tunnelHandler)
-		r.cfg.HandlerMux.Register(muxrpc.Method{"tunnel", "ping"}, tunnelHandler)
-	} else {
+	handlerMux := r.cfg.HandlerMux
+	if handlerMux == nil {
 		handlerMux = &muxrpc.HandlerMux{}
-		registerRoomHandlers(handlerMux, roomSrv, r.keyPair, r.cfg.AppKey)
 	}
+	registerRoomHandlers(handlerMux, roomSrv, r.keyPair, r.cfg.AppKey)
 
 	r.handler = handlerMux
 	r.manifest = &muxrpc.Manifest{}

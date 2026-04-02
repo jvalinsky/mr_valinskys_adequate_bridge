@@ -27,6 +27,7 @@ import (
 	roomhandlers "github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc/handlers/room"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomdb"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomdb/sqlite"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomstate"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/secretstream"
 )
@@ -86,6 +87,69 @@ func TestRuntimeStartsAndServesHealth(t *testing.T) {
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestRuntimeInitHandlersUsesProvidedMux(t *testing.T) {
+	kp, err := keys.Generate()
+	if err != nil {
+		t.Fatalf("generate key pair: %v", err)
+	}
+	roomDB, err := sqlite.Open(filepath.Join(t.TempDir(), "room.sqlite"))
+	if err != nil {
+		t.Fatalf("open room db: %v", err)
+	}
+	defer roomDB.Close()
+
+	providedMux := &muxrpc.HandlerMux{}
+	rt := &Runtime{
+		cfg: Config{
+			HandlerMux: providedMux,
+		},
+		keyPair: kp,
+		roomDB:  roomDB,
+		state:   roomstate.NewManager(),
+	}
+
+	rt.initHandlers()
+
+	if rt.handler != providedMux {
+		t.Fatalf("expected runtime handler to use provided mux")
+	}
+	if !providedMux.Handled(muxrpc.Method{"whoami"}) {
+		t.Fatalf("expected whoami handler to be registered on provided mux")
+	}
+	if !providedMux.Handled(muxrpc.Method{"tunnel", "announce"}) {
+		t.Fatalf("expected tunnel handlers to be registered on provided mux")
+	}
+}
+
+func TestRuntimeInitHandlersAllocatesMuxWhenNil(t *testing.T) {
+	kp, err := keys.Generate()
+	if err != nil {
+		t.Fatalf("generate key pair: %v", err)
+	}
+	roomDB, err := sqlite.Open(filepath.Join(t.TempDir(), "room.sqlite"))
+	if err != nil {
+		t.Fatalf("open room db: %v", err)
+	}
+	defer roomDB.Close()
+
+	rt := &Runtime{
+		cfg:     Config{},
+		keyPair: kp,
+		roomDB:  roomDB,
+		state:   roomstate.NewManager(),
+	}
+
+	rt.initHandlers()
+
+	mux, ok := rt.handler.(*muxrpc.HandlerMux)
+	if !ok || mux == nil {
+		t.Fatalf("expected runtime to allocate a handler mux when config.HandlerMux is nil")
+	}
+	if !mux.Handled(muxrpc.Method{"whoami"}) {
+		t.Fatalf("expected whoami handler to be registered on allocated mux")
 	}
 }
 
