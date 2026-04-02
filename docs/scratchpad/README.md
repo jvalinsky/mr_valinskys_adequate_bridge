@@ -60,6 +60,7 @@ These drafts were incorporated into the main README:
 | [037-indigo-test-fixture-migration.md](037-indigo-test-fixture-migration.md) | Final Indigo test-fixture and module cleanup notes, including vendoring removal and verification | 706-721, 724 | Historical |
 | [038-local-atproto-support-files.md](038-local-atproto-support-files.md) | Local ATProto deployment support files, bootstrap/export notes, and attached review/test follow-ups | — | Historical |
 | [039-ssb-module-test-fixes.md](039-ssb-module-test-fixes.md) | Verification notes for the nested `internal/ssb` module test pass and any resulting fixes | — | Active |
+| [040-ssbc-compliance-merge.md](040-ssbc-compliance-merge.md) | Replay plan and implementation notes for merging `codex/ssbc-compliance` onto current `main` | — | Historical |
 
 ## Understanding Scratchpad Status
 
