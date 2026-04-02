@@ -5,6 +5,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
+ENV GOFLAGS=-mod=mod
 COPY go.mod go.sum ./
 COPY internal/ssb internal/ssb
 RUN go mod download
