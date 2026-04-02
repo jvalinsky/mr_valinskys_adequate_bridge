@@ -1569,19 +1569,24 @@ func TestMessageStateLabel(t *testing.T) {
 	}
 }
 
-func TestSanitizeMessageState(t *testing.T) {
-	if sanitizeMessageState("") != "" {
-		t.Error("expected empty for empty input")
+func TestNormalizeMessageStateViaDB(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"", ""},
+		{"published", "published"},
+		{"invalid", ""},
 	}
-	if sanitizeMessageState("published") != "published" {
-		t.Error("expected published")
-	}
-	if sanitizeMessageState("invalid") != "" {
-		t.Error("expected empty for invalid")
+	for _, tt := range tests {
+		got := db.NormalizeMessageListQuery(db.MessageListQuery{State: tt.input}).State
+		if got != tt.want {
+			t.Errorf("normalized state(%q) = %q, want %q", tt.input, got, tt.want)
+		}
 	}
 }
 
-func TestSanitizeMessageDirection(t *testing.T) {
+func TestNormalizeMessageDirectionViaDB(t *testing.T) {
 	tests := []struct {
 		input string
 		want  string
@@ -1593,9 +1598,9 @@ func TestSanitizeMessageDirection(t *testing.T) {
 		{"invalid", "next"},
 	}
 	for _, tt := range tests {
-		got := sanitizeMessageDirection(tt.input)
+		got := db.NormalizeMessageListQuery(db.MessageListQuery{Direction: tt.input}).Direction
 		if got != tt.want {
-			t.Errorf("sanitizeMessageDirection(%q) = %q, want %q", tt.input, got, tt.want)
+			t.Errorf("normalized direction(%q) = %q, want %q", tt.input, got, tt.want)
 		}
 	}
 }
@@ -1753,6 +1758,44 @@ func TestBuildMessagePageURLWithHasIssue(t *testing.T) {
 	}
 }
 
+func TestParseMessageListQueryMatchesDBNormalization(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/messages?q=%20hello%20&did=%20did%3Aplc%3Aalice%20&type=%20app.bsky.feed.post%20&state=invalid&sort=bad&dir=up&limit=abc&has_issue=1&cursor=%20abc123%20", nil)
+
+	got := parseMessageListQuery(req)
+	want := db.NormalizeMessageListQuery(db.MessageListQuery{
+		Search:    " hello ",
+		ATDID:     " did:plc:alice ",
+		Type:      " app.bsky.feed.post ",
+		State:     "invalid",
+		Sort:      "bad",
+		Limit:     parseMessageLimit("abc"),
+		HasIssue:  true,
+		Cursor:    "abc123",
+		Direction: "up",
+	})
+
+	if got != want {
+		t.Fatalf("normalized query mismatch:\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+func TestParseMessageListQueryNormalizationParity(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/messages?state=deferred&sort=attempts_desc&dir=prev&limit=200", nil)
+	got := parseMessageListQuery(req)
+	if got.State != db.MessageStateDeferred {
+		t.Fatalf("expected deferred state, got %q", got.State)
+	}
+	if got.Sort != "attempts_desc" {
+		t.Fatalf("expected attempts_desc sort, got %q", got.Sort)
+	}
+	if got.Direction != "prev" {
+		t.Fatalf("expected prev direction, got %q", got.Direction)
+	}
+	if got.Limit != 200 {
+		t.Fatalf("expected limit 200, got %d", got.Limit)
+	}
+}
+
 type mockDatabase struct {
 	err error
 }
@@ -1824,14 +1867,32 @@ func (m *mockDatabase) AddKnownPeer(ctx context.Context, p db.KnownPeer) error {
 }
 
 type mockPDSClient struct {
-	err error
+	err            error
+	uploadCalled   bool
+	uploadedMIME   string
+	uploadedBytes  []byte
+	createImageRef *appbsky.LexBlob
 }
 
 func (m *mockPDSClient) UploadBlob(ctx context.Context, identifier string, reader io.Reader, mime string) (*appbsky.LexBlob, error) {
-	return nil, m.err
+	if m.err != nil {
+		return nil, m.err
+	}
+	payload, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, err
+	}
+	m.uploadCalled = true
+	m.uploadedMIME = mime
+	m.uploadedBytes = append([]byte(nil), payload...)
+	return &appbsky.LexBlob{
+		MimeType: mime,
+		Size:     int64(len(payload)),
+	}, nil
 }
 
 func (m *mockPDSClient) CreatePost(ctx context.Context, identifier string, text string, imageBlob *appbsky.LexBlob) (string, error) {
+	m.createImageRef = imageBlob
 	return "at://did:plc:alice/app.bsky.feed.post/post1", m.err
 }
 
@@ -1984,6 +2045,67 @@ func TestHandlePostActionSuccess(t *testing.T) {
 	expectedURI := "at://did:plc:alice/app.bsky.feed.post/post1"
 	if !strings.Contains(rr.Header().Get("Location"), url.QueryEscape(expectedURI)) {
 		t.Fatalf("redirect URL missing expected URI: %s", rr.Header().Get("Location"))
+	}
+}
+
+func TestHandlePostActionShortImageUpload(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	ctx := context.Background()
+	if err := database.AddBridgedAccount(ctx, db.BridgedAccount{
+		ATDID:     "did:plc:alice",
+		SSBFeedID: "@alice.test.ed25519",
+		Active:    true,
+	}); err != nil {
+		t.Fatalf("seed account: %v", err)
+	}
+
+	atp := &mockPDSClient{}
+	router := chi.NewRouter()
+	NewUIHandler(database, nil, atp, nil, &mockSSBStatus{}).Mount(router)
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	if err := writer.WriteField("at_did", "did:plc:alice"); err != nil {
+		t.Fatalf("write at_did: %v", err)
+	}
+	if err := writer.WriteField("text", "tiny image post"); err != nil {
+		t.Fatalf("write text: %v", err)
+	}
+
+	part, err := writer.CreateFormFile("image", "tiny.png")
+	if err != nil {
+		t.Fatalf("create image part: %v", err)
+	}
+	// PNG signature (<512 bytes) should still MIME-sniff correctly.
+	shortPNG := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
+	if _, err := part.Write(shortPNG); err != nil {
+		t.Fatalf("write image payload: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/post", body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303 redirect, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if !atp.uploadCalled {
+		t.Fatal("expected upload blob to be called")
+	}
+	if atp.uploadedMIME != "image/png" {
+		t.Fatalf("expected image/png upload MIME, got %q", atp.uploadedMIME)
+	}
+	if len(atp.uploadedBytes) != len(shortPNG) {
+		t.Fatalf("expected uploaded byte length %d, got %d", len(shortPNG), len(atp.uploadedBytes))
+	}
+	if atp.createImageRef == nil {
+		t.Fatal("expected create post to receive uploaded blob")
 	}
 }
 
@@ -2389,7 +2511,7 @@ func TestIssueReason(t *testing.T) {
 	}
 }
 
-func TestSanitizeMessageSort(t *testing.T) {
+func TestNormalizeMessageSortViaDB(t *testing.T) {
 	tests := []struct {
 		input string
 		want  string
@@ -2401,9 +2523,9 @@ func TestSanitizeMessageSort(t *testing.T) {
 		{"  attempts_desc  ", "attempts_desc"},
 	}
 	for _, tt := range tests {
-		got := sanitizeMessageSort(tt.input)
+		got := db.NormalizeMessageListQuery(db.MessageListQuery{Sort: tt.input}).Sort
 		if got != tt.want {
-			t.Errorf("sanitizeMessageSort(%q) = %q, want %q", tt.input, got, tt.want)
+			t.Errorf("normalized sort(%q) = %q, want %q", tt.input, got, tt.want)
 		}
 	}
 }

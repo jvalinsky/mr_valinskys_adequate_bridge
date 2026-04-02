@@ -3,10 +3,8 @@ package handlers
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -23,9 +21,7 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/presentation"
-	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/web/templates"
-	appbsky "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/appbsky"
 )
 
 // Database defines the persistence surface required by UI handlers.
@@ -155,58 +151,6 @@ func (h *UIHandler) Mount(r chi.Router) {
 	})
 }
 
-func (h *UIHandler) handleConnections(w http.ResponseWriter, r *http.Request) {
-	var peers []PeerStatus
-	var ebtState map[string]map[string]int64
-	if h.ssbStatus != nil {
-		peers = h.ssbStatus.GetPeers()
-		ebtState = h.ssbStatus.GetEBTState()
-	}
-
-	knownPeers, err := h.db.GetKnownPeers(r.Context())
-	if err != nil {
-		h.writeInternalError(w, "handleConnections", "failed to load known peers", err)
-		return
-	}
-
-	tplPeers := make([]templates.PeerStatus, 0, len(peers))
-	for _, p := range peers {
-		tplPeers = append(tplPeers, templates.PeerStatus{
-			Addr:       p.Addr,
-			Feed:       p.Feed,
-			ReadBytes:  p.ReadBytes,
-			WriteBytes: p.WriteBytes,
-			Latency:    p.Latency,
-		})
-	}
-
-	tplKnown := make([]templates.KnownPeer, 0, len(knownPeers))
-	for _, p := range knownPeers {
-		tplKnown = append(tplKnown, templates.KnownPeer{
-			Addr:      p.Addr,
-			PubKey:    base64.StdEncoding.EncodeToString(p.PubKey),
-			CreatedAt: p.CreatedAt,
-		})
-	}
-
-	data := templates.ConnectionsData{
-		Chrome: templates.PageChrome{
-			ActiveNav: "connections",
-			Breadcrumbs: []templates.Breadcrumb{
-				{Label: "Admin", Href: "/"},
-				{Label: "Connections"},
-			},
-		},
-		Peers:      tplPeers,
-		KnownPeers: tplKnown,
-		EBTState:   ebtState,
-	}
-
-	if err := templates.RenderConnections(w, data); err != nil {
-		h.writeInternalError(w, "handleConnections", "failed to render connections page", err)
-	}
-}
-
 func findBlobRefs(ssbJSON string) []string {
 	re := regexp.MustCompile(`&[A-Za-z0-9+/=]+\.sha256`)
 	matches := re.FindAllString(ssbJSON, -1)
@@ -228,68 +172,6 @@ func findBlobRefs(ssbJSON string) []string {
 func (h *UIHandler) writeInternalError(w http.ResponseWriter, handler, message string, err error) {
 	h.logger.Printf("event=handler_error handler=%s error=%v", handler, err)
 	http.Error(w, message, http.StatusInternalServerError)
-}
-
-func (h *UIHandler) handleConnectionAdd(w http.ResponseWriter, r *http.Request) {
-	addr := strings.TrimSpace(r.FormValue("addr"))
-	pubkeyB64 := strings.TrimSpace(r.FormValue("pubkey"))
-
-	if addr == "" || pubkeyB64 == "" {
-		http.Error(w, "missing addr or pubkey", http.StatusBadRequest)
-		return
-	}
-
-	// Pubkey should be base64
-	pubkey, err := base64.StdEncoding.DecodeString(pubkeyB64)
-	if err != nil {
-		http.Error(w, "invalid pubkey base64", http.StatusBadRequest)
-		return
-	}
-
-	if len(pubkey) != 32 {
-		http.Error(w, "pubkey must be 32 bytes", http.StatusBadRequest)
-		return
-	}
-
-	p := db.KnownPeer{
-		Addr:   addr,
-		PubKey: pubkey,
-	}
-
-	if err := h.db.AddKnownPeer(r.Context(), p); err != nil {
-		h.writeInternalError(w, "handleConnectionAdd", "failed to save peer", err)
-		return
-	}
-
-	http.Redirect(w, r, "/connections", http.StatusSeeOther)
-}
-
-func (h *UIHandler) handleConnectionConnect(w http.ResponseWriter, r *http.Request) {
-	addr := strings.TrimSpace(r.FormValue("addr"))
-	pubkeyB64 := strings.TrimSpace(r.FormValue("pubkey"))
-
-	if addr == "" || pubkeyB64 == "" {
-		http.Error(w, "missing addr or pubkey", http.StatusBadRequest)
-		return
-	}
-
-	pubkey, err := base64.StdEncoding.DecodeString(pubkeyB64)
-	if err != nil {
-		http.Error(w, "invalid pubkey base64", http.StatusBadRequest)
-		return
-	}
-
-	if h.ssbStatus == nil {
-		http.Error(w, "ssb status provider not available", http.StatusServiceUnavailable)
-		return
-	}
-
-	if err := h.ssbStatus.ConnectPeer(r.Context(), addr, pubkey); err != nil {
-		h.writeInternalError(w, "handleConnectionConnect", "failed to connect to peer", err)
-		return
-	}
-
-	http.Redirect(w, r, "/connections", http.StatusSeeOther)
 }
 
 func (h *UIHandler) handleHealthz(w http.ResponseWriter, r *http.Request) {
@@ -469,22 +351,6 @@ func (h *UIHandler) handleAccounts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows := make([]templates.AccountRow, 0, len(accounts))
-	for _, account := range accounts {
-		rows = append(rows, templates.AccountRow{
-			ATDID:             account.ATDID,
-			SSBFeedID:         account.SSBFeedID,
-			Active:            account.Active,
-			TotalMessages:     account.TotalMessages,
-			PublishedMessages: account.PublishedMessages,
-			FailedMessages:    account.FailedMessages,
-			DeferredMessages:  account.DeferredMessages,
-			LastPublishedAt:   formatOptionalTime(account.LastPublishedAt),
-			CreatedAt:         account.CreatedAt,
-			MessagesURL:       "/messages?did=" + url.QueryEscape(account.ATDID),
-		})
-	}
-
 	w.Header().Set("Content-Type", "text/html")
 	if err := templates.RenderAccounts(w, templates.AccountsData{
 		Chrome: templates.PageChrome{
@@ -494,7 +360,7 @@ func (h *UIHandler) handleAccounts(w http.ResponseWriter, r *http.Request) {
 				{Label: "Accounts", Href: ""},
 			},
 		},
-		Accounts: rows,
+		Accounts: mapAccountRows(accounts),
 	}); err != nil {
 		h.writeInternalError(w, "accounts", "Template error", err)
 	}
@@ -749,375 +615,6 @@ func (h *UIHandler) handleMessageRetry(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, fmt.Sprintf("/messages/detail?at_uri=%s", url.QueryEscape(atURI)), http.StatusSeeOther)
 }
 
-func (h *UIHandler) handleBlobs(w http.ResponseWriter, r *http.Request) {
-	blobs, err := h.db.GetRecentBlobs(r.Context(), 200)
-	if err != nil {
-		h.writeInternalError(w, "blobs", "Failed to get blobs", err)
-		return
-	}
-
-	rows := make([]templates.BlobRow, 0, len(blobs))
-	for _, blob := range blobs {
-		rows = append(rows, templates.BlobRow{
-			ATCID:        blob.ATCID,
-			SSBBlobRef:   blob.SSBBlobRef,
-			Size:         blob.Size,
-			MimeType:     blob.MimeType,
-			DownloadedAt: blob.DownloadedAt,
-		})
-	}
-
-	w.Header().Set("Content-Type", "text/html")
-	if err := templates.RenderBlobs(w, templates.BlobsData{
-		Chrome: templates.PageChrome{
-			ActiveNav: "blobs",
-			Breadcrumbs: []templates.Breadcrumb{
-				{Label: "Dashboard", Href: "/"},
-				{Label: "Blobs", Href: ""},
-			},
-		},
-		Blobs: rows,
-	}); err != nil {
-		h.writeInternalError(w, "blobs", "Template error", err)
-	}
-}
-
-func (h *UIHandler) handleBlobView(w http.ResponseWriter, r *http.Request) {
-	refStr := r.URL.Query().Get("ref")
-	if refStr == "" {
-		http.Error(w, "Missing ref parameter", http.StatusBadRequest)
-		return
-	}
-
-	blobMeta, err := h.db.GetBlobBySSBRef(r.Context(), refStr)
-	if err != nil {
-		h.writeInternalError(w, "blob_view", "Failed to lookup blob metadata", err)
-		return
-	}
-	if blobMeta == nil {
-		http.Error(w, "Blob metadata not found", http.StatusNotFound)
-		return
-	}
-
-	if h.blobStore == nil {
-		http.Error(w, "Blob store not configured", http.StatusServiceUnavailable)
-		return
-	}
-
-	ref, err := refs.ParseBlobRef(refStr)
-	if err != nil {
-		http.Error(w, "Invalid SSB blob reference", http.StatusBadRequest)
-		return
-	}
-
-	rc, err := h.blobStore.Get(ref.Hash())
-	if err != nil {
-		http.Error(w, "Blob data not found in store", http.StatusNotFound)
-		return
-	}
-	defer rc.Close()
-
-	if blobMeta.MimeType != "" {
-		w.Header().Set("Content-Type", blobMeta.MimeType)
-	} else {
-		w.Header().Set("Content-Type", "application/octet-stream")
-	}
-	w.Header().Set("Content-Length", strconv.FormatInt(blobMeta.Size, 10))
-	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-
-	if _, err := io.Copy(w, rc); err != nil {
-		h.logger.Printf("event=blob_serve_error ref=%s error=%v", refStr, err)
-	}
-}
-
-func (h *UIHandler) handleState(w http.ResponseWriter, r *http.Request) {
-	state, err := h.db.GetAllBridgeState(r.Context())
-	if err != nil {
-		h.writeInternalError(w, "state", "Failed to get bridge state", err)
-		return
-	}
-
-	runtimeRows := make([]templates.StateRow, 0)
-	firehoseRows := make([]templates.StateRow, 0)
-	otherRows := make([]templates.StateRow, 0)
-	heartbeatValue := ""
-
-	for _, s := range state {
-		row := templates.StateRow{Key: s.Key, Value: s.Value, UpdatedAt: s.UpdatedAt}
-		switch {
-		case strings.HasPrefix(s.Key, "bridge_runtime_"):
-			runtimeRows = append(runtimeRows, row)
-			if s.Key == "bridge_runtime_last_heartbeat_at" {
-				heartbeatValue = s.Value
-			}
-		case strings.Contains(s.Key, "firehose") || strings.HasPrefix(s.Key, "atproto_"):
-			firehoseRows = append(firehoseRows, row)
-		default:
-			otherRows = append(otherRows, row)
-		}
-	}
-
-	deferredCount, err := h.db.CountDeferredMessages(r.Context())
-	if err != nil {
-		h.writeInternalError(w, "state", "Failed to get deferred count", err)
-		return
-	}
-
-	deletedCount, err := h.db.CountDeletedMessages(r.Context())
-	if err != nil {
-		h.writeInternalError(w, "state", "Failed to get deleted count", err)
-		return
-	}
-
-	latestReason, _, err := h.db.GetLatestDeferredReason(r.Context())
-	if err != nil {
-		h.writeInternalError(w, "state", "Failed to get latest deferred reason", err)
-		return
-	}
-
-	heartbeatStale, heartbeatAge := heartbeatFreshness(heartbeatValue)
-	statusTone := "success"
-	statusTitle := "State health: runtime heartbeat fresh"
-	statusBody := "Runtime and ATProto/firehose keys are grouped for faster incident inspection."
-	if heartbeatStale {
-		statusTone = "warning"
-		statusTitle = "State health: heartbeat stale"
-		statusBody = "Runtime heartbeat appears stale; verify bridge runtime and ATProto/firehose connectivity."
-	}
-
-	w.Header().Set("Content-Type", "text/html")
-	if err := templates.RenderState(w, templates.StateData{
-		Chrome: templates.PageChrome{
-			ActiveNav: "state",
-			Breadcrumbs: []templates.Breadcrumb{
-				{Label: "Dashboard", Href: "/"},
-				{Label: "State", Href: ""},
-			},
-			Status: templates.PageStatus{
-				Visible: true,
-				Tone:    statusTone,
-				Title:   statusTitle,
-				Body:    statusBody,
-			},
-		},
-		RuntimeState:      runtimeRows,
-		FirehoseState:     firehoseRows,
-		OtherState:        otherRows,
-		DeferredCount:     deferredCount,
-		DeletedCount:      deletedCount,
-		LatestDeferReason: latestReason,
-		HeartbeatStale:    heartbeatStale,
-		HeartbeatAge:      heartbeatAge,
-	}); err != nil {
-		h.writeInternalError(w, "state", "Template error", err)
-	}
-}
-
-func (h *UIHandler) handlePost(w http.ResponseWriter, r *http.Request) {
-	accounts, err := h.db.ListBridgedAccountsWithStats(r.Context())
-	if err != nil {
-		h.writeInternalError(w, "handlePost", "Failed to get accounts", err)
-		return
-	}
-
-	var accountRows []templates.AccountRow
-	for _, account := range accounts {
-		accountRows = append(accountRows, templates.AccountRow{
-			ATDID:             account.ATDID,
-			SSBFeedID:         account.SSBFeedID,
-			Active:            account.Active,
-			TotalMessages:     account.TotalMessages,
-			PublishedMessages: account.PublishedMessages,
-			FailedMessages:    account.FailedMessages,
-			DeferredMessages:  account.DeferredMessages,
-			LastPublishedAt:   formatOptionalTime(account.LastPublishedAt),
-			CreatedAt:         account.CreatedAt,
-			MessagesURL:       "/messages?did=" + url.QueryEscape(account.ATDID),
-		})
-	}
-
-	data := templates.PostData{
-		Chrome: templates.PageChrome{
-			ActiveNav: "post",
-			Breadcrumbs: []templates.Breadcrumb{
-				{Label: "Dashboard", Href: "/"},
-				{Label: "Compose Post", Href: ""},
-			},
-		},
-		Accounts:       accountRows,
-		PostingEnabled: h.atpClient != nil,
-	}
-
-	w.Header().Set("Content-Type", "text/html")
-	if err := templates.RenderPost(w, data); err != nil {
-		h.writeInternalError(w, "handlePost", "Template error", err)
-	}
-}
-
-func (h *UIHandler) handlePostAction(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseMultipartForm(10 << 20); err != nil { // 10MB limit
-		http.Error(w, "Unable to parse form", http.StatusBadRequest)
-		return
-	}
-
-	atDID := strings.TrimSpace(r.FormValue("at_did"))
-	text := strings.TrimSpace(r.FormValue("text"))
-
-	if atDID == "" {
-		http.Error(w, "Author DID is required", http.StatusBadRequest)
-		return
-	}
-
-	if text == "" {
-		http.Error(w, "Message text is required", http.StatusBadRequest)
-		return
-	}
-
-	account, err := h.db.GetBridgedAccount(r.Context(), atDID)
-	if err != nil {
-		h.writeInternalError(w, "handlePostAction", "Failed to get bridged account", err)
-		return
-	}
-	if account == nil || !account.Active {
-		http.Error(w, "Invalid or inactive account", http.StatusBadRequest)
-		return
-	}
-
-	if h.atpClient == nil {
-		http.Error(w, "ATProto posting is not configured on this bridge instance; please restart with --pds-host and --pds-password", http.StatusServiceUnavailable)
-		return
-	}
-
-	var imageBlob *appbsky.LexBlob
-
-	if len(r.MultipartForm.File["image"]) > 0 {
-		fh := r.MultipartForm.File["image"][0]
-		file, err := fh.Open()
-		if err != nil {
-			h.writeInternalError(w, "handlePostAction", "Failed to open uploaded file", err)
-			return
-		}
-		defer file.Close()
-
-		buffer := make([]byte, 512)
-		_, err = file.Read(buffer)
-		if err != nil {
-			h.writeInternalError(w, "handlePostAction", "Failed to read uploaded file", err)
-			return
-		}
-
-		file.Seek(0, io.SeekStart)
-		mimeType := http.DetectContentType(buffer)
-
-		if !strings.HasPrefix(mimeType, "image/") {
-			http.Error(w, "Uploaded file must be an image", http.StatusBadRequest)
-			return
-		}
-
-		blob, err := h.atpClient.UploadBlob(r.Context(), atDID, file, mimeType)
-		if err != nil {
-			h.writeInternalError(w, "handlePostAction", "Failed to upload blob", err)
-			return
-		}
-
-		imageBlob = blob
-	}
-
-	postURI, err := h.atpClient.CreatePost(r.Context(), atDID, text, imageBlob)
-	if err != nil {
-		h.writeInternalError(w, "handlePostAction", "Failed to create post", err)
-		return
-	}
-
-	http.Redirect(w, r, fmt.Sprintf("/messages/detail?at_uri=%s", url.QueryEscape(postURI)), http.StatusSeeOther)
-}
-
-func (h *UIHandler) handleFeed(w http.ResponseWriter, r *http.Request) {
-	limitStr := r.URL.Query().Get("limit")
-	limit := 50
-	if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
-		limit = l
-	}
-
-	messages, err := h.db.ListPublishedMessagesGlobal(r.Context(), limit)
-	if err != nil {
-		h.writeInternalError(w, "handleFeed", "Failed to get global feed", err)
-		return
-	}
-
-	rows := make([]templates.FeedRow, 0, len(messages))
-	for _, msg := range messages {
-		rows = append(rows, templates.FeedRow{
-			ATURI:     msg.ATURI,
-			ATDID:     msg.ATDID,
-			Type:      msg.Type,
-			CreatedAt: msg.CreatedAt,
-			Text:      extractSSBText(msg.RawSSBJson),
-			HasImage:  hasSSBImage(msg.RawSSBJson),
-			ImageRef:  getSSBImageRef(msg.RawSSBJson),
-		})
-	}
-
-	data := templates.FeedData{
-		Chrome: templates.PageChrome{
-			ActiveNav: "feed",
-			Breadcrumbs: []templates.Breadcrumb{
-				{Label: "Dashboard", Href: "/"},
-				{Label: "Global Feed", Href: ""},
-			},
-		},
-		Feed: rows,
-	}
-
-	w.Header().Set("Content-Type", "text/html")
-	if err := templates.RenderFeed(w, data); err != nil {
-		h.writeInternalError(w, "handleFeed", "Template error", err)
-	}
-}
-
-func extractSSBText(rawJSON string) string {
-	var m map[string]interface{}
-	if err := json.Unmarshal([]byte(rawJSON), &m); err != nil {
-		return ""
-	}
-	text, _ := m["text"].(string)
-	if text == "" {
-		// Check for legacy SSB content object
-		if content, ok := m["content"].(map[string]interface{}); ok {
-			text, _ = content["text"].(string)
-		}
-	}
-	return text
-}
-
-func hasSSBImage(rawJSON string) bool {
-	return getSSBImageRef(rawJSON) != ""
-}
-
-func getSSBImageRef(rawJSON string) string {
-	var m map[string]interface{}
-	if err := json.Unmarshal([]byte(rawJSON), &m); err != nil {
-		return ""
-	}
-	content, _ := m["content"].(map[string]interface{})
-	if content == nil {
-		content = m // Flat format
-	}
-
-	mentions, _ := content["mentions"].([]interface{})
-	for _, item := range mentions {
-		mi, ok := item.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		link, _ := mi["link"].(string)
-		if strings.HasPrefix(link, "&") {
-			return link
-		}
-	}
-	return ""
-}
-
 func formatMuxRPCHex(rawJSON string) string {
 	if strings.TrimSpace(rawJSON) == "" {
 		return ""
@@ -1159,44 +656,18 @@ func fullIssueText(message db.Message) string {
 
 func parseMessageListQuery(r *http.Request) db.MessageListQuery {
 	values := r.URL.Query()
-	return db.MessageListQuery{
+	query := db.MessageListQuery{
 		Search:    strings.TrimSpace(values.Get("q")),
 		ATDID:     strings.TrimSpace(values.Get("did")),
 		Type:      strings.TrimSpace(values.Get("type")),
-		State:     sanitizeMessageState(values.Get("state")),
-		Sort:      sanitizeMessageSort(values.Get("sort")),
+		State:     strings.TrimSpace(values.Get("state")),
+		Sort:      strings.TrimSpace(values.Get("sort")),
 		Limit:     parseMessageLimit(values.Get("limit")),
 		HasIssue:  parseBoolFlag(values.Get("has_issue")),
 		Cursor:    strings.TrimSpace(values.Get("cursor")),
-		Direction: sanitizeMessageDirection(values.Get("dir")),
+		Direction: strings.TrimSpace(values.Get("dir")),
 	}
-}
-
-func sanitizeMessageState(state string) string {
-	switch strings.TrimSpace(state) {
-	case "", db.MessageStatePending, db.MessageStatePublished, db.MessageStateFailed, db.MessageStateDeferred, db.MessageStateDeleted:
-		return strings.TrimSpace(state)
-	default:
-		return ""
-	}
-}
-
-func sanitizeMessageSort(sort string) string {
-	switch strings.TrimSpace(sort) {
-	case "oldest", "attempts_desc", "attempts_asc", "type_asc", "type_desc", "state_asc", "state_desc":
-		return strings.TrimSpace(sort)
-	default:
-		return "newest"
-	}
-}
-
-func sanitizeMessageDirection(direction string) string {
-	switch strings.TrimSpace(direction) {
-	case "prev":
-		return "prev"
-	default:
-		return "next"
-	}
+	return db.NormalizeMessageListQuery(query)
 }
 
 func parseMessageLimit(raw string) int {
