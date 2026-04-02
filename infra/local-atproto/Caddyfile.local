@@ -1,0 +1,8 @@
+https://pds.test {
+	tls internal
+	reverse_proxy pds:80
+}
+
+http://pds.test {
+	reverse_proxy pds:80
+}

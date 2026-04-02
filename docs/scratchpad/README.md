@@ -58,6 +58,7 @@ These drafts were incorporated into the main README:
 | [035-atindex-state-machine-and-backfill.md](035-atindex-state-machine-and-backfill.md) | `internal/atindex` repo-state model, buffered live commit handling, replay log, and durability fixes | 693, 697, 722, 723 | Historical |
 | [036-bridge-cutover-off-indigo.md](036-bridge-cutover-off-indigo.md) | Bridge/runtime/UI/operator cutover notes, cursor semantics, and backfill consumer restoration | 695, 698, 700, 722, 723 | Historical |
 | [037-indigo-test-fixture-migration.md](037-indigo-test-fixture-migration.md) | Final Indigo test-fixture and module cleanup notes, including vendoring removal and verification | 706-721, 724 | Historical |
+| [038-local-atproto-support-files.md](038-local-atproto-support-files.md) | Local ATProto deployment support files, bootstrap/export notes, and attached review/test follow-ups | — | Historical |
 
 ## Understanding Scratchpad Status
 

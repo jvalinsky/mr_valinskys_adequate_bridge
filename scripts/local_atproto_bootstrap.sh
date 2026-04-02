@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 ENV_OUT_PATH="${1:-/tmp/mvab-local-atproto-live.env}"
 LOCAL_ATPROTO_HOST="${LOCAL_ATPROTO_HOST:-http://127.0.0.1:2583}"
 LOCAL_ATPROTO_RELAY_URL="${LOCAL_ATPROTO_RELAY_URL:-ws://127.0.0.1:2584/xrpc/com.atproto.sync.subscribeRepos}"
+LOCAL_ATPROTO_PLC_URL="${LOCAL_ATPROTO_PLC_URL:-http://127.0.0.1:2582}"
 
 if ! command -v jq >/dev/null 2>&1; then
   echo "[local-atproto] jq is required" >&2
@@ -97,6 +98,7 @@ mkdir -p "$(dirname "${ENV_OUT_PATH}")"
 cat > "${ENV_OUT_PATH}" <<VARS
 LIVE_E2E_ENABLED=1
 LIVE_ATPROTO_HOST=${LOCAL_ATPROTO_HOST}
+LIVE_ATPROTO_PLC_URL=${LOCAL_ATPROTO_PLC_URL}
 LIVE_RELAY_URL=${LOCAL_ATPROTO_RELAY_URL}
 LIVE_ATPROTO_SOURCE_IDENTIFIER=${source_did}
 LIVE_ATPROTO_SOURCE_APP_PASSWORD=${source_password}

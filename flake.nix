@@ -34,12 +34,13 @@
 
           env = {
             CGO_ENABLED = "1";
+            GOFLAGS = "-mod=mod";
           };
           nativeBuildInputs = [ pkgs.pkg-config ];
           buildInputs = [ pkgs.sqlite ];
           doCheck = false;
 
-          vendorHash = "sha256-5B8PGDmdR+uHOaC4B5zN5uRu8XcQePmEf2k7ckEdurA=";
+          vendorHash = null;
           inherit go;
         };
     in

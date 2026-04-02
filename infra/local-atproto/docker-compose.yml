@@ -68,6 +68,18 @@ services:
       timeout: 2s
       retries: 30
 
+  relay-init-host:
+    image: postgres:16-alpine
+    depends_on:
+      relay:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: relay
+    command: >
+      /bin/sh -c "psql -h relay_pg -U relay -d relay -c \"INSERT INTO host (hostname, status, no_ssl) VALUES ('pds.test', 'active', true) ON CONFLICT (hostname) DO UPDATE SET no_ssl = true;\""
+    networks:
+      - default
+
   init-keys:
     image: ghcr.io/haileyok/cocoon:latest
     entrypoint: ["/bin/sh", "/scripts/cocoon-init-keys.sh"]
@@ -75,6 +87,21 @@ services:
       - ./cocoon-init-keys.sh:/scripts/cocoon-init-keys.sh:ro
       - ${LOCAL_ATPROTO_DATA_DIR:-/tmp/mvab-local-atproto}/cocoon-keys:/keys
 
+  pds-proxy:
+    image: caddy:alpine
+    ports:
+      - "443:443"
+      - "80:80"
+    volumes:
+      - ./Caddyfile.local:/etc/caddy/Caddyfile:ro
+      - plc_proxy_data:/data
+    networks:
+      default:
+        aliases:
+          - pds.test
+    depends_on:
+      pds:
+        condition: service_healthy
   pds:
     image: ghcr.io/haileyok/cocoon:latest
     command: ["/cocoon", "run"]
