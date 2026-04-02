@@ -602,6 +602,132 @@ func TestRuntimeInviteConsumeJSONSuccess(t *testing.T) {
 	}
 }
 
+func TestInviteMultiserverAddressUsesDomainHostForms(t *testing.T) {
+	kp, err := keys.Generate()
+	if err != nil {
+		t.Fatalf("generate room key pair: %v", err)
+	}
+
+	wantSuffix := "~shs:" + base64.StdEncoding.EncodeToString(kp.FeedRef().PubKey())
+	cases := []struct {
+		name       string
+		domain     string
+		listenAddr string
+		wantHost   string
+		wantPort   string
+	}{
+		{
+			name:       "raw host",
+			domain:     "bridge",
+			listenAddr: "[::]:8989",
+			wantHost:   "bridge",
+			wantPort:   "8989",
+		},
+		{
+			name:       "https url",
+			domain:     "https://bridge.example",
+			listenAddr: "[::]:8989",
+			wantHost:   "bridge.example",
+			wantPort:   "8989",
+		},
+		{
+			name:       "https url with port",
+			domain:     "https://bridge.example:443",
+			listenAddr: "[::]:8989",
+			wantHost:   "bridge.example",
+			wantPort:   "8989",
+		},
+		{
+			name:       "empty domain keeps concrete listener host",
+			domain:     "",
+			listenAddr: "127.0.0.1:8989",
+			wantHost:   "127.0.0.1",
+			wantPort:   "8989",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &inviteHandler{
+				keyPair:    kp,
+				domain:     tc.domain,
+				muxrpcAddr: tc.listenAddr,
+			}
+			wantAddr := "net:" + net.JoinHostPort(tc.wantHost, tc.wantPort) + wantSuffix
+			got := h.multiserverAddress()
+			if got != wantAddr {
+				t.Fatalf("expected %q, got %q", wantAddr, got)
+			}
+		})
+	}
+}
+
+func TestRuntimeInviteConsumeJSONUsesHTTPSDomainHost(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	rt, err := Start(ctx, Config{
+		ListenAddr:     "0.0.0.0:0",
+		HTTPListenAddr: "127.0.0.1:0",
+		RepoPath:       t.TempDir(),
+		Mode:           "open",
+		HTTPSDomain:    "https://bridge.example:443",
+	}, log.New(io.Discard, "", 0))
+	if err != nil {
+		if strings.Contains(err.Error(), "operation not permitted") {
+			t.Skipf("sandbox does not allow local listen sockets: %v", err)
+		}
+		t.Fatalf("start runtime: %v", err)
+	}
+	defer rt.Close()
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	token := createInviteAndExtractToken(t, client, rt.HTTPAddr())
+
+	memberKey, err := keys.Generate()
+	if err != nil {
+		t.Fatalf("generate member key: %v", err)
+	}
+
+	body := fmt.Sprintf(`{"invite":%q,"id":%q}`, token, memberKey.FeedRef().String())
+	req, err := http.NewRequest(http.MethodPost, "http://"+rt.HTTPAddr()+"/invite/consume", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("build consume request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("consume request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		consumeBody, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d\nbody: %s", resp.StatusCode, string(consumeBody))
+	}
+
+	var payload struct {
+		Status             string `json:"status"`
+		MultiserverAddress string `json:"multiserverAddress"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode consume response: %v", err)
+	}
+	if payload.Status != "successful" {
+		t.Fatalf("expected successful status, got %q", payload.Status)
+	}
+
+	_, port, err := net.SplitHostPort(rt.Addr())
+	if err != nil {
+		t.Fatalf("split room addr %q: %v", rt.Addr(), err)
+	}
+	wantAddr := "net:" + net.JoinHostPort("bridge.example", port) + "~shs:" + base64.StdEncoding.EncodeToString(rt.RoomFeed().PubKey())
+	if payload.MultiserverAddress != wantAddr {
+		t.Fatalf("expected multiserver address %q, got %q", wantAddr, payload.MultiserverAddress)
+	}
+}
+
 func TestRuntimeInviteConsumeDeniedKeyDoesNotConsumeInvite(t *testing.T) {
 	rt := startTestRuntime(t, "open", nil)
 	client := &http.Client{Timeout: 2 * time.Second}
@@ -1795,6 +1921,72 @@ func TestRuntimeAliasRegisterEndpointAndRevoke(t *testing.T) {
 	aliasMux.ServeHTTP(missingRec, missingReq)
 	if missingRec.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 after alias revoke, got %d\nbody: %s", missingRec.Code, missingRec.Body.String())
+	}
+}
+
+func TestRuntimeAliasJSONUsesHTTPSDomainHost(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	rt, err := Start(ctx, Config{
+		ListenAddr:     "0.0.0.0:0",
+		HTTPListenAddr: "127.0.0.1:0",
+		RepoPath:       t.TempDir(),
+		Mode:           "open",
+		HTTPSDomain:    "https://bridge.example:443",
+	}, log.New(io.Discard, "", 0))
+	if err != nil {
+		if strings.Contains(err.Error(), "operation not permitted") {
+			t.Skipf("sandbox does not allow local listen sockets: %v", err)
+		}
+		t.Fatalf("start runtime: %v", err)
+	}
+	defer rt.Close()
+
+	memberKey, err := keys.Generate()
+	if err != nil {
+		t.Fatalf("generate member key: %v", err)
+	}
+	if _, err := rt.roomDB.Members().Add(ctx, memberKey.FeedRef(), roomdb.RoleMember); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+
+	alias := "oakhost"
+	signature := ed25519.Sign(memberKey.Private(), []byte("alias-host-check"))
+	if err := rt.roomDB.Aliases().Register(ctx, alias, memberKey.FeedRef(), signature); err != nil {
+		t.Fatalf("register alias: %v", err)
+	}
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Get("http://" + rt.HTTPAddr() + "/" + alias + "?encoding=json")
+	if err != nil {
+		t.Fatalf("alias request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200 alias response, got %d\nbody: %s", resp.StatusCode, string(body))
+	}
+
+	var payload struct {
+		Status             string `json:"status"`
+		MultiserverAddress string `json:"multiserverAddress"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode alias json: %v", err)
+	}
+	if payload.Status != "successful" {
+		t.Fatalf("expected successful alias status, got %q", payload.Status)
+	}
+
+	_, port, err := net.SplitHostPort(rt.Addr())
+	if err != nil {
+		t.Fatalf("split room addr %q: %v", rt.Addr(), err)
+	}
+	wantAddr := "net:" + net.JoinHostPort("bridge.example", port) + "~shs:" + base64.StdEncoding.EncodeToString(rt.RoomFeed().PubKey())
+	if payload.MultiserverAddress != wantAddr {
+		t.Fatalf("expected multiserver address %q, got %q", wantAddr, payload.MultiserverAddress)
 	}
 }
 

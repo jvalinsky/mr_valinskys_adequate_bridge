@@ -13,6 +13,7 @@
 #   E2E_TF_EXPOSE_PORTS=0|1         — include debug port override when set to 1
 #   E2E_TF_BRIDGE_MUXRPC_ADDR=host:port
 #   E2E_TF_BRIDGE_HTTP_ADDR=host:port
+#   E2E_TF_SEED_INCLUDE_BLOB_POST=0|1   — include blob-mention seed post (default 0)
 #   E2E_TF_FIREHOSE_MODE=off|external
 #   E2E_TF_RELAY_URL=ws://host:port/xrpc/com.atproto.sync.subscribeRepos (required when mode=external)
 #   E2E_TF_MAX_WAIT_SECS=<seconds>

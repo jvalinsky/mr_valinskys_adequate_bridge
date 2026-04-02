@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -902,10 +903,43 @@ func (h *inviteHandler) consumeAliasURI(alias roomdb.Alias) string {
 	return "ssb:experimental?" + query.Encode()
 }
 
+func inviteAdvertisedHost(domain string) string {
+	raw := strings.TrimSpace(domain)
+	if raw == "" {
+		return ""
+	}
+
+	if strings.Contains(raw, "://") {
+		parsed, err := url.Parse(raw)
+		if err != nil {
+			return ""
+		}
+		return strings.TrimSpace(parsed.Hostname())
+	}
+
+	parsed, err := url.Parse("//" + raw)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(parsed.Hostname())
+}
+
 func (h *inviteHandler) multiserverAddress() string {
 	addr := strings.TrimSpace(h.muxrpcAddr)
 	if addr == "" {
 		addr = defaultMUXRPCListenAddr
+	}
+
+	host, port, err := net.SplitHostPort(addr)
+	if err == nil {
+		if advertisedHost := inviteAdvertisedHost(h.domain); advertisedHost != "" {
+			host = advertisedHost
+		}
+		if host == "" {
+			addr = ":" + port
+		} else {
+			addr = net.JoinHostPort(host, port)
+		}
 	}
 
 	if h.keyPair == nil {

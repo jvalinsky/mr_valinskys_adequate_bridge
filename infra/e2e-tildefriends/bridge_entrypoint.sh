@@ -11,6 +11,7 @@ ROOM_MUXRPC_ADDR="${ROOM_MUXRPC_ADDR:-0.0.0.0:8989}"
 ROOM_HTTP_ADDR="${ROOM_HTTP_ADDR:-0.0.0.0:8976}"
 ROOM_MODE="${ROOM_MODE:-open}"
 ROOM_HTTPS_DOMAIN="${ROOM_HTTPS_DOMAIN:-bridge}"
+E2E_SEED_INCLUDE_BLOB_POST="${E2E_SEED_INCLUDE_BLOB_POST:-0}"
 BRIDGE_FIREHOSE_ENABLE="${BRIDGE_FIREHOSE_ENABLE:-0}"
 BRIDGE_RELAY_URL="${BRIDGE_RELAY_URL:-}"
 
@@ -21,7 +22,8 @@ e2e-seed \
   --db "${DB_PATH}" \
   --repo-path "${REPO_PATH}" \
   --bot-seed "${BOT_SEED}" \
-  --did "${BOT_DID}"
+  --did "${BOT_DID}" \
+  --include-blob-post="${E2E_SEED_INCLUDE_BLOB_POST}"
 
 # Also register the target DID
 bridge-cli --db "${DB_PATH}" --bot-seed "${BOT_SEED}" account add "${BOT_TARGET_DID}" || true

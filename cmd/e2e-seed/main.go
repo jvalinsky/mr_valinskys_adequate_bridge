@@ -48,6 +48,12 @@ func main() {
 				Name:  "did",
 				Usage: "AT DID to publish messages for",
 			},
+			&cli.BoolFlag{
+				Name:    "include-blob-post",
+				Value:   true,
+				EnvVars: []string{"E2E_SEED_INCLUDE_BLOB_POST"},
+				Usage:   "publish an additional blob-mention post after base seed messages",
+			},
 			&cli.StringFlag{
 				Name:  "otel-logs-endpoint",
 				Usage: "OTLP logs endpoint; empty disables OTLP log export",
@@ -77,6 +83,7 @@ func main() {
 			repoPath := c.String("repo-path")
 			botSeed := c.String("bot-seed")
 			did := strings.TrimSpace(c.String("did"))
+			includeBlobPost := c.Bool("include-blob-post")
 
 			if did == "" {
 				return fmt.Errorf("--did is required")
@@ -184,59 +191,63 @@ func main() {
 				}
 			}
 
-			blobStore := rt.BlobStore()
-			blobDir := filepath.Join(repoPath, "blobs")
-			if err := os.RemoveAll(blobDir); err != nil {
-				logger.Printf("warning: could not clean blob directory: %v", err)
-			}
-			if err := os.MkdirAll(blobDir, 0755); err != nil {
-				logger.Printf("warning: could not create blob directory: %v", err)
-			}
-
-			testImageData := []byte{
-				0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
-				0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
-				0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53, 0xde, 0x00, 0x00, 0x00,
-				0x0c, 0x49, 0x44, 0x41, 0x54, 0x08, 0xd7, 0x63, 0xf8, 0xcf, 0xc0, 0x00,
-				0x00, 0x00, 0x03, 0x00, 0x01, 0x00, 0x05, 0xfe, 0xd4, 0xee, 0x00, 0x00,
-				0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
-			}
-
-			blobHash, err := blobStore.Put(bytes.NewReader(testImageData))
-			if err != nil {
-				logger.Printf("warning: could not store test blob: %v", err)
-			} else {
-				blobRef := fmt.Sprintf("&%s.sha256", base64.RawStdEncoding.EncodeToString(blobHash))
-				logger.Printf("stored test blob: hash=%x ref=%s", blobHash, blobRef)
-
-				blobPost := map[string]interface{}{
-					"type":      "post",
-					"text":      fmt.Sprintf("e2e test post with image — %d", time.Now().UnixNano()),
-					"mentions":  []map[string]interface{}{{"link": blobRef, "name": "test-image.png"}},
-					"createdAt": time.Now().UTC().Format(time.RFC3339),
+			if includeBlobPost {
+				blobStore := rt.BlobStore()
+				blobDir := filepath.Join(repoPath, "blobs")
+				if err := os.RemoveAll(blobDir); err != nil {
+					logger.Printf("warning: could not clean blob directory: %v", err)
+				}
+				if err := os.MkdirAll(blobDir, 0755); err != nil {
+					logger.Printf("warning: could not create blob directory: %v", err)
 				}
 
-				ref, err := rt.Publish(ctx, did, blobPost)
-				if err != nil {
-					logger.Printf("warning: could not publish blob post: %v", err)
-				} else {
-					logger.Printf("published blob post: ref=%s", ref)
+				testImageData := []byte{
+					0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+					0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+					0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53, 0xde, 0x00, 0x00, 0x00,
+					0x0c, 0x49, 0x44, 0x41, 0x54, 0x08, 0xd7, 0x63, 0xf8, 0xcf, 0xc0, 0x00,
+					0x00, 0x00, 0x03, 0x00, 0x01, 0x00, 0x05, 0xfe, 0xd4, 0xee, 0x00, 0x00,
+					0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+				}
 
-					rawJSON, _ := json.Marshal(blobPost)
-					blobURI := fmt.Sprintf("at://%s/app.bsky.feed.post/e2e-blob-%d", did, time.Now().UnixNano())
-					if err := database.AddMessage(ctx, db.Message{
-						ATURI:        blobURI,
-						ATCID:        fmt.Sprintf("bafy-e2e-blob-%d", time.Now().UnixNano()),
-						ATDID:        did,
-						Type:         "app.bsky.feed.post",
-						MessageState: db.MessageStatePublished,
-						RawATJson:    string(rawJSON),
-						RawSSBJson:   string(rawJSON),
-						SSBMsgRef:    ref,
-					}); err != nil {
-						logger.Printf("add blob message row (may already exist): %v", err)
+				blobHash, err := blobStore.Put(bytes.NewReader(testImageData))
+				if err != nil {
+					logger.Printf("warning: could not store test blob: %v", err)
+				} else {
+					blobRef := fmt.Sprintf("&%s.sha256", base64.RawStdEncoding.EncodeToString(blobHash))
+					logger.Printf("stored test blob: hash=%x ref=%s", blobHash, blobRef)
+
+					blobPost := map[string]interface{}{
+						"type":      "post",
+						"text":      fmt.Sprintf("e2e test post with image — %d", time.Now().UnixNano()),
+						"mentions":  []map[string]interface{}{{"link": blobRef, "name": "test-image.png"}},
+						"createdAt": time.Now().UTC().Format(time.RFC3339),
+					}
+
+					ref, err := rt.Publish(ctx, did, blobPost)
+					if err != nil {
+						logger.Printf("warning: could not publish blob post: %v", err)
+					} else {
+						logger.Printf("published blob post: ref=%s", ref)
+
+						rawJSON, _ := json.Marshal(blobPost)
+						blobURI := fmt.Sprintf("at://%s/app.bsky.feed.post/e2e-blob-%d", did, time.Now().UnixNano())
+						if err := database.AddMessage(ctx, db.Message{
+							ATURI:        blobURI,
+							ATCID:        fmt.Sprintf("bafy-e2e-blob-%d", time.Now().UnixNano()),
+							ATDID:        did,
+							Type:         "app.bsky.feed.post",
+							MessageState: db.MessageStatePublished,
+							RawATJson:    string(rawJSON),
+							RawSSBJson:   string(rawJSON),
+							SSBMsgRef:    ref,
+						}); err != nil {
+							logger.Printf("add blob message row (may already exist): %v", err)
+						}
 					}
 				}
+			} else {
+				logger.Printf("skipping blob post seed (--include-blob-post=false)")
 			}
 
 			logger.Printf("seeded %d SSB messages for %s (feed: %s)", len(messages), did, feedRef.Ref())

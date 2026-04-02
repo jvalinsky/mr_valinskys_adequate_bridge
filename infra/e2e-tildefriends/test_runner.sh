@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 # test_runner.sh — runs inside the test-runner container.
-# Orchestrates the tildefriends→bridge-room e2e flow in strict room-only mode:
+# Orchestrates the tildefriends→bridge-room e2e flow in strict invite-derived mode:
 #   1. Wait for bridge room to become healthy & live
-#   2. Extract room public key from bridge repo
-#   3. Get tildefriends identity
+#   2. Create and consume invite for TF identity
+#   3. Seed TF connection from invite-derived multiserverAddress
 #   4. Publish follow messages required for room tunnel dial
-#   5. Seed TF connections with room-only target and assert invariants
-#   6. Verify TF replicates bot feed while room-only invariants hold
+#   5. Verify TF replicates bot feed while strict invite invariants hold
 set -euo pipefail
 
 BRIDGE_HTTP_ADDR="${BRIDGE_HTTP_ADDR:-bridge:8976}"
@@ -62,6 +61,31 @@ parse_host_port() {
   fi
   printf -v "${host_var}" "%s" "${host}"
   printf -v "${port_var}" "%s" "${port}"
+}
+
+url_decode() {
+  local encoded="${1//+/ }"
+  printf '%b' "${encoded//%/\\x}"
+}
+
+normalize_host_for_compare() {
+  local host="$1"
+  host="${host#[}"
+  host="${host%]}"
+  echo "${host}"
+}
+
+assert_invite_endpoint_matches_expected() {
+  local invite_host_norm expected_host_norm
+  invite_host_norm="$(normalize_host_for_compare "${ROOM_HOST}")"
+  expected_host_norm="$(normalize_host_for_compare "${EXPECTED_ROOM_HOST}")"
+
+  if [[ "${ROOM_PORT}" != "${EXPECTED_ROOM_PORT}" ]]; then
+    die "invite-derived muxrpc port mismatch: got ${ROOM_PORT}, expected ${EXPECTED_ROOM_PORT}"
+  fi
+  if [[ "${invite_host_norm}" != "${expected_host_norm}" ]]; then
+    die "invite-derived muxrpc host mismatch: got ${ROOM_HOST}, expected ${EXPECTED_ROOM_HOST}"
+  fi
 }
 
 dump_tf_connections() {
@@ -130,19 +154,6 @@ wait_for_follow_contact() {
   done
 }
 
-ensure_room_membership() {
-  local member_key="$1"
-  local member_key_escaped member_rows
-  member_key_escaped="$(sql_escape "${member_key}")"
-  member_rows="$(sql_count "${ROOM_DB_PATH}" "SELECT COUNT(*) FROM members WHERE pub_key='${member_key_escaped}';")"
-  if [[ "${member_rows}" -eq 0 ]]; then
-    sqlite3 "${ROOM_DB_PATH}" "INSERT INTO members (role, pub_key) VALUES (1, '${member_key_escaped}');"
-    log "added room membership for ${member_key}"
-    return 0
-  fi
-  log "room membership already present for ${member_key}"
-}
-
 get_feed_sequence() {
   local feed_id="$1"
   local raw seq
@@ -170,7 +181,7 @@ queue_retry_trigger_message() {
   log "queued retry-trigger bridge message: ${RETRY_TRIGGER_AT_URI}"
 }
 
-parse_host_port "${BRIDGE_MUXRPC_ADDR}" ROOM_HOST ROOM_PORT
+parse_host_port "${BRIDGE_MUXRPC_ADDR}" EXPECTED_ROOM_HOST EXPECTED_ROOM_PORT
 
 # ------------------------------------------------------------------
 # 1. Wait for bridge room healthz
@@ -260,10 +271,78 @@ log "tildefriends identity: ${TF_IDENTITY}"
 if [[ ! -f "${ROOM_DB_PATH}" ]]; then
   die "bridge room DB not found at ${ROOM_DB_PATH}"
 fi
-ensure_room_membership "${TF_IDENTITY}"
 
 # ------------------------------------------------------------------
-# 7. Publish follow (contact) messages from TF to the bot and bridge
+# 7. Create + consume invite and derive strict TF connection target
+# ------------------------------------------------------------------
+log "creating invite via room facade ..."
+invite_resp="$(curl -sS -f -X POST "http://${BRIDGE_HTTP_ADDR}/create-invite" -H "Accept: application/json")"
+invite_url="$(echo "${invite_resp}" | jq -r '.url // empty')"
+if [[ -z "${invite_url}" ]]; then
+  die "create-invite response missing url: ${invite_resp}"
+fi
+if [[ "${invite_url}" != *"token="* ]]; then
+  die "invite URL missing token: ${invite_url}"
+fi
+invite_token_raw="${invite_url##*token=}"
+invite_token_raw="${invite_token_raw%%&*}"
+INVITE_TOKEN="$(url_decode "${invite_token_raw}")"
+if [[ -z "${INVITE_TOKEN}" ]]; then
+  die "failed to decode invite token from URL: ${invite_url}"
+fi
+log "invite created"
+
+consume_payload="$(jq -cn --arg invite "${INVITE_TOKEN}" --arg id "${TF_IDENTITY}" '{invite:$invite,id:$id}')"
+consume_http="$(curl -sS -o /tmp/invite-consume.json -w "%{http_code}" -X POST "http://${BRIDGE_HTTP_ADDR}/invite/consume" -H "Content-Type: application/json" -H "Accept: application/json" --data "${consume_payload}")"
+consume_body="$(cat /tmp/invite-consume.json)"
+if [[ "${consume_http}" != "200" ]]; then
+  die "invite consume failed: http=${consume_http} body=${consume_body}"
+fi
+
+consume_status="$(echo "${consume_body}" | jq -r '.status // empty')"
+MULTISERVER_ADDR="$(echo "${consume_body}" | jq -r '.multiserverAddress // empty')"
+if [[ "${consume_status}" != "successful" ]]; then
+  die "invite consume returned non-success status=${consume_status} body=${consume_body}"
+fi
+if [[ -z "${MULTISERVER_ADDR}" || "${MULTISERVER_ADDR}" != net:*~shs:* ]]; then
+  die "invalid invite consume multiserverAddress: ${MULTISERVER_ADDR}"
+fi
+log "invite consumed: multiserverAddress=${MULTISERVER_ADDR}"
+
+join_query_token="$(printf "%s" "${INVITE_TOKEN}" | jq -sRr @uri)"
+join_after_status="$(curl -sS -o /tmp/invite-join-after-consume.txt -w "%{http_code}" "http://${BRIDGE_HTTP_ADDR}/join?token=${join_query_token}")"
+if [[ "${join_after_status}" != "404" ]]; then
+  join_after_body="$(cat /tmp/invite-join-after-consume.txt)"
+  die "expected consumed invite token to return 404 from /join, got ${join_after_status} body=${join_after_body}"
+fi
+log "invite token consumption confirmed (join returns 404)"
+
+net_addr="${MULTISERVER_ADDR#net:}"
+net_addr="${net_addr%%~shs:*}"
+room_key_b64="${MULTISERVER_ADDR##*~shs:}"
+if [[ -z "${net_addr}" || -z "${room_key_b64}" ]]; then
+  die "failed parsing multiserverAddress=${MULTISERVER_ADDR}"
+fi
+
+if [[ "${net_addr}" =~ ^\[(.*)\]:(.*)$ ]]; then
+  ROOM_HOST="[${BASH_REMATCH[1]}]"
+  ROOM_PORT="${BASH_REMATCH[2]}"
+else
+  ROOM_HOST="${net_addr%:*}"
+  ROOM_PORT="${net_addr##*:}"
+fi
+if [[ -z "${ROOM_HOST}" || -z "${ROOM_PORT}" || ! "${ROOM_PORT}" =~ ^[0-9]+$ ]]; then
+  die "invalid invite-derived host/port from multiserverAddress=${MULTISERVER_ADDR}"
+fi
+ROOM_KEY="@${room_key_b64}.ed25519"
+if [[ "${ROOM_KEY}" != "${ROOM_PUB_KEY}" ]]; then
+  die "invite room key mismatch: invite=${ROOM_KEY} room_secret=${ROOM_PUB_KEY}"
+fi
+assert_invite_endpoint_matches_expected
+log "invite-derived endpoint host=${ROOM_HOST} port=${ROOM_PORT} key=${ROOM_KEY}"
+
+# ------------------------------------------------------------------
+# 8. Publish follow (contact) messages from TF to the bot and bridge
 # ------------------------------------------------------------------
 BRIDGE_SECRET_FILE="${BRIDGE_REPO_PATH}/secret"
 if [[ ! -f "${BRIDGE_SECRET_FILE}" ]]; then
@@ -274,6 +353,9 @@ if [[ -z "${BRIDGE_PUBKEY}" || "${BRIDGE_PUBKEY}" != @*".ed25519" ]]; then
   die "invalid bridge pub key: ${BRIDGE_PUBKEY}"
 fi
 log "bridge pub key: ${BRIDGE_PUBKEY}"
+BRIDGE_KEY="${BRIDGE_PUBKEY}"
+BRIDGE_KEY_RAW="${BRIDGE_PUBKEY#@}"
+BRIDGE_KEY_RAW="${BRIDGE_KEY_RAW%.ed25519}"
 
 log "publishing follow (contact) messages from TF to bot and bridge..."
 BOT_FOLLOW_JSON="{\"type\":\"contact\",\"contact\":\"${BOT_SSB_FEED}\",\"following\":true}"
@@ -284,15 +366,10 @@ BRIDGE_FOLLOW_JSON="{\"type\":\"contact\",\"contact\":\"${BRIDGE_PUBKEY}\",\"fol
 log "follow messages published"
 
 # ------------------------------------------------------------------
-# 8. Setup strict room-only connection in TF
+# 9. Setup strict invite-derived connection in TF
 # ------------------------------------------------------------------
-log "configuring TF connection table in strict room-only mode ..."
+log "configuring TF connection table in strict invite-derived mode ..."
 sqlite3 "${TF_DB_PATH}" "DELETE FROM connections;"
-
-ROOM_KEY="${ROOM_PUB_KEY}"
-BRIDGE_KEY="${BRIDGE_PUBKEY}"
-BRIDGE_KEY_RAW="${BRIDGE_PUBKEY#@}"
-BRIDGE_KEY_RAW="${BRIDGE_KEY_RAW%.ed25519}"
 
 room_host_escaped="$(sql_escape "${ROOM_HOST}")"
 room_key_escaped="$(sql_escape "${ROOM_KEY}")"
@@ -300,22 +377,22 @@ sqlite3 "${TF_DB_PATH}" "INSERT INTO connections (host, port, key) VALUES ('${ro
 assert_room_only_connections
 
 # ------------------------------------------------------------------
-# 9. Start tildefriends natively in background
+# 10. Start tildefriends natively in background
 # ------------------------------------------------------------------
-log "starting tildefriends natively in background (room-only path) ..."
+log "starting tildefriends natively in background (invite-derived room path) ..."
 "${TF_BIN}" run --db-path "${TF_DB_PATH}" --verbose --one-proc > /tmp/tf.log 2>&1 &
 TF_PID=$!
 log "tildefriends started with PID ${TF_PID}"
 sleep 2
 
 # ------------------------------------------------------------------
-# 10. Verify that tildefriends recognizes the contact
+# 11. Verify that tildefriends recognizes the contact
 # ------------------------------------------------------------------
 log "verifying contact is registered ..."
 wait_for_follow_contact
 
 # ------------------------------------------------------------------
-# 11. Queue a retry-trigger message while room tunnel is active
+# 12. Queue a retry-trigger message while room tunnel is active
 # ------------------------------------------------------------------
 baseline_msg_count="$(sql_count "${TF_DB_PATH}" "SELECT COUNT(*) FROM messages WHERE author='$(sql_escape "${BOT_SSB_FEED}")';")"
 baseline_seq="$(get_feed_sequence "${BOT_SSB_FEED}")"
@@ -328,7 +405,7 @@ log "queueing a retry-trigger message so bridge publishes while TF room tunnel i
 queue_retry_trigger_message
 
 # ------------------------------------------------------------------
-# 12. Wait for tildefriends to replicate the bot's feed via room
+# 13. Wait for tildefriends to replicate the bot's feed via room
 # ------------------------------------------------------------------
 log "waiting for TF to replicate bot feed via room (strict invariants enabled) ..."
 deadline=$((SECONDS + MAX_WAIT_SECS))
