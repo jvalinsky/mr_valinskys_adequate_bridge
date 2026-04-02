@@ -142,3 +142,29 @@ type InvitesService interface {
 	Count(ctx context.Context, onlyActive bool) (uint, error)
 	Revoke(ctx context.Context, id int64) error
 }
+
+type RuntimeAttendantSnapshot struct {
+	ID          refs.FeedRef
+	Addr        string
+	ConnectedAt int64
+	LastSeenAt  int64
+	Active      bool
+}
+
+type RuntimeTunnelEndpointSnapshot struct {
+	Target      refs.FeedRef
+	Addr        string
+	AnnouncedAt int64
+	LastSeenAt  int64
+	Active      bool
+}
+
+type RuntimeSnapshotsService interface {
+	MarkAllInactive(ctx context.Context) error
+	UpsertAttendant(ctx context.Context, id refs.FeedRef, addr string, connectedAt int64) error
+	DeactivateAttendant(ctx context.Context, id refs.FeedRef) error
+	ListAttendants(ctx context.Context, onlyActive bool) ([]RuntimeAttendantSnapshot, error)
+	UpsertTunnelEndpoint(ctx context.Context, target refs.FeedRef, addr string, announcedAt int64) error
+	DeactivateTunnelEndpoint(ctx context.Context, target refs.FeedRef) error
+	ListTunnelEndpoints(ctx context.Context, onlyActive bool) ([]RuntimeTunnelEndpointSnapshot, error)
+}

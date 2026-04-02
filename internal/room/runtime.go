@@ -3,12 +3,14 @@ package room
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -50,10 +52,11 @@ type Runtime struct {
 	muxrpcAddr string
 	httpAddr   string
 
-	keyPair *keys.KeyPair
-	roomDB  RoomDB
-	state   *roomstate.Manager
-	roomSrv *roomhandlers.RoomServer
+	keyPair   *keys.KeyPair
+	roomDB    RoomDB
+	state     *roomstate.Manager
+	snapshots roomdb.RuntimeSnapshotsService
+	roomSrv   *roomhandlers.RoomServer
 
 	httpServer     *http.Server
 	httpListener   net.Listener
@@ -156,6 +159,10 @@ func (r *Runtime) initDB() error {
 	}
 
 	r.state = roomstate.NewManager()
+	r.snapshots = r.roomDB.RuntimeSnapshots()
+	if err := r.snapshots.MarkAllInactive(r.ctx); err != nil {
+		return fmt.Errorf("room: failed to mark runtime snapshots inactive: %w", err)
+	}
 	return nil
 }
 
@@ -176,7 +183,7 @@ func (r *Runtime) initHandlers() {
 	if handlerMux == nil {
 		handlerMux = &muxrpc.HandlerMux{}
 	}
-	registerRoomHandlers(handlerMux, roomSrv, r.keyPair, r.cfg.AppKey)
+	registerRoomHandlers(handlerMux, roomSrv, r.snapshots, r.keyPair, r.cfg.AppKey)
 
 	r.handler = handlerMux
 	r.manifest = &muxrpc.Manifest{}
@@ -198,7 +205,7 @@ func (r *Runtime) initNetwork() error {
 	r.muxrpcListener = muxrpcListener
 	r.muxrpcAddr = muxrpcListener.Addr().String()
 
-	muxHandler := newServeMux(r.ctx, r.roomDB, r.state, r.keyPair, r.cfg.HTTPSDomain, r.muxrpcAddr)
+	muxHandler := newServeMux(r.ctx, r.roomDB, r.state, r.keyPair, r.cfg.HTTPSDomain, r.httpAddr, r.muxrpcAddr)
 	r.httpServer = &http.Server{
 		Handler: newBridgeRoomHandlerWithAuth(
 			muxHandler,
@@ -290,13 +297,14 @@ func (r *Runtime) Close() error {
 			}
 		}
 
+		r.wg.Wait()
+
 		if r.roomDB != nil {
 			if err := r.roomDB.Close(); err != nil {
 				errs = append(errs, fmt.Errorf("close room db: %w", err))
 			}
 		}
 
-		r.wg.Wait()
 		r.closeErr = joinErrors(errs)
 		if r.closeErr == nil {
 			r.logger.Printf("event=room_runtime_stopped muxrpc_addr=%s http_addr=%s", r.muxrpcAddr, r.httpAddr)
@@ -331,7 +339,11 @@ func (r *Runtime) serveMUXRPC(ctx context.Context, shutdownCh <-chan struct{}, l
 			}
 		}
 
-		go r.handleMUXRPCConn(ctx, conn)
+		r.wg.Add(1)
+		go func() {
+			defer r.wg.Done()
+			r.handleMUXRPCConn(ctx, conn)
+		}()
 	}
 }
 
@@ -402,6 +414,9 @@ func (r *Runtime) handleMUXRPCConn(ctx context.Context, conn net.Conn) {
 	if isMember && r.state != nil {
 		r.state.AddAttendant(*remoteFeed, tracked.RemoteAddr().String())
 	}
+	if isMember && r.snapshots != nil {
+		_ = r.snapshots.UpsertAttendant(context.Background(), *remoteFeed, tracked.RemoteAddr().String(), time.Now().Unix())
+	}
 	if isMember && r.roomSrv != nil {
 		r.roomSrv.PeerRegistry().Register(*remoteFeed, srv)
 	}
@@ -414,6 +429,10 @@ func (r *Runtime) handleMUXRPCConn(ctx context.Context, conn net.Conn) {
 	if isMember && r.state != nil {
 		r.state.RemoveAttendant(*remoteFeed)
 		r.state.RemovePeer(*remoteFeed)
+	}
+	if isMember && r.snapshots != nil {
+		_ = r.snapshots.DeactivateAttendant(context.Background(), *remoteFeed)
+		_ = r.snapshots.DeactivateTunnelEndpoint(context.Background(), *remoteFeed)
 	}
 	if isMember && r.roomSrv != nil {
 		r.roomSrv.PeerRegistry().Unregister(*remoteFeed)
@@ -499,12 +518,20 @@ func newRoomServer(keyPair *refs.FeedRef, db RoomDB, state *roomstate.Manager) *
 	}
 }
 
-func newServeMux(ctx context.Context, db RoomDB, state *roomstate.Manager, keyPair *keys.KeyPair, httpsDomain, muxrpcAddr string) *http.ServeMux {
+func newServeMux(ctx context.Context, db RoomDB, state *roomstate.Manager, keyPair *keys.KeyPair, httpsDomain, httpAddr, muxrpcAddr string) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	})
+
+	statusH := newRoomStatusHandler(db.RoomConfig(), db.RuntimeSnapshots(), state, keyPair, httpAddr, muxrpcAddr)
+	mux.HandleFunc("/status", statusH.handleSummary)
+	mux.HandleFunc("/status/attendants", statusH.handleAttendants)
+	mux.HandleFunc("/status/tunnels", statusH.handleTunnels)
+	mux.HandleFunc("/api/room/status", statusH.handleSummary)
+	mux.HandleFunc("/api/room/status/attendants", statusH.handleAttendants)
+	mux.HandleFunc("/api/room/status/tunnels", statusH.handleTunnels)
 
 	inviteH := newInviteHandler(
 		db.Invites(),
@@ -533,11 +560,12 @@ func newServeMux(ctx context.Context, db RoomDB, state *roomstate.Manager, keyPa
 	return mux
 }
 
-func registerRoomHandlers(mux *muxrpc.HandlerMux, srv *roomhandlers.RoomServer, keyPair *keys.KeyPair, appKey string) {
+func registerRoomHandlers(mux *muxrpc.HandlerMux, srv *roomhandlers.RoomServer, snapshots roomdb.RuntimeSnapshotsService, keyPair *keys.KeyPair, appKey string) {
 	mux.Register(muxrpc.Method{"whoami"}, &whoamiHandler{srv})
 	mux.Register(muxrpc.Method{"room"}, roomhandlers.NewAliasHandler(srv))
 
 	tunnelHandler := roomhandlers.NewTunnelHandler(srv, keyPair, appKey)
+	tunnelHandler.SetRuntimeSnapshots(snapshots)
 	mux.Register(muxrpc.Method{"tunnel", "announce"}, tunnelHandler)
 	mux.Register(muxrpc.Method{"tunnel", "leave"}, tunnelHandler)
 	mux.Register(muxrpc.Method{"tunnel", "connect"}, tunnelHandler)
@@ -567,6 +595,262 @@ func (h *whoamiHandler) HandleCall(ctx context.Context, req *muxrpc.Request) {
 }
 
 func (h *whoamiHandler) HandleConnect(ctx context.Context, edp muxrpc.Endpoint) {}
+
+type roomStatusHandler struct {
+	config     roomdb.RoomConfig
+	snapshots  roomdb.RuntimeSnapshotsService
+	state      *roomstate.Manager
+	keyPair    *keys.KeyPair
+	httpAddr   string
+	muxrpcAddr string
+}
+
+type roomStatusSummary struct {
+	RoomID           string `json:"roomId"`
+	PrivacyMode      string `json:"privacyMode"`
+	HTTPAddr         string `json:"httpAddr"`
+	MuxrpcAddr       string `json:"muxrpcAddr"`
+	LiveAttendants   int    `json:"liveAttendants"`
+	LivePeers        int    `json:"livePeers"`
+	ActiveAttendants int    `json:"activeAttendants"`
+	TotalAttendants  int    `json:"totalAttendants"`
+	ActiveTunnels    int    `json:"activeTunnels"`
+	TotalTunnels     int    `json:"totalTunnels"`
+}
+
+type roomStatusAttendant struct {
+	ID          string `json:"id"`
+	Addr        string `json:"addr"`
+	ConnectedAt int64  `json:"connectedAt"`
+	LastSeenAt  int64  `json:"lastSeenAt"`
+	Active      bool   `json:"active"`
+}
+
+type roomStatusTunnel struct {
+	Target      string `json:"target"`
+	Addr        string `json:"addr"`
+	AnnouncedAt int64  `json:"announcedAt"`
+	LastSeenAt  int64  `json:"lastSeenAt"`
+	Active      bool   `json:"active"`
+}
+
+func newRoomStatusHandler(config roomdb.RoomConfig, snapshots roomdb.RuntimeSnapshotsService, state *roomstate.Manager, keyPair *keys.KeyPair, httpAddr, muxrpcAddr string) *roomStatusHandler {
+	return &roomStatusHandler{
+		config:     config,
+		snapshots:  snapshots,
+		state:      state,
+		keyPair:    keyPair,
+		httpAddr:   httpAddr,
+		muxrpcAddr: muxrpcAddr,
+	}
+}
+
+func (h *roomStatusHandler) handleSummary(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if h == nil || h.snapshots == nil || h.config == nil {
+		writeRoomStatusJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"status": "error",
+			"error":  "runtime snapshots unavailable",
+		})
+		return
+	}
+
+	mode, err := h.config.GetPrivacyMode(r.Context())
+	if err != nil {
+		writeRoomStatusJSON(w, http.StatusInternalServerError, map[string]string{
+			"status": "error",
+			"error":  fmt.Sprintf("lookup room mode: %v", err),
+		})
+		return
+	}
+
+	activeAttendants, err := h.snapshots.ListAttendants(r.Context(), true)
+	if err != nil {
+		writeRoomStatusJSON(w, http.StatusInternalServerError, map[string]string{
+			"status": "error",
+			"error":  fmt.Sprintf("list active attendants: %v", err),
+		})
+		return
+	}
+	allAttendants, err := h.snapshots.ListAttendants(r.Context(), false)
+	if err != nil {
+		writeRoomStatusJSON(w, http.StatusInternalServerError, map[string]string{
+			"status": "error",
+			"error":  fmt.Sprintf("list attendants: %v", err),
+		})
+		return
+	}
+	activeTunnels, err := h.snapshots.ListTunnelEndpoints(r.Context(), true)
+	if err != nil {
+		writeRoomStatusJSON(w, http.StatusInternalServerError, map[string]string{
+			"status": "error",
+			"error":  fmt.Sprintf("list active tunnels: %v", err),
+		})
+		return
+	}
+	allTunnels, err := h.snapshots.ListTunnelEndpoints(r.Context(), false)
+	if err != nil {
+		writeRoomStatusJSON(w, http.StatusInternalServerError, map[string]string{
+			"status": "error",
+			"error":  fmt.Sprintf("list tunnels: %v", err),
+		})
+		return
+	}
+
+	payload := roomStatusSummary{
+		PrivacyMode:      privacyModeString(mode),
+		HTTPAddr:         h.httpAddr,
+		MuxrpcAddr:       h.muxrpcAddr,
+		LiveAttendants:   len(h.liveAttendants()),
+		LivePeers:        len(h.livePeers()),
+		ActiveAttendants: len(activeAttendants),
+		TotalAttendants:  len(allAttendants),
+		ActiveTunnels:    len(activeTunnels),
+		TotalTunnels:     len(allTunnels),
+	}
+	if h.keyPair != nil {
+		payload.RoomID = h.keyPair.FeedRef().String()
+	}
+
+	writeRoomStatusJSON(w, http.StatusOK, payload)
+}
+
+func (h *roomStatusHandler) handleAttendants(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if h == nil || h.snapshots == nil {
+		writeRoomStatusJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"status": "error",
+			"error":  "runtime snapshots unavailable",
+		})
+		return
+	}
+
+	onlyActive := statusOnlyActive(r)
+	items, err := h.snapshots.ListAttendants(r.Context(), onlyActive)
+	if err != nil {
+		writeRoomStatusJSON(w, http.StatusInternalServerError, map[string]string{
+			"status": "error",
+			"error":  fmt.Sprintf("list attendants: %v", err),
+		})
+		return
+	}
+
+	payload := struct {
+		ActiveOnly bool                  `json:"activeOnly"`
+		Attendants []roomStatusAttendant `json:"attendants"`
+	}{
+		ActiveOnly: onlyActive,
+		Attendants: make([]roomStatusAttendant, 0, len(items)),
+	}
+	for _, item := range items {
+		payload.Attendants = append(payload.Attendants, roomStatusAttendant{
+			ID:          item.ID.String(),
+			Addr:        item.Addr,
+			ConnectedAt: item.ConnectedAt,
+			LastSeenAt:  item.LastSeenAt,
+			Active:      item.Active,
+		})
+	}
+
+	writeRoomStatusJSON(w, http.StatusOK, payload)
+}
+
+func (h *roomStatusHandler) handleTunnels(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if h == nil || h.snapshots == nil {
+		writeRoomStatusJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"status": "error",
+			"error":  "runtime snapshots unavailable",
+		})
+		return
+	}
+
+	onlyActive := statusOnlyActive(r)
+	items, err := h.snapshots.ListTunnelEndpoints(r.Context(), onlyActive)
+	if err != nil {
+		writeRoomStatusJSON(w, http.StatusInternalServerError, map[string]string{
+			"status": "error",
+			"error":  fmt.Sprintf("list tunnels: %v", err),
+		})
+		return
+	}
+
+	payload := struct {
+		ActiveOnly bool               `json:"activeOnly"`
+		Tunnels    []roomStatusTunnel `json:"tunnels"`
+	}{
+		ActiveOnly: onlyActive,
+		Tunnels:    make([]roomStatusTunnel, 0, len(items)),
+	}
+	for _, item := range items {
+		payload.Tunnels = append(payload.Tunnels, roomStatusTunnel{
+			Target:      item.Target.String(),
+			Addr:        item.Addr,
+			AnnouncedAt: item.AnnouncedAt,
+			LastSeenAt:  item.LastSeenAt,
+			Active:      item.Active,
+		})
+	}
+
+	writeRoomStatusJSON(w, http.StatusOK, payload)
+}
+
+func (h *roomStatusHandler) liveAttendants() []roomstate.PeerInfo {
+	if h == nil || h.state == nil {
+		return nil
+	}
+	return h.state.Attendants()
+}
+
+func (h *roomStatusHandler) livePeers() []roomstate.PeerInfo {
+	if h == nil || h.state == nil {
+		return nil
+	}
+	return h.state.Peers()
+}
+
+func privacyModeString(mode roomdb.PrivacyMode) string {
+	switch mode {
+	case roomdb.ModeOpen:
+		return "open"
+	case roomdb.ModeCommunity:
+		return "community"
+	case roomdb.ModeRestricted:
+		return "restricted"
+	default:
+		return "unknown"
+	}
+}
+
+func statusOnlyActive(r *http.Request) bool {
+	if raw := strings.TrimSpace(r.URL.Query().Get("all")); raw != "" {
+		if includeAll, err := strconv.ParseBool(raw); err == nil {
+			return !includeAll
+		}
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("active")); raw != "" {
+		if onlyActive, err := strconv.ParseBool(raw); err == nil {
+			return onlyActive
+		}
+	}
+	return true
+}
+
+func writeRoomStatusJSON(w http.ResponseWriter, statusCode int, payload any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(statusCode)
+	_ = json.NewEncoder(w).Encode(payload)
+}
 
 func (cfg Config) withDefaults() Config {
 	if strings.TrimSpace(cfg.ListenAddr) == "" {

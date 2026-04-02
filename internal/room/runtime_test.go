@@ -175,9 +175,10 @@ func TestRuntimeServesLandingBotsAndStockRoutes(t *testing.T) {
 		t.Fatalf("landing page expected 200, got %d", landingStatus)
 	}
 	for _, want := range []string{
-		"Create room invite",
+		"Open room: anyone can create an invite",
+		"Create invite",
 		"Browse bridged bots",
-		"Open room sign-in",
+		"Open to everyone",
 	} {
 		if !strings.Contains(landingBody, want) {
 			t.Fatalf("landing page missing %q\nbody:\n%s", want, landingBody)
@@ -291,7 +292,7 @@ func TestRuntimeJoinPageWithValidToken(t *testing.T) {
 	}
 
 	body, _ := io.ReadAll(joinResp.Body)
-	if !strings.Contains(string(body), "Join Room") {
+	if !strings.Contains(string(body), "Join with an invite") {
 		t.Fatalf("join page missing expected content\nbody:\n%s", string(body))
 	}
 }
@@ -493,6 +494,9 @@ func TestRuntimeJoinFacadeSupportsTokenAndInviteAliases(t *testing.T) {
 	if !strings.Contains(bodyStr, `id="claim-invite-uri"`) {
 		t.Fatalf("join page missing claim link\nbody:\n%s", bodyStr)
 	}
+	if !strings.Contains(bodyStr, "Open in SSB client") {
+		t.Fatalf("join page missing deep-link copy\nbody:\n%s", bodyStr)
+	}
 	if !strings.Contains(bodyStr, "claim-http-invite") {
 		t.Fatalf("join page missing claim-http-invite action\nbody:\n%s", bodyStr)
 	}
@@ -515,6 +519,13 @@ func TestRuntimeJoinFallbackAndManualRoutes(t *testing.T) {
 	if fallbackResp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 for fallback page, got %d", fallbackResp.StatusCode)
 	}
+	fallbackBody, _ := io.ReadAll(fallbackResp.Body)
+	if !strings.Contains(string(fallbackBody), "Deep link did not open?") {
+		t.Fatalf("fallback page missing updated copy\nbody:\n%s", string(fallbackBody))
+	}
+	if !strings.Contains(string(fallbackBody), "Open manual claim") {
+		t.Fatalf("fallback page missing manual claim action\nbody:\n%s", string(fallbackBody))
+	}
 
 	manualResp, err := client.Get("http://" + rt.HTTPAddr() + "/join-manually?token=" + url.QueryEscape(token))
 	if err != nil {
@@ -526,8 +537,15 @@ func TestRuntimeJoinFallbackAndManualRoutes(t *testing.T) {
 		t.Fatalf("expected 200 for manual page, got %d", manualResp.StatusCode)
 	}
 	body, _ := io.ReadAll(manualResp.Body)
-	if !strings.Contains(string(body), `action="/invite/consume"`) {
-		t.Fatalf("manual page missing consume form action\nbody:\n%s", string(body))
+	bodyStr := string(body)
+	if !strings.Contains(bodyStr, "Paste your feed ID to consume the invite") {
+		t.Fatalf("manual page missing updated copy\nbody:\n%s", bodyStr)
+	}
+	if !strings.Contains(bodyStr, "SSB feed ID") {
+		t.Fatalf("manual page missing feed ID label\nbody:\n%s", bodyStr)
+	}
+	if !strings.Contains(bodyStr, `action="/invite/consume"`) {
+		t.Fatalf("manual page missing consume form action\nbody:\n%s", bodyStr)
 	}
 }
 
@@ -661,7 +679,7 @@ func TestRuntimeInviteConsumeAcceptsTokenAliasInForm(t *testing.T) {
 		t.Fatalf("expected 200, got %d\nbody: %s", resp.StatusCode, string(body))
 	}
 	body, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(body), "Invite Consumed") {
+	if !strings.Contains(string(body), "Invite consumed") {
 		t.Fatalf("expected consumed html page\nbody:\n%s", string(body))
 	}
 }
@@ -689,7 +707,7 @@ func TestRuntimeJoinPostDelegatesToConsume(t *testing.T) {
 		t.Fatalf("expected 200, got %d\nbody: %s", resp.StatusCode, string(body))
 	}
 	body, _ := io.ReadAll(resp.Body)
-	if !strings.Contains(string(body), "Invite Consumed") {
+	if !strings.Contains(string(body), "Invite consumed") {
 		t.Fatalf("expected consumed html page\nbody:\n%s", string(body))
 	}
 }
@@ -803,10 +821,10 @@ func TestRuntimeInviteManagementRenderingAndJSON(t *testing.T) {
 	htmlBody, _ := io.ReadAll(htmlResp.Body)
 	bodyStr := string(htmlBody)
 	for _, want := range []string{
-		"Invite Management",
-		"Create Invite",
-		"Active Invites",
-		"Consumed / Inactive Invites",
+		"Manage room invites",
+		"Create invite",
+		"Active invites",
+		"Consumed and revoked",
 		"/invites/revoke",
 	} {
 		if !strings.Contains(bodyStr, want) {
@@ -1206,15 +1224,17 @@ func (c *runtimeRoomClient) Close() error {
 	if c == nil {
 		return nil
 	}
-	if c.endpoint != nil {
-		_ = c.endpoint.Terminate()
-	}
 	if c.conn != nil {
 		err := c.conn.Close()
 		if err != nil && strings.Contains(err.Error(), "use of closed network connection") {
 			return nil
 		}
-		return err
+		if err != nil {
+			return err
+		}
+	}
+	if c.endpoint != nil {
+		_ = c.endpoint.Terminate()
 	}
 	return nil
 }
@@ -1355,6 +1375,25 @@ func containsString(values []string, want string) bool {
 	return false
 }
 
+func waitForRuntimeStatusSummary(t *testing.T, client *http.Client, rt *Runtime, check func(roomStatusSummary) bool) roomStatusSummary {
+	t.Helper()
+
+	deadline := time.Now().Add(8 * time.Second)
+	var last roomStatusSummary
+	for time.Now().Before(deadline) {
+		body, status := getRuntimePath(t, client, rt, "/status")
+		if status == http.StatusOK {
+			if err := json.Unmarshal([]byte(body), &last); err == nil && check(last) {
+				return last
+			}
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	t.Fatalf("timed out waiting for runtime status: %+v", last)
+	return last
+}
+
 func TestRuntimeRoomMetadataReportsAuthenticatedMembership(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -1467,6 +1506,211 @@ func TestRuntimeRoomAttendantsEmitStateJoinAndLeft(t *testing.T) {
 	}
 }
 
+func TestRuntimeMarksSnapshotsInactiveOnStartup(t *testing.T) {
+	repoPath := t.TempDir()
+	db, err := sqlite.Open(filepath.Join(repoPath, "room.sqlite"))
+	if err != nil {
+		t.Fatalf("open room db: %v", err)
+	}
+
+	attendant := mustRuntimeTestFeedRef(t, 0x51)
+	tunnel := mustRuntimeTestFeedRef(t, 0x52)
+	ctx := context.Background()
+	if err := db.RuntimeSnapshots().UpsertAttendant(ctx, *attendant, "attendant:1", 11); err != nil {
+		t.Fatalf("seed attendant snapshot: %v", err)
+	}
+	if err := db.RuntimeSnapshots().UpsertTunnelEndpoint(ctx, *tunnel, "tunnel:1", 22); err != nil {
+		t.Fatalf("seed tunnel snapshot: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close seeded room db: %v", err)
+	}
+
+	startCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	rt, err := Start(startCtx, Config{
+		ListenAddr:     "127.0.0.1:0",
+		HTTPListenAddr: "127.0.0.1:0",
+		RepoPath:       repoPath,
+		Mode:           "community",
+	}, log.New(io.Discard, "", 0))
+	if err != nil {
+		if strings.Contains(err.Error(), "operation not permitted") {
+			t.Skipf("sandbox does not allow local listen sockets: %v", err)
+		}
+		t.Fatalf("start runtime: %v", err)
+	}
+	defer rt.Close()
+
+	attendants, err := rt.roomDB.RuntimeSnapshots().ListAttendants(ctx, false)
+	if err != nil {
+		t.Fatalf("list attendants: %v", err)
+	}
+	if len(attendants) != 1 {
+		t.Fatalf("expected one seeded attendant, got %d", len(attendants))
+	}
+	if attendants[0].Active {
+		t.Fatalf("expected seeded attendant to be inactive after startup: %+v", attendants[0])
+	}
+
+	activeAttendants, err := rt.roomDB.RuntimeSnapshots().ListAttendants(ctx, true)
+	if err != nil {
+		t.Fatalf("list active attendants: %v", err)
+	}
+	if len(activeAttendants) != 0 {
+		t.Fatalf("expected no active attendants after startup, got %d", len(activeAttendants))
+	}
+
+	tunnels, err := rt.roomDB.RuntimeSnapshots().ListTunnelEndpoints(ctx, false)
+	if err != nil {
+		t.Fatalf("list tunnels: %v", err)
+	}
+	if len(tunnels) != 1 {
+		t.Fatalf("expected one seeded tunnel, got %d", len(tunnels))
+	}
+	if tunnels[0].Active {
+		t.Fatalf("expected seeded tunnel to be inactive after startup: %+v", tunnels[0])
+	}
+
+	activeTunnels, err := rt.roomDB.RuntimeSnapshots().ListTunnelEndpoints(ctx, true)
+	if err != nil {
+		t.Fatalf("list active tunnels: %v", err)
+	}
+	if len(activeTunnels) != 0 {
+		t.Fatalf("expected no active tunnels after startup, got %d", len(activeTunnels))
+	}
+}
+
+func TestRuntimeStatusEndpointsTrackAttendantAndTunnelSnapshots(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	rt := startTestRuntime(t, "open", nil)
+	client := &http.Client{Timeout: 2 * time.Second}
+
+	memberKey, err := keys.Generate()
+	if err != nil {
+		t.Fatalf("generate member key: %v", err)
+	}
+	if _, err := rt.roomDB.Members().Add(ctx, memberKey.FeedRef(), roomdb.RoleMember); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+
+	roomClient := connectRuntimeRoomClient(t, ctx, rt, memberKey, nil)
+
+	var announced bool
+	if err := roomClient.endpoint.Sync(ctx, &announced, muxrpc.TypeJSON, muxrpc.Method{"tunnel", "announce"}); err != nil {
+		t.Fatalf("announce tunnel: %v", err)
+	}
+	if !announced {
+		t.Fatalf("expected tunnel.announce to return true")
+	}
+
+	summary := waitForRuntimeStatusSummary(t, client, rt, func(s roomStatusSummary) bool {
+		return s.ActiveAttendants == 1 && s.TotalAttendants == 1 && s.ActiveTunnels == 1 && s.TotalTunnels == 1 && s.LiveAttendants == 1 && s.LivePeers == 1
+	})
+	if summary.RoomID != rt.RoomFeed().String() {
+		t.Fatalf("unexpected room id in summary: %+v", summary)
+	}
+	if summary.PrivacyMode != "open" {
+		t.Fatalf("unexpected privacy mode in summary: %+v", summary)
+	}
+	if summary.HTTPAddr != rt.HTTPAddr() || summary.MuxrpcAddr != rt.Addr() {
+		t.Fatalf("unexpected runtime addresses in summary: %+v", summary)
+	}
+
+	tunnels, status := getRuntimePath(t, client, rt, "/status/tunnels")
+	if status != http.StatusOK {
+		t.Fatalf("tunnels status route expected 200, got %d", status)
+	}
+	var tunnelPayload struct {
+		ActiveOnly bool               `json:"activeOnly"`
+		Tunnels    []roomStatusTunnel `json:"tunnels"`
+	}
+	if err := json.NewDecoder(strings.NewReader(tunnels)).Decode(&tunnelPayload); err != nil {
+		t.Fatalf("decode tunnels status: %v", err)
+	}
+	if !tunnelPayload.ActiveOnly {
+		t.Fatalf("expected active-only tunnel list by default: %+v", tunnelPayload)
+	}
+	if len(tunnelPayload.Tunnels) != 1 {
+		t.Fatalf("expected one active tunnel, got %+v", tunnelPayload)
+	}
+	if tunnelPayload.Tunnels[0].Target != memberKey.FeedRef().String() || !tunnelPayload.Tunnels[0].Active {
+		t.Fatalf("unexpected tunnel status payload: %+v", tunnelPayload.Tunnels[0])
+	}
+	wantTunnelAddr := fmt.Sprintf("tunnel:%s:%s~shs:%s", rt.RoomFeed().String(), memberKey.FeedRef().String(), base64.StdEncoding.EncodeToString(memberKey.FeedRef().PubKey()))
+	if tunnelPayload.Tunnels[0].Addr != wantTunnelAddr {
+		t.Fatalf("unexpected tunnel address: got %q want %q", tunnelPayload.Tunnels[0].Addr, wantTunnelAddr)
+	}
+
+	attendants, status := getRuntimePath(t, client, rt, "/status/attendants")
+	if status != http.StatusOK {
+		t.Fatalf("attendants status route expected 200, got %d", status)
+	}
+	var attendantPayload struct {
+		ActiveOnly bool                  `json:"activeOnly"`
+		Attendants []roomStatusAttendant `json:"attendants"`
+	}
+	if err := json.NewDecoder(strings.NewReader(attendants)).Decode(&attendantPayload); err != nil {
+		t.Fatalf("decode attendants status: %v", err)
+	}
+	if !attendantPayload.ActiveOnly {
+		t.Fatalf("expected active-only attendants list by default: %+v", attendantPayload)
+	}
+	if len(attendantPayload.Attendants) != 1 {
+		t.Fatalf("expected one active attendant, got %+v", attendantPayload)
+	}
+	if attendantPayload.Attendants[0].ID != memberKey.FeedRef().String() || !attendantPayload.Attendants[0].Active {
+		t.Fatalf("unexpected attendant status payload: %+v", attendantPayload.Attendants[0])
+	}
+
+	if err := roomClient.Close(); err != nil {
+		t.Fatalf("close runtime room client: %v", err)
+	}
+
+	waitForRuntimeStatusSummary(t, client, rt, func(s roomStatusSummary) bool {
+		return s.ActiveAttendants == 0 && s.ActiveTunnels == 0 && s.TotalAttendants == 1 && s.TotalTunnels == 1 && s.LiveAttendants == 0 && s.LivePeers == 0
+	})
+
+	allTunnels, status := getRuntimePath(t, client, rt, "/status/tunnels?all=true")
+	if status != http.StatusOK {
+		t.Fatalf("all tunnels status route expected 200, got %d", status)
+	}
+	var allTunnelPayload struct {
+		ActiveOnly bool               `json:"activeOnly"`
+		Tunnels    []roomStatusTunnel `json:"tunnels"`
+	}
+	if err := json.NewDecoder(strings.NewReader(allTunnels)).Decode(&allTunnelPayload); err != nil {
+		t.Fatalf("decode all tunnels status: %v", err)
+	}
+	if allTunnelPayload.ActiveOnly {
+		t.Fatalf("expected inactive-inclusive tunnel list when all=true: %+v", allTunnelPayload)
+	}
+	if len(allTunnelPayload.Tunnels) != 1 || allTunnelPayload.Tunnels[0].Active {
+		t.Fatalf("expected one inactive tunnel snapshot after disconnect: %+v", allTunnelPayload.Tunnels)
+	}
+
+	allAttendants, status := getRuntimePath(t, client, rt, "/status/attendants?all=true")
+	if status != http.StatusOK {
+		t.Fatalf("all attendants status route expected 200, got %d", status)
+	}
+	var allAttendantPayload struct {
+		ActiveOnly bool                  `json:"activeOnly"`
+		Attendants []roomStatusAttendant `json:"attendants"`
+	}
+	if err := json.NewDecoder(strings.NewReader(allAttendants)).Decode(&allAttendantPayload); err != nil {
+		t.Fatalf("decode all attendants status: %v", err)
+	}
+	if allAttendantPayload.ActiveOnly {
+		t.Fatalf("expected inactive-inclusive attendants list when all=true: %+v", allAttendantPayload)
+	}
+	if len(allAttendantPayload.Attendants) != 1 || allAttendantPayload.Attendants[0].Active {
+		t.Fatalf("expected one inactive attendant snapshot after disconnect: %+v", allAttendantPayload.Attendants)
+	}
+}
+
 func TestRuntimeAliasRegisterEndpointAndRevoke(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -1494,7 +1738,7 @@ func TestRuntimeAliasRegisterEndpointAndRevoke(t *testing.T) {
 		t.Fatalf("expected /oak alias URL, got %q", aliasURL)
 	}
 
-	aliasMux := newServeMux(ctx, rt.roomDB, rt.state, rt.keyPair, rt.cfg.HTTPSDomain, rt.Addr())
+	aliasMux := newServeMux(ctx, rt.roomDB, rt.state, rt.keyPair, rt.cfg.HTTPSDomain, rt.HTTPAddr(), rt.Addr())
 	jsonReq := httptest.NewRequest(http.MethodGet, "/oak?encoding=json", nil)
 	jsonRec := httptest.NewRecorder()
 	aliasMux.ServeHTTP(jsonRec, jsonReq)

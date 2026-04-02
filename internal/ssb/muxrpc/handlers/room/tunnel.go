@@ -6,16 +6,19 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/keys"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomdb"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomstate"
 )
 
 type TunnelHandler struct {
 	server       *RoomServer
 	announceHook func(refs.FeedRef) error
+	snapshots    roomdb.RuntimeSnapshotsService
 	keyPair      *keys.KeyPair
 	appKey       string
 }
@@ -26,6 +29,10 @@ func NewTunnelHandler(s *RoomServer, keyPair *keys.KeyPair, appKey string) *Tunn
 		keyPair: keyPair,
 		appKey:  appKey,
 	}
+}
+
+func (h *TunnelHandler) SetRuntimeSnapshots(snapshots roomdb.RuntimeSnapshotsService) {
+	h.snapshots = snapshots
 }
 
 func (h *TunnelHandler) Handled(m muxrpc.Method) bool {
@@ -79,7 +86,11 @@ func (h *TunnelHandler) handleAnnounce(ctx context.Context, req *muxrpc.Request)
 		return
 	}
 
-	h.server.state.AddPeer(feedRef, tunnelAddress(*h.server.keyPair, feedRef))
+	addr := tunnelAddress(*h.server.keyPair, feedRef)
+	h.server.state.AddPeer(feedRef, addr)
+	if h.snapshots != nil {
+		_ = h.snapshots.UpsertTunnelEndpoint(context.Background(), feedRef, addr, time.Now().Unix())
+	}
 
 	if h.announceHook != nil {
 		if err := h.announceHook(feedRef); err != nil {
@@ -108,6 +119,9 @@ func (h *TunnelHandler) handleLeave(ctx context.Context, req *muxrpc.Request) {
 	}
 
 	h.server.state.RemovePeer(feedRef)
+	if h.snapshots != nil {
+		_ = h.snapshots.DeactivateTunnelEndpoint(context.Background(), feedRef)
+	}
 
 	req.Return(ctx, true)
 }

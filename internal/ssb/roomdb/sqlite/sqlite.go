@@ -92,6 +92,26 @@ CREATE TABLE IF NOT EXISTS room_config (
   value TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS runtime_attendants (
+  feed_id      TEXT PRIMARY KEY,
+  addr         TEXT NOT NULL,
+  connected_at DATETIME NOT NULL,
+  last_seen_at DATETIME NOT NULL,
+  active       BOOLEAN NOT NULL DEFAULT TRUE
+);
+CREATE INDEX IF NOT EXISTS runtime_attendants_active ON runtime_attendants(active);
+CREATE INDEX IF NOT EXISTS runtime_attendants_last_seen ON runtime_attendants(last_seen_at);
+
+CREATE TABLE IF NOT EXISTS runtime_tunnel_endpoints (
+  target_feed  TEXT PRIMARY KEY,
+  addr         TEXT NOT NULL,
+  announced_at DATETIME NOT NULL,
+  last_seen_at DATETIME NOT NULL,
+  active       BOOLEAN NOT NULL DEFAULT TRUE
+);
+CREATE INDEX IF NOT EXISTS runtime_tunnel_endpoints_active ON runtime_tunnel_endpoints(active);
+CREATE INDEX IF NOT EXISTS runtime_tunnel_endpoints_last_seen ON runtime_tunnel_endpoints(last_seen_at);
+
 CREATE TABLE IF NOT EXISTS auth_tokens (
   id         INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
   token      TEXT UNIQUE NOT NULL,
@@ -600,6 +620,168 @@ func (c *RoomConfig) SetDefaultLanguage(ctx context.Context, lang string) error 
 	_, err := c.db.conn.ExecContext(ctx,
 		"INSERT OR REPLACE INTO room_config (key, value) VALUES ('default_language', ?)", lang)
 	return err
+}
+
+type RuntimeSnapshots struct {
+	db *DB
+}
+
+func (db *DB) RuntimeSnapshots() roomdb.RuntimeSnapshotsService {
+	return &RuntimeSnapshots{db: db}
+}
+
+func (s *RuntimeSnapshots) MarkAllInactive(ctx context.Context) error {
+	if _, err := s.db.conn.ExecContext(ctx, "UPDATE runtime_attendants SET active = FALSE"); err != nil {
+		return fmt.Errorf("runtime snapshots mark attendants inactive: %w", err)
+	}
+	if _, err := s.db.conn.ExecContext(ctx, "UPDATE runtime_tunnel_endpoints SET active = FALSE"); err != nil {
+		return fmt.Errorf("runtime snapshots mark tunnels inactive: %w", err)
+	}
+	return nil
+}
+
+func (s *RuntimeSnapshots) UpsertAttendant(ctx context.Context, id refs.FeedRef, addr string, connectedAt int64) error {
+	connected := time.Unix(connectedAt, 0).UTC()
+	if connectedAt <= 0 {
+		connected = time.Now().UTC()
+	}
+	now := time.Now().UTC()
+	_, err := s.db.conn.ExecContext(ctx, `
+INSERT INTO runtime_attendants (feed_id, addr, connected_at, last_seen_at, active)
+VALUES (?, ?, ?, ?, TRUE)
+ON CONFLICT(feed_id) DO UPDATE SET
+  addr = excluded.addr,
+  connected_at = excluded.connected_at,
+  last_seen_at = excluded.last_seen_at,
+  active = TRUE
+`, id.String(), addr, connected, now)
+	if err != nil {
+		return fmt.Errorf("runtime snapshots upsert attendant: %w", err)
+	}
+	return nil
+}
+
+func (s *RuntimeSnapshots) DeactivateAttendant(ctx context.Context, id refs.FeedRef) error {
+	_, err := s.db.conn.ExecContext(ctx, `
+UPDATE runtime_attendants
+SET active = FALSE, last_seen_at = ?
+WHERE feed_id = ?
+`, time.Now().UTC(), id.String())
+	if err != nil {
+		return fmt.Errorf("runtime snapshots deactivate attendant: %w", err)
+	}
+	return nil
+}
+
+func (s *RuntimeSnapshots) ListAttendants(ctx context.Context, onlyActive bool) ([]roomdb.RuntimeAttendantSnapshot, error) {
+	query := `
+SELECT feed_id, addr, connected_at, last_seen_at, active
+FROM runtime_attendants`
+	if onlyActive {
+		query += " WHERE active = TRUE"
+	}
+	query += " ORDER BY active DESC, last_seen_at DESC"
+	rows, err := s.db.conn.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("runtime snapshots list attendants: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]roomdb.RuntimeAttendantSnapshot, 0)
+	for rows.Next() {
+		var feedID string
+		var addr string
+		var connectedAt time.Time
+		var lastSeenAt time.Time
+		var active bool
+		if err := rows.Scan(&feedID, &addr, &connectedAt, &lastSeenAt, &active); err != nil {
+			return nil, fmt.Errorf("runtime snapshots scan attendant: %w", err)
+		}
+		ref, err := refs.ParseFeedRef(feedID)
+		if err != nil {
+			continue
+		}
+		out = append(out, roomdb.RuntimeAttendantSnapshot{
+			ID:          *ref,
+			Addr:        addr,
+			ConnectedAt: connectedAt.Unix(),
+			LastSeenAt:  lastSeenAt.Unix(),
+			Active:      active,
+		})
+	}
+	return out, nil
+}
+
+func (s *RuntimeSnapshots) UpsertTunnelEndpoint(ctx context.Context, target refs.FeedRef, addr string, announcedAt int64) error {
+	announced := time.Unix(announcedAt, 0).UTC()
+	if announcedAt <= 0 {
+		announced = time.Now().UTC()
+	}
+	now := time.Now().UTC()
+	_, err := s.db.conn.ExecContext(ctx, `
+INSERT INTO runtime_tunnel_endpoints (target_feed, addr, announced_at, last_seen_at, active)
+VALUES (?, ?, ?, ?, TRUE)
+ON CONFLICT(target_feed) DO UPDATE SET
+  addr = excluded.addr,
+  announced_at = excluded.announced_at,
+  last_seen_at = excluded.last_seen_at,
+  active = TRUE
+`, target.String(), addr, announced, now)
+	if err != nil {
+		return fmt.Errorf("runtime snapshots upsert tunnel endpoint: %w", err)
+	}
+	return nil
+}
+
+func (s *RuntimeSnapshots) DeactivateTunnelEndpoint(ctx context.Context, target refs.FeedRef) error {
+	_, err := s.db.conn.ExecContext(ctx, `
+UPDATE runtime_tunnel_endpoints
+SET active = FALSE, last_seen_at = ?
+WHERE target_feed = ?
+`, time.Now().UTC(), target.String())
+	if err != nil {
+		return fmt.Errorf("runtime snapshots deactivate tunnel endpoint: %w", err)
+	}
+	return nil
+}
+
+func (s *RuntimeSnapshots) ListTunnelEndpoints(ctx context.Context, onlyActive bool) ([]roomdb.RuntimeTunnelEndpointSnapshot, error) {
+	query := `
+SELECT target_feed, addr, announced_at, last_seen_at, active
+FROM runtime_tunnel_endpoints`
+	if onlyActive {
+		query += " WHERE active = TRUE"
+	}
+	query += " ORDER BY active DESC, last_seen_at DESC"
+	rows, err := s.db.conn.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("runtime snapshots list tunnel endpoints: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]roomdb.RuntimeTunnelEndpointSnapshot, 0)
+	for rows.Next() {
+		var targetFeed string
+		var addr string
+		var announcedAt time.Time
+		var lastSeenAt time.Time
+		var active bool
+		if err := rows.Scan(&targetFeed, &addr, &announcedAt, &lastSeenAt, &active); err != nil {
+			return nil, fmt.Errorf("runtime snapshots scan tunnel endpoint: %w", err)
+		}
+		ref, err := refs.ParseFeedRef(targetFeed)
+		if err != nil {
+			continue
+		}
+		out = append(out, roomdb.RuntimeTunnelEndpointSnapshot{
+			Target:      *ref,
+			Addr:        addr,
+			AnnouncedAt: announcedAt.Unix(),
+			LastSeenAt:  lastSeenAt.Unix(),
+			Active:      active,
+		})
+	}
+	return out, nil
 }
 
 type AuthTokens struct {

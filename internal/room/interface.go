@@ -16,6 +16,7 @@ type RoomDB interface {
 	RoomConfig() roomdb.RoomConfig
 	AuthFallback() roomdb.AuthFallbackService
 	AuthTokens() roomdb.AuthWithSSBService
+	RuntimeSnapshots() roomdb.RuntimeSnapshotsService
 	Close() error
 }
 

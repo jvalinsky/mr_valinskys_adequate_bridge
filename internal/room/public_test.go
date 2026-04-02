@@ -31,11 +31,11 @@ func TestBridgeRoomHandlerLandingPageOpenMode(t *testing.T) {
 
 	body := recorder.Body.String()
 	for _, want := range []string{
-		"Create room invite",
+		"Open room: anyone can create an invite",
+		"Create invite",
 		"Browse bridged bots",
-		"Open room sign-in",
-		"Anyone visiting this page can create a room invite",
-		"0 active bridged bots currently listed in the directory.",
+		"Open to everyone",
+		"0 active bridged bots",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("landing page missing %q\nbody:\n%s", want, body)
@@ -60,7 +60,7 @@ func TestBridgeRoomHandlerLandingPageNonOpenDisablesInvite(t *testing.T) {
 
 	body := recorder.Body.String()
 	for _, want := range []string{
-		"Self-serve invites disabled",
+		"Invite creation requires sign-in",
 		"Community",
 		"Existing room members can sign in to create invites.",
 		"Browse bridged bots",
@@ -126,8 +126,8 @@ func TestBridgeRoomHandlerBotsPageListsActiveAccountsOnly(t *testing.T) {
 		"View details",         // card CTA
 		"1 msgs",               // stats pill
 		"1 published",          // published stat
-		"page-header-main",
-		"page-header-actions",
+		"Search the live directory by DID, feed ID, or feed URI.",
+		"bot-grid",
 		"action-row-compact directory-actions",
 	} {
 		if !strings.Contains(body, want) {
@@ -198,7 +198,7 @@ func TestBridgeRoomHandlerBotsPageSearchAndSort(t *testing.T) {
 	if strings.Contains(searchBody, "did:plc:gamma") {
 		t.Fatalf("search should exclude gamma bot: %s", searchBody)
 	}
-	if !strings.Contains(searchBody, "Search DID/feed") || !strings.Contains(searchBody, "Most deferred") {
+	if !strings.Contains(searchBody, "Search the live directory by DID, feed ID, or feed URI.") || !strings.Contains(searchBody, "Most deferred") {
 		t.Fatalf("search/sort controls missing from bots page: %s", searchBody)
 	}
 
