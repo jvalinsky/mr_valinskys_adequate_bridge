@@ -15,6 +15,14 @@ The detailed docs for that flow live here:
 - [ATProto to SSB Identity Mapping](./atproto-ssb-identity-mapping.md)
 - [ATProto to SSB Record Translation](./atproto-ssb-record-translation.md)
 - [Bridge Operator Runbook](./runbook.md)
+- [Agent Setup Profiles](./agents.md)
+
+## Setup and Deployment
+
+Use these docs based on environment:
+
+- [Bridge Operator Runbook](./runbook.md) - local Docker workflow plus production operations.
+- [Agent Setup Profiles](./agents.md) - fast local-vs-production setup matrix for contributors.
 
 ## SSB Protocol
 

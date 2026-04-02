@@ -265,3 +265,14 @@ deciduous events checkpoint --clear-events
 
 Events auto-emit on add/link/status commands. Git merges event files automatically.
 <!-- deciduous:end -->
+
+## Environment Setup References
+
+Use these docs instead of inventing setup commands in-session:
+
+- `docs/agents.md` for quick profile selection (local Docker testing vs NixOS production).
+- `docs/runbook.md` for full operator procedures and deployment hardening.
+- `infra/local-atproto/README.md` for local PLC/PDS/relay behavior.
+- `infra/e2e-full/README.md` for full Docker interoperability stack details.
+
+Default to local Docker workflows for development/testing work. Treat NixOS instructions as production/staging-only unless the user explicitly requests host deployment changes.

@@ -2,9 +2,74 @@
 
 ## Prerequisites
 - Go 1.25+ (CGO_ENABLED=1 for SQLite)
-- Network access to `bsky.network` (firehose), `public.api.bsky.app` (AppView), `plc.directory` (DID resolution)
+- Docker + Docker Compose for local ATProto and full E2E stacks
+- For live/production profile: network access to `bsky.network` (firehose), `public.api.bsky.app` (AppView), `plc.directory` (DID resolution)
 
-## Initial Setup
+## Deployment Profiles
+
+| Profile | Use for | Recommended entrypoint |
+|---------|---------|------------------------|
+| Local Docker testing | Integration work, bug repro, and non-production validation | `scripts/local_bridge_e2e.sh` or manual local stack + `bridge-cli` |
+| Full Docker interoperability | Tildefriends + Room2/EBT compatibility checks | `scripts/e2e_tildefriends.sh` |
+| NixOS service deployment | Staging/production operations with systemd and reverse proxy | `nix/modules/mr-valinskys-adequate-bridge.nix` |
+
+## Local Docker Setup (Testing)
+
+### One-command local E2E
+
+```bash
+./scripts/local_bridge_e2e.sh
+```
+
+This brings up local PLC/PDS/relay dependencies, provisions local test accounts, and runs the live interop test.
+
+### Manual local loop (debug-friendly)
+
+1. Start local dependencies and generate env vars.
+
+```bash
+./scripts/local_atproto_up.sh
+./scripts/local_atproto_bootstrap.sh /tmp/mvab-local-atproto-live.env
+source /tmp/mvab-local-atproto-live.env
+```
+
+2. Start bridge runtime against local ATProto services.
+
+```bash
+export BRIDGE_BOT_SEED="dev-local-seed"
+GOFLAGS=-mod=mod go run ./cmd/bridge-cli \
+  --db bridge-local.sqlite \
+  --relay-url "${LIVE_RELAY_URL}" \
+  --bot-seed "${BRIDGE_BOT_SEED}" \
+  start \
+  --repo-path .ssb-bridge-local \
+  --xrpc-host "${LIVE_ATPROTO_HOST}" \
+  --plc-url "${LIVE_ATPROTO_PLC_URL}" \
+  --room-enable \
+  --room-listen-addr 127.0.0.1:8989 \
+  --room-http-listen-addr 127.0.0.1:8976
+```
+
+3. Optional: run the admin UI process locally.
+
+```bash
+export BRIDGE_UI_PASSWORD="dev-ui-password"
+GOFLAGS=-mod=mod go run ./cmd/bridge-cli \
+  --db bridge-local.sqlite \
+  serve-ui \
+  --listen-addr 127.0.0.1:8080 \
+  --ui-auth-user admin \
+  --ui-auth-pass-env BRIDGE_UI_PASSWORD \
+  --repo-path .ssb-bridge-local
+```
+
+4. Tear down local dependencies.
+
+```bash
+./scripts/local_atproto_down.sh
+```
+
+## Production Initial Setup
 
 Use `scripts/setup_live_bridge.sh` for the full lifecycle, or run CLI commands directly.
 
@@ -27,9 +92,9 @@ scripts/setup_live_bridge.sh backfill --bot-seed "$BRIDGE_BOT_SEED"
 scripts/setup_live_bridge.sh status
 ```
 
-The bot seed must be kept stable across restarts — it deterministically derives SSB feed identities from AT DIDs.
+The bot seed must be kept stable across restarts - it deterministically derives SSB feed identities from AT DIDs.
 
-## Startup
+## Production Startup
 
 1. Export required secrets.
 
@@ -64,16 +129,6 @@ scripts/setup_live_bridge.sh start \
   --room-http-addr 0.0.0.0:8976
 ```
 
-Key runtime flags:
-- `--firehose-enable` (default: true) — set `=false` to run room-only without firehose ingestion
-- `--ssb-listen-addr` (default: `:8008`) — the embedded sbot MUXRPC listener for peer EBT replication
-- `--xrpc-host` — override the ATProto read host for dependency/blob fetches (defaults to AppView)
-- `--otel-logs-endpoint` — optional OTLP logs endpoint for OpenTelemetry log export
-- `--otel-logs-protocol` (`grpc|http`, default `grpc`) — OTLP transport protocol
-- `--otel-logs-insecure` — disable OTLP transport security when needed for local collectors
-- `--otel-service-name` — override `service.name` resource attribute
-- `--local-log-output` (`text|none`, default `text`) — keep or suppress local stdout logs while OTLP export runs
-
 3. Start the admin UI with auth (separate process or alongside).
 
 ```bash
@@ -81,8 +136,64 @@ bridge-cli serve-ui \
   --db bridge.sqlite \
   --listen-addr 0.0.0.0:8080 \
   --ui-auth-user admin \
-  --ui-auth-pass-env BRIDGE_UI_PASSWORD
+  --ui-auth-pass-env BRIDGE_UI_PASSWORD \
+  --repo-path .ssb-bridge
 ```
+
+`--repo-path` on `serve-ui` is required for blob browsing and message detail blob previews.
+
+### NixOS Production Profile
+
+Use the NixOS module for long-running managed deployment.
+
+```nix
+services.mr-valinskys-adequate-bridge = {
+  enable = true;
+  environmentFile = "/run/secrets/bridge.env"; # BRIDGE_BOT_SEED + BRIDGE_UI_PASSWORD
+  relayUrl = "wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos";
+  firehoseEnable = true;
+  room = {
+    enable = true;
+    listenAddr = "127.0.0.1:8989";
+    httpListenAddr = "127.0.0.1:8976";
+    mode = "community";
+    httpsDomain = "room.example.com";
+  };
+  ui = {
+    enable = true;
+    listenAddr = "127.0.0.1:8080";
+    authUser = "admin";
+    authPasswordEnvVar = "BRIDGE_UI_PASSWORD";
+    extraArgs = [ "--repo-path" "/var/lib/mr-valinskys-adequate-bridge/.ssb-bridge" ];
+  };
+};
+```
+
+Apply and verify:
+
+```bash
+sudo nixos-rebuild switch
+sudo systemctl status mr-valinskys-adequate-bridge
+sudo systemctl status mr-valinskys-adequate-bridge-ui
+curl -f http://127.0.0.1:8976/healthz
+curl -f http://127.0.0.1:8080/healthz
+```
+
+Production hardening defaults:
+- Keep room and UI bound to loopback unless explicitly exposing through a reverse proxy.
+- Set `room.httpsDomain` whenever room listens on non-loopback.
+- Require UI auth for any non-loopback UI bind.
+- Terminate TLS in Caddy/nginx for public room and admin domains.
+
+Key runtime flags:
+- `--firehose-enable` (default: true) - set `=false` to run room-only without firehose ingestion
+- `--ssb-listen-addr` (default: `:8008`) - the embedded sbot MUXRPC listener for peer EBT replication
+- `--xrpc-host` - override the ATProto read host for dependency/blob fetches (defaults to AppView)
+- `--otel-logs-endpoint` - optional OTLP logs endpoint for OpenTelemetry log export
+- `--otel-logs-protocol` (`grpc|http`, default `grpc`) - OTLP transport protocol
+- `--otel-logs-insecure` - disable OTLP transport security when needed for local collectors
+- `--otel-service-name` - override `service.name` resource attribute
+- `--local-log-output` (`text|none`, default `text`) - keep or suppress local stdout logs while OTLP export runs
 
 ## Health Monitoring
 

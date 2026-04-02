@@ -39,6 +39,78 @@ GOFLAGS=-mod=mod go build -o bridge-cli ./cmd/bridge-cli
 
 See [`docs/runbook.md`](docs/runbook.md) for full operational procedures.
 
+## Setup Modes
+
+Use one of these setup profiles depending on whether you are validating locally or operating a host.
+
+| Mode | Use for | Entry points |
+|------|---------|--------------|
+| Local Docker dependencies + local bridge process | Day-to-day development and integration testing without touching public ATProto services | `scripts/local_atproto_up.sh`, `scripts/local_atproto_bootstrap.sh`, `scripts/local_atproto_down.sh` |
+| Full Docker E2E (bridge + tildefriends) | Full containerized compatibility verification including Room2 replication | `scripts/e2e_tildefriends.sh`, `infra/e2e-full/docker-compose.yml` |
+| NixOS module deployment | Persistent staging/production service management via systemd | `nix/modules/mr-valinskys-adequate-bridge.nix`, `nix/examples/bridge-host.nix` |
+
+### Local Testing Setup (Docker)
+
+Fast path:
+
+```bash
+./scripts/local_bridge_e2e.sh
+```
+
+Manual loop:
+
+```bash
+./scripts/local_atproto_up.sh
+./scripts/local_atproto_bootstrap.sh /tmp/mvab-local-atproto-live.env
+source /tmp/mvab-local-atproto-live.env
+
+export BRIDGE_BOT_SEED="dev-local-seed"
+GOFLAGS=-mod=mod go run ./cmd/bridge-cli \
+  --db bridge-local.sqlite \
+  --relay-url "${LIVE_RELAY_URL}" \
+  --bot-seed "${BRIDGE_BOT_SEED}" \
+  start \
+  --repo-path .ssb-bridge-local \
+  --xrpc-host "${LIVE_ATPROTO_HOST}" \
+  --plc-url "${LIVE_ATPROTO_PLC_URL}" \
+  --room-enable \
+  --room-listen-addr 127.0.0.1:8989 \
+  --room-http-listen-addr 127.0.0.1:8976
+```
+
+Teardown:
+
+```bash
+./scripts/local_atproto_down.sh
+```
+
+### NixOS Setup (Production/Staging)
+
+Use the NixOS module for managed services and keep external exposure behind TLS/reverse proxy.
+
+```nix
+services.mr-valinskys-adequate-bridge = {
+  enable = true;
+  environmentFile = "/run/secrets/bridge.env"; # BRIDGE_BOT_SEED + BRIDGE_UI_PASSWORD
+  room = {
+    enable = true;
+    listenAddr = "127.0.0.1:8989";
+    httpListenAddr = "127.0.0.1:8976";
+    mode = "community";
+    httpsDomain = "room.example.com";
+  };
+  ui = {
+    enable = true;
+    listenAddr = "127.0.0.1:8080";
+    authUser = "admin";
+    authPasswordEnvVar = "BRIDGE_UI_PASSWORD";
+    extraArgs = [ "--repo-path" "/var/lib/mr-valinskys-adequate-bridge/.ssb-bridge" ];
+  };
+};
+```
+
+The `ui.extraArgs` `--repo-path` is required for blob browsing in `/blobs/view` routes.
+
 ## CLI Commands
 
 | Command | Description |
@@ -165,6 +237,7 @@ GOFLAGS=-mod=mod go test ./...
 ## Documentation
 
 - **[`docs/README.md`](docs/README.md)** — Docs index organized by topic area.
+- **[`docs/agents.md`](docs/agents.md)** — Agent/operator setup profile reference (local Docker vs NixOS production).
 - **[`docs/atproto-ssb-translation-overview.md`](docs/atproto-ssb-translation-overview.md)** — High-level map of DID, AT URI, and blob translation layers.
 - **[`docs/atproto-ssb-identity-mapping.md`](docs/atproto-ssb-identity-mapping.md)** — How DIDs become deterministic SSB feed identities.
 - **[`docs/atproto-ssb-record-translation.md`](docs/atproto-ssb-record-translation.md)** — How `_atproto_*` placeholders become SSB refs.
