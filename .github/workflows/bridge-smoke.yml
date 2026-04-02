@@ -11,6 +11,8 @@ jobs:
     name: Deterministic Smoke
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      GOFLAGS: -mod=mod
 
     steps:
       - name: Checkout
@@ -22,10 +24,26 @@ jobs:
           go-version-file: go.mod
 
       - name: Download modules
-        run: go mod download
+        run: GOFLAGS=-mod=mod go mod download
+
+      - name: Verify module resolution is not vendor-backed
+        run: |
+          set -euo pipefail
+          pkgs=(
+            github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc
+            github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomstate
+          )
+          for pkg in "${pkgs[@]}"; do
+            resolved_dir="$(GOFLAGS=-mod=mod go list -f '{{.Dir}}' "${pkg}")"
+            echo "${pkg} => ${resolved_dir}"
+            if [[ "${resolved_dir}" == *"/vendor/"* ]]; then
+              echo "unexpected vendor resolution for ${pkg}: ${resolved_dir}" >&2
+              exit 1
+            fi
+          done
 
       - name: Run full test suite
-        run: go test ./...
+        run: GOFLAGS=-mod=mod go test ./...
 
       - name: Run deterministic smoke workflow
         run: ./scripts/smoke_bridge.sh

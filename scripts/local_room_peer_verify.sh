@@ -59,6 +59,9 @@ trap cleanup EXIT
 echo "[local-room-verify] building tunnel verifier helper"
 (
   cd "${ROOT_DIR}"
+  if [[ "${GOFLAGS:-}" != *"-mod="* ]]; then
+    export GOFLAGS="-mod=mod ${GOFLAGS:-}"
+  fi
   go build -o "${BIN_DIR}/room-tunnel-feed-verify" ./cmd/room-tunnel-feed-verify
 )
 

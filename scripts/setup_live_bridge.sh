@@ -5,6 +5,9 @@ ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT_DIR"
 
 export GOCACHE="${GOCACHE:-/tmp/mvab-go-build-cache}"
+if [[ "${GOFLAGS:-}" != *"-mod="* ]]; then
+  export GOFLAGS="-mod=mod ${GOFLAGS:-}"
+fi
 
 DEFAULT_DB_PATH="${ROOT_DIR}/bridge-live.sqlite"
 DEFAULT_REPO_PATH="${ROOT_DIR}/.ssb-bridge-live"

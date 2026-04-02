@@ -26,7 +26,7 @@ An ATProto-to-SSB bridge with an embedded Room2 server.
 
 ```bash
 # Build
-go build -o bridge-cli ./cmd/bridge-cli
+GOFLAGS=-mod=mod go build -o bridge-cli ./cmd/bridge-cli
 
 # Add bridged accounts
 ./bridge-cli --db bridge.sqlite --bot-seed <seed> account add did:plc:example123
@@ -101,10 +101,11 @@ The **firehose** package streams ATProto commits. The **bridge** processor coord
 ## Development
 
 Requires Go 1.25.5+.
+Set `GOFLAGS=-mod=mod` for local Go tooling to avoid accidental local `vendor/` shadowing of nested modules.
 
 ```bash
 # Run all tests
-go test ./...
+GOFLAGS=-mod=mod go test ./...
 
 # Deterministic smoke test
 ./scripts/smoke_bridge.sh

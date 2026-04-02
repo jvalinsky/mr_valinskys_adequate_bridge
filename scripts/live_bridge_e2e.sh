@@ -33,6 +33,9 @@ if [[ "${LIVE_E2E_ENABLED:-}" != "1" ]]; then
 fi
 
 export GOCACHE="${GOCACHE:-/tmp/go-build-cache}"
+if [[ "${GOFLAGS:-}" != *"-mod="* ]]; then
+  export GOFLAGS="-mod=mod ${GOFLAGS:-}"
+fi
 
 echo "[live-e2e] running live relay + room interoperability test (expect=${EXPECT})"
 set +e

@@ -29,6 +29,7 @@ jobs:
       contents: read
     env:
       LIVE_E2E_ENABLED: "1"
+      GOFLAGS: -mod=mod
       LIVE_ATPROTO_HOST: ${{ vars.LIVE_ATPROTO_HOST }}
       LIVE_ATPROTO_IDENTIFIER: ${{ secrets.LIVE_ATPROTO_IDENTIFIER }}
       LIVE_ATPROTO_PASSWORD: ${{ secrets.LIVE_ATPROTO_PASSWORD }}
@@ -70,7 +71,23 @@ jobs:
           fi
 
       - name: Download modules
-        run: go mod download
+        run: GOFLAGS=-mod=mod go mod download
+
+      - name: Verify module resolution is not vendor-backed
+        run: |
+          set -euo pipefail
+          pkgs=(
+            github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc
+            github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomstate
+          )
+          for pkg in "${pkgs[@]}"; do
+            resolved_dir="$(GOFLAGS=-mod=mod go list -f '{{.Dir}}' "${pkg}")"
+            echo "${pkg} => ${resolved_dir}"
+            if [[ "${resolved_dir}" == *"/vendor/"* ]]; then
+              echo "unexpected vendor resolution for ${pkg}: ${resolved_dir}" >&2
+              exit 1
+            fi
+          done
 
       - name: Run live interoperability gate
         run: ./scripts/live_bridge_e2e.sh
