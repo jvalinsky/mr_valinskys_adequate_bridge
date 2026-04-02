@@ -62,3 +62,11 @@ func (bs *testBlockstore) Get(_ context.Context, c cid.Cid) (blockformat.Block, 
   - `go test ./pkg/atproto/... ./internal/db ./internal/atindex ./internal/backfill ./internal/firehose ./internal/bridge ./internal/web/handlers ./internal/blobbridge ./internal/mapper ./cmd/bridge-cli ./cmd/atproto-seed`
 - Full repo suite is green after updating the smoke test to the new dashboard cursor semantics:
   - `go test ./...`
+
+## Update 2026-04-01 (Worktree Hygiene)
+
+- Added `.gitignore` rules for local ATProto migration leftovers that should stay out of commits:
+  - generated binary/log output
+  - local demo repo data
+  - regenerated local `vendor/` output
+- Left untracked source-looking files visible instead of ignoring them globally.

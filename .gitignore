@@ -27,4 +27,8 @@ bridge-live.sqlite
 *.test
 *.html
 /bridge-cli
+/bridge-cli-linux
+/bridge-demo.log
+/demo-repo/
+/vendor/
 .claude/settings.local.json
