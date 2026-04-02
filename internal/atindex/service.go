@@ -241,6 +241,9 @@ func (s *Service) Subscribe(ctx context.Context, cursor int64) (<-chan Notificat
 				case <-ctx.Done():
 					return
 				case out <- Notification{Kind: EventKindRecord, Cursor: event.Cursor, Record: &event}:
+				default:
+					s.logger.Printf("event=atindex_subscribe_consumer_overflow stage=replay cursor=%d", event.Cursor)
+					return
 				}
 			}
 		}
@@ -249,7 +252,10 @@ func (s *Service) Subscribe(ctx context.Context, cursor int64) (<-chan Notificat
 			select {
 			case <-ctx.Done():
 				return
-			case note := <-live:
+			case note, ok := <-live:
+				if !ok {
+					return
+				}
 				if note.Kind == EventKindRecord {
 					if note.Cursor <= nextCursor {
 						continue
@@ -260,6 +266,9 @@ func (s *Service) Subscribe(ctx context.Context, cursor int64) (<-chan Notificat
 				case <-ctx.Done():
 					return
 				case out <- note:
+				default:
+					s.logger.Printf("event=atindex_subscribe_consumer_overflow stage=live kind=%s cursor=%d", note.Kind, note.Cursor)
+					return
 				}
 			}
 		}
@@ -760,7 +769,9 @@ func (s *Service) broadcast(note Notification) {
 		select {
 		case ch <- note:
 		default:
-			s.logger.Printf("event=atindex_subscriber_overflow subscriber=%d kind=%s", id, note.Kind)
+			s.logger.Printf("event=atindex_subscriber_overflow subscriber=%d kind=%s action=evict", id, note.Kind)
+			close(ch)
+			delete(s.subscribers, id)
 		}
 	}
 }

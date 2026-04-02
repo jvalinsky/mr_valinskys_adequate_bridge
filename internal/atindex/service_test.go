@@ -228,6 +228,48 @@ func TestSubscribeSkipsBufferedDuplicateAfterReplay(t *testing.T) {
 	}
 }
 
+func TestSubscribeEvictsSlowConsumer(t *testing.T) {
+	database := openServiceTestDB(t)
+	defer database.Close()
+
+	ctx := context.Background()
+	service := New(database, nil, nil, "wss://relay.example.test", log.New(io.Discard, "", 0))
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	stream, err := service.Subscribe(subCtx, 0)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+
+	for i := 0; i < 2048; i++ {
+		cursor := int64(i + 1)
+		service.broadcast(Notification{
+			Kind:   EventKindRecord,
+			Cursor: cursor,
+			Record: &db.ATProtoRecordEvent{
+				Cursor: cursor,
+				ATURI:  "at://did:plc:alice/app.bsky.feed.post/post1",
+			},
+		})
+	}
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case _, ok := <-stream:
+			if !ok {
+				if service.subscriberCount() != 0 {
+					t.Fatalf("expected subscriber to be removed after eviction, got %d", service.subscriberCount())
+				}
+				return
+			}
+		case <-deadline:
+			t.Fatalf("subscription did not close after slow-consumer overflow")
+		}
+	}
+}
+
 type testBlockstore struct {
 	blocks map[string]blockformat.Block
 }
@@ -264,6 +306,12 @@ func (s *Service) isQueued(did string) bool {
 	defer s.queueMu.Unlock()
 	_, ok := s.queued[did]
 	return ok
+}
+
+func (s *Service) subscriberCount() int {
+	s.subMu.Lock()
+	defer s.subMu.Unlock()
+	return len(s.subscribers)
 }
 
 func mustCreateCommitEvent(t *testing.T, did string, seq int64) (*atproto.SyncSubscribeRepos_Commit, string) {
