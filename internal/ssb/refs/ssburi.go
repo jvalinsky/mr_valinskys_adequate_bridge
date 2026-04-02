@@ -48,21 +48,29 @@ func (f *FeedURI) String() string {
 	if f.Ref == nil {
 		return ""
 	}
-	return "ssb:feed/classic/" + base64.URLEncoding.EncodeToString([]byte(f.Ref.String()[1:]))
+	format, ok := feedURIFormat(f.Ref.Algo())
+	if !ok {
+		return ""
+	}
+	return "ssb:feed/" + format + "/" + base64.URLEncoding.EncodeToString(f.Ref.PubKey())
 }
 
 func (m *MessageURI) String() string {
 	if m.Ref == nil {
 		return ""
 	}
-	return "ssb:message/classic/" + base64.URLEncoding.EncodeToString([]byte(m.Ref.String()[1:]))
+	format, ok := messageURIFormat(m.Ref.Algo())
+	if !ok {
+		return ""
+	}
+	return "ssb:message/" + format + "/" + base64.URLEncoding.EncodeToString(m.Ref.Hash())
 }
 
 func (b *BlobURI) String() string {
 	if b.Ref == nil {
 		return ""
 	}
-	return "ssb:blob/classic/" + base64.URLEncoding.EncodeToString([]byte(b.Ref.String()[1:]))
+	return "ssb:blob/classic/" + base64.URLEncoding.EncodeToString(b.Ref.Hash())
 }
 
 func ParseSSBURI(uri string) (SSBURI, error) {
@@ -77,11 +85,17 @@ func ParseSSBURI(uri string) (SSBURI, error) {
 		return nil, ErrInvalidScheme
 	}
 
-	path := u.Path
+	path := u.Opaque
 	if path == "" {
-		path = u.Opaque
+		path = u.Path
 	}
-	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	path = strings.TrimPrefix(path, "/")
+	if idx := strings.IndexByte(path, '?'); idx >= 0 {
+		path = path[:idx]
+	}
+	parts := strings.FieldsFunc(path, func(r rune) bool {
+		return r == '/' || r == ':'
+	})
 	if len(parts) < 2 {
 		return nil, ErrInvalidResource
 	}
@@ -99,90 +113,59 @@ func ParseSSBURI(uri string) (SSBURI, error) {
 }
 
 func parseFeedURI(parts []string) (*FeedURI, error) {
-	if len(parts) < 2 {
+	if len(parts) < 3 {
 		return nil, ErrInvalidResource
 	}
 
-	var format string
-	var dataStr string
-
+	var algo RefAlgo
 	switch parts[1] {
-	case "classic":
-		format = "ed25519"
-		if len(parts) >= 3 {
-			dataStr = parts[2]
-		}
+	case "classic", "ed25519":
+		algo = RefAlgoFeedSSB1
 	case "bendybutt-v1":
-		format = "bendybutt-v1"
-		if len(parts) >= 3 {
-			dataStr = parts[2]
-		}
+		algo = RefAlgoFeedBendyButt
 	case "gabbygrove-v1":
-		format = "gabbygrove-v1"
-		if len(parts) >= 3 {
-			dataStr = parts[2]
-		}
+		algo = RefAlgoFeedGabby
 	default:
 		return nil, ErrInvalidResource
 	}
 
-	if dataStr == "" {
-		return nil, ErrInvalidEncoding
-	}
-
-	data, err := base64.URLEncoding.DecodeString(dataStr)
+	data, err := base64.URLEncoding.DecodeString(parts[2])
 	if err != nil {
 		return nil, ErrInvalidEncoding
 	}
 
-	sigil := string(rune(SigilFeed)) + string(data)
-	ref, err := ParseFeedRef(sigil)
+	ref, err := NewFeedRef(data, algo)
 	if err != nil {
 		return nil, err
 	}
-	_ = format
 
 	return &FeedURI{Ref: ref}, nil
 }
 
 func parseMessageURI(parts []string) (*MessageURI, error) {
-	if len(parts) < 2 {
+	if len(parts) < 3 {
 		return nil, ErrInvalidResource
 	}
 
-	var format string
-	var dataStr string
-
+	var algo RefAlgoMessage
 	switch parts[1] {
-	case "classic":
-		format = "sha256"
-		if len(parts) >= 3 {
-			dataStr = parts[2]
-		}
+	case "classic", "sha256":
+		algo = RefAlgoMessageSSB1
 	case "bendybutt-v1":
-		format = "bendybutt-v1"
-		if len(parts) >= 3 {
-			dataStr = parts[2]
-		}
+		algo = RefAlgoMessageBendyButt
 	default:
 		return nil, ErrInvalidResource
 	}
 
-	if dataStr == "" {
-		return nil, ErrInvalidEncoding
-	}
-
-	data, err := base64.URLEncoding.DecodeString(dataStr)
+	data, err := base64.URLEncoding.DecodeString(parts[2])
 	if err != nil {
 		return nil, ErrInvalidEncoding
 	}
 
-	sigil := string(rune(SigilMessage)) + string(data)
-	ref, err := ParseMessageRef(sigil)
+	ref, err := NewMessageRef(data, algo)
 	if err != nil {
 		return nil, err
 	}
-	_ = format
 
 	return &MessageURI{Ref: ref}, nil
 }
@@ -192,7 +175,7 @@ func parseBlobURI(parts []string) (*BlobURI, error) {
 		return nil, ErrInvalidResource
 	}
 
-	if parts[1] != "classic" {
+	if parts[1] != "classic" && parts[1] != "sha256" {
 		return nil, ErrInvalidResource
 	}
 
@@ -200,17 +183,39 @@ func parseBlobURI(parts []string) (*BlobURI, error) {
 		return nil, ErrInvalidEncoding
 	}
 
-	dataStr := parts[2]
-	data, err := base64.URLEncoding.DecodeString(dataStr)
+	data, err := base64.URLEncoding.DecodeString(parts[2])
 	if err != nil {
 		return nil, ErrInvalidEncoding
 	}
 
-	sigil := string(rune(SigilBlob)) + string(data)
-	ref, err := ParseBlobRef(sigil)
+	ref, err := NewBlobRef(data)
 	if err != nil {
 		return nil, err
 	}
 
 	return &BlobURI{Ref: ref}, nil
+}
+
+func feedURIFormat(algo RefAlgo) (string, bool) {
+	switch algo {
+	case RefAlgoFeedSSB1:
+		return "classic", true
+	case RefAlgoFeedBendyButt:
+		return "bendybutt-v1", true
+	case RefAlgoFeedGabby:
+		return "gabbygrove-v1", true
+	default:
+		return "", false
+	}
+}
+
+func messageURIFormat(algo RefAlgoMessage) (string, bool) {
+	switch algo {
+	case RefAlgoMessageSSB1:
+		return "classic", true
+	case RefAlgoMessageBendyButt:
+		return "bendybutt-v1", true
+	default:
+		return "", false
+	}
 }

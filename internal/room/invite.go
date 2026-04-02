@@ -2,6 +2,7 @@ package room
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 type inviteHandler struct {
 	roomDB     roomdb.InvitesService
 	members    roomdb.MembersService
+	aliases    roomdb.AliasesService
 	deniedKeys roomdb.DeniedKeysService
 	authTokens roomdb.AuthWithSSBService
 	config     roomdb.RoomConfig
@@ -34,6 +36,7 @@ type inviteKeyPair interface {
 func newInviteHandler(
 	roomDB roomdb.InvitesService,
 	members roomdb.MembersService,
+	aliases roomdb.AliasesService,
 	deniedKeys roomdb.DeniedKeysService,
 	authTokens roomdb.AuthWithSSBService,
 	config roomdb.RoomConfig,
@@ -44,6 +47,7 @@ func newInviteHandler(
 	return &inviteHandler{
 		roomDB:     roomDB,
 		members:    members,
+		aliases:    aliases,
 		deniedKeys: deniedKeys,
 		authTokens: authTokens,
 		config:     config,
@@ -246,6 +250,66 @@ func (h *inviteHandler) handleInviteConsumeRoute(w http.ResponseWriter, r *http.
 	}
 
 	h.handleInviteConsume(w, r, resolveInviteTokenQuery(r))
+}
+
+func (h *inviteHandler) handleAliasEndpoint(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/" {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	trimmed := strings.Trim(r.URL.Path, "/")
+	if trimmed == "" || strings.Contains(trimmed, "/") {
+		http.NotFound(w, r)
+		return
+	}
+
+	mode, err := h.config.GetPrivacyMode(r.Context())
+	if err != nil {
+		h.writeInviteError(w, r, http.StatusInternalServerError, "Failed to check room mode")
+		return
+	}
+	if mode == roomdb.ModeRestricted {
+		http.NotFound(w, r)
+		return
+	}
+
+	aliasEntry, err := h.aliases.Resolve(r.Context(), trimmed)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	payload := h.aliasPayload(aliasEntry)
+	if r.URL.Query().Get("encoding") == "json" || wantsJSONResponse(r) {
+		h.writeJSON(w, http.StatusOK, payload)
+		return
+	}
+
+	view := struct {
+		ShowInvitesNav     bool
+		Alias              string
+		UserID             string
+		RoomID             string
+		MultiserverAddress string
+		ConsumeURI         template.URL
+	}{
+		ShowInvitesNav:     h.showInvitesNav(r),
+		Alias:              aliasEntry.Name,
+		UserID:             aliasEntry.Owner.String(),
+		RoomID:             h.keyPair.FeedRef().String(),
+		MultiserverAddress: h.multiserverAddress(),
+		ConsumeURI:         template.URL(h.consumeAliasURI(aliasEntry)),
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	if err := aliasPageTemplate.Execute(w, view); err != nil {
+		http.Error(w, "Template error", http.StatusInternalServerError)
+	}
 }
 
 func (h *inviteHandler) handleInvites(w http.ResponseWriter, r *http.Request) {
@@ -817,6 +881,28 @@ func (h *inviteHandler) externalBaseURL(r *http.Request) string {
 	return scheme + "://" + host
 }
 
+func (h *inviteHandler) aliasPayload(alias roomdb.Alias) map[string]string {
+	return map[string]string{
+		"status":             "successful",
+		"multiserverAddress": h.multiserverAddress(),
+		"roomId":             h.keyPair.FeedRef().String(),
+		"userId":             alias.Owner.String(),
+		"alias":              alias.Name,
+		"signature":          base64.StdEncoding.EncodeToString(alias.Signature) + ".sig.ed25519",
+	}
+}
+
+func (h *inviteHandler) consumeAliasURI(alias roomdb.Alias) string {
+	query := make(url.Values)
+	query.Set("action", "consume-alias")
+	query.Set("alias", alias.Name)
+	query.Set("userId", alias.Owner.String())
+	query.Set("signature", base64.StdEncoding.EncodeToString(alias.Signature)+".sig.ed25519")
+	query.Set("roomId", h.keyPair.FeedRef().String())
+	query.Set("multiserverAddress", h.multiserverAddress())
+	return "ssb:experimental?" + query.Encode()
+}
+
 func (h *inviteHandler) multiserverAddress() string {
 	addr := strings.TrimSpace(h.muxrpcAddr)
 	if addr == "" {
@@ -827,7 +913,7 @@ func (h *inviteHandler) multiserverAddress() string {
 		return "net:" + addr
 	}
 
-	return fmt.Sprintf("net:%s~shs:%s", addr, h.keyPair.FeedRef().String())
+	return fmt.Sprintf("net:%s~shs:%s", addr, base64.StdEncoding.EncodeToString(h.keyPair.FeedRef().PubKey()))
 }
 
 func (h *inviteHandler) writeInviteError(w http.ResponseWriter, r *http.Request, statusCode int, msg string) {
@@ -854,6 +940,7 @@ var joinFallbackTemplate = template.Must(template.New("join-fallback").Parse(pub
 var joinManualTemplate = template.Must(template.New("join-manual").Parse(publicLayoutTemplate + joinManualHTML))
 var inviteConsumedTemplate = template.Must(template.New("invite-consumed").Parse(publicLayoutTemplate + inviteConsumedHTML))
 var inviteManagementTemplate = template.Must(template.New("invite-management").Parse(publicLayoutTemplate + inviteManagementHTML))
+var aliasPageTemplate = template.Must(template.New("alias-page").Parse(publicLayoutTemplate + aliasPageHTML))
 
 const invitePageHTML = `
 {{define "pageTitle"}}Create Invite - ATProto to SSB Bridge{{end}}
@@ -925,6 +1012,29 @@ function copyInvite() {
   setTimeout(() => btn.textContent = 'Copy', 2000);
 }
 </script>
+{{end}}
+`
+
+const aliasPageHTML = `
+{{define "pageTitle"}}Alias - ATProto to SSB Bridge{{end}}
+{{define "content"}}
+<div class="hero">
+  <h1>Connect with {{.Alias}}</h1>
+  <p class="eyebrow">Room Alias</p>
+</div>
+
+<div class="panel">
+  <p>This alias resolves to the Secure Scuttlebutt identity below.</p>
+  <dl>
+    <dt>User ID</dt>
+    <dd><code>{{.UserID}}</code></dd>
+    <dt>Room ID</dt>
+    <dd><code>{{.RoomID}}</code></dd>
+    <dt>Multiserver Address</dt>
+    <dd><code>{{.MultiserverAddress}}</code></dd>
+  </dl>
+  <p><a class="btn-primary" href="{{.ConsumeURI}}">Connect with me</a></p>
+</div>
 {{end}}
 `
 

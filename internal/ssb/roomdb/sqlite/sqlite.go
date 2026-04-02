@@ -228,9 +228,9 @@ func (a *Aliases) Resolve(ctx context.Context, alias string) (roomdb.Alias, erro
 	var sig []byte
 	var ownerPubKey string
 	err := a.db.conn.QueryRowContext(ctx,
-		`SELECT id, name, member_id, signature, pub_key 
+		`SELECT aliases.id, aliases.name, aliases.member_id, aliases.signature, members.pub_key 
 		 FROM aliases JOIN members ON aliases.member_id = members.id 
-		 WHERE name = ?`, alias).
+		 WHERE aliases.name = ?`, alias).
 		Scan(&al.ID, &al.Name, &memberID, &sig, &ownerPubKey)
 	if err != nil {
 		return al, fmt.Errorf("aliases resolve: %w", err)
@@ -251,7 +251,7 @@ func (a *Aliases) GetByID(ctx context.Context, id int64) (roomdb.Alias, error) {
 	var sig []byte
 	var ownerPubKey string
 	err := a.db.conn.QueryRowContext(ctx,
-		`SELECT id, name, member_id, signature, pub_key 
+		`SELECT aliases.id, aliases.name, aliases.member_id, aliases.signature, members.pub_key 
 		 FROM aliases JOIN members ON aliases.member_id = members.id 
 		 WHERE aliases.id = ?`, id).
 		Scan(&al.ID, &al.Name, &memberID, &sig, &ownerPubKey)
@@ -270,9 +270,9 @@ func (a *Aliases) GetByID(ctx context.Context, id int64) (roomdb.Alias, error) {
 
 func (a *Aliases) List(ctx context.Context) ([]roomdb.Alias, error) {
 	rows, err := a.db.conn.QueryContext(ctx,
-		`SELECT id, name, member_id, signature, pub_key 
+		`SELECT aliases.id, aliases.name, aliases.member_id, aliases.signature, members.pub_key 
 		 FROM aliases JOIN members ON aliases.member_id = members.id 
-		 ORDER BY name`)
+		 ORDER BY aliases.name`)
 	if err != nil {
 		return nil, fmt.Errorf("aliases list: %w", err)
 	}

@@ -137,6 +137,7 @@ func (hm *HandlerMux) Register(m Method, h Handler) {
 
 type Endpoint interface {
 	Async(ctx context.Context, ret interface{}, tipe RequestEncoding, method Method, args ...interface{}) error
+	Sync(ctx context.Context, ret interface{}, tipe RequestEncoding, method Method, args ...interface{}) error
 	Source(ctx context.Context, tipe RequestEncoding, method Method, args ...interface{}) (*ByteSource, error)
 	Sink(ctx context.Context, tipe RequestEncoding, method Method, args ...interface{}) (*ByteSink, error)
 	Duplex(ctx context.Context, tipe RequestEncoding, method Method, args ...interface{}) (*ByteSource, *ByteSink, error)
@@ -421,7 +422,15 @@ func (r *rpc) closeStream(req *Request) {
 }
 
 func (r *rpc) Async(ctx context.Context, ret interface{}, tipe RequestEncoding, method Method, args ...interface{}) error {
-	src, err := r.call(ctx, "async", tipe, method, args...)
+	return r.callAndDecode(ctx, "async", ret, tipe, method, args...)
+}
+
+func (r *rpc) Sync(ctx context.Context, ret interface{}, tipe RequestEncoding, method Method, args ...interface{}) error {
+	return r.callAndDecode(ctx, "sync", ret, tipe, method, args...)
+}
+
+func (r *rpc) callAndDecode(ctx context.Context, callType string, ret interface{}, tipe RequestEncoding, method Method, args ...interface{}) error {
+	src, err := r.call(ctx, callType, tipe, method, args...)
 	if err != nil {
 		return err
 	}

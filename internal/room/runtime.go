@@ -55,6 +55,7 @@ type Runtime struct {
 	keyPair *keys.KeyPair
 	roomDB  RoomDB
 	state   *roomstate.Manager
+	roomSrv *roomhandlers.RoomServer
 
 	httpServer     *http.Server
 	httpListener   net.Listener
@@ -171,6 +172,7 @@ func (r *Runtime) initHandlers() {
 		r.roomDB.RoomConfig(),
 		r.state,
 	)
+	r.roomSrv = roomSrv
 
 	var handlerMux *muxrpc.HandlerMux
 	if r.cfg.HandlerMux != nil {
@@ -348,27 +350,89 @@ func (r *Runtime) serveMUXRPC(ctx context.Context, shutdownCh <-chan struct{}, l
 }
 
 func (r *Runtime) handleMUXRPCConn(ctx context.Context, conn net.Conn) {
-	defer conn.Close()
-
 	if r == nil || r.keyPair == nil {
+		_ = conn.Close()
 		return
 	}
 
 	appKey := secretstream.NewAppKey(r.cfg.AppKey)
 	shs, err := secretstream.NewServer(conn, appKey, r.keyPair.Private())
 	if err != nil {
+		_ = conn.Close()
 		r.logger.Printf("room: shs server init failed: %v", err)
 		return
 	}
 
 	if err := shs.Handshake(); err != nil {
+		_ = conn.Close()
 		r.logger.Printf("room: shs server handshake failed: %v", err)
 		return
 	}
 
-	muxrpc.NewServer(ctx, shs, r.handler, r.manifest)
+	remoteFeed, err := refs.NewFeedRef(shs.RemotePubKey(), refs.RefAlgoFeedSSB1)
+	if err != nil {
+		_ = shs.Close()
+		r.logger.Printf("room: invalid remote shs pubkey: %v", err)
+		return
+	}
 
-	<-ctx.Done()
+	if r.roomDB != nil && r.roomDB.DeniedKeys().HasFeed(ctx, *remoteFeed) {
+		_ = shs.Close()
+		r.logger.Printf("room: denied shs peer %s", remoteFeed.String())
+		return
+	}
+
+	var mode roomdb.PrivacyMode
+	if r.roomDB != nil {
+		mode, err = r.roomDB.RoomConfig().GetPrivacyMode(ctx)
+		if err != nil {
+			_ = shs.Close()
+			r.logger.Printf("room: lookup privacy mode failed: %v", err)
+			return
+		}
+	}
+
+	isMember := false
+	if r.roomDB != nil {
+		if _, err := r.roomDB.Members().GetByFeed(ctx, *remoteFeed); err == nil {
+			isMember = true
+		}
+	}
+	if mode == roomdb.ModeRestricted && !isMember {
+		_ = shs.Close()
+		r.logger.Printf("room: rejected restricted-mode external peer %s", remoteFeed.String())
+		return
+	}
+
+	tracked := newTrackedConn(shs)
+	connCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	srv := muxrpc.NewServer(connCtx, tracked, r.handler, r.manifest)
+	if r.handler != nil {
+		r.handler.HandleConnect(connCtx, srv)
+	}
+
+	if isMember && r.state != nil {
+		r.state.AddAttendant(*remoteFeed, tracked.RemoteAddr().String())
+	}
+	if isMember && r.roomSrv != nil {
+		r.roomSrv.PeerRegistry().Register(*remoteFeed, srv)
+	}
+
+	select {
+	case <-ctx.Done():
+	case <-tracked.Done():
+	}
+
+	if isMember && r.state != nil {
+		r.state.RemoveAttendant(*remoteFeed)
+		r.state.RemovePeer(*remoteFeed)
+	}
+	if isMember && r.roomSrv != nil {
+		r.roomSrv.PeerRegistry().Unregister(*remoteFeed)
+	}
+	_ = tracked.Close()
 }
 
 type connWrapper struct {
@@ -389,6 +453,50 @@ func (c *connWrapper) Close() error {
 
 func (c *connWrapper) RemoteAddr() net.Addr {
 	return c.Conn.RemoteAddr()
+}
+
+type trackedConn struct {
+	net.Conn
+	done chan struct{}
+	once sync.Once
+}
+
+func newTrackedConn(conn net.Conn) *trackedConn {
+	return &trackedConn{
+		Conn: conn,
+		done: make(chan struct{}),
+	}
+}
+
+func (c *trackedConn) Done() <-chan struct{} {
+	return c.done
+}
+
+func (c *trackedConn) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p)
+	if err != nil {
+		c.markDone()
+	}
+	return n, err
+}
+
+func (c *trackedConn) Write(p []byte) (int, error) {
+	n, err := c.Conn.Write(p)
+	if err != nil {
+		c.markDone()
+	}
+	return n, err
+}
+
+func (c *trackedConn) Close() error {
+	c.markDone()
+	return c.Conn.Close()
+}
+
+func (c *trackedConn) markDone() {
+	c.once.Do(func() {
+		close(c.done)
+	})
 }
 
 type roomServer struct {
@@ -415,6 +523,7 @@ func newServeMux(ctx context.Context, db RoomDB, state *roomstate.Manager, keyPa
 	inviteH := newInviteHandler(
 		db.Invites(),
 		db.Members(),
+		db.Aliases(),
 		db.DeniedKeys(),
 		db.AuthTokens(),
 		db.RoomConfig(),
@@ -429,6 +538,7 @@ func newServeMux(ctx context.Context, db RoomDB, state *roomstate.Manager, keyPa
 	mux.HandleFunc("/join-fallback", inviteH.handleJoinFallback)
 	mux.HandleFunc("/join-manually", inviteH.handleJoinManually)
 	mux.HandleFunc("/invite/consume", inviteH.handleInviteConsumeRoute)
+	mux.HandleFunc("/", inviteH.handleAliasEndpoint)
 
 	authH := newAuthHandler(db.AuthFallback(), db.AuthTokens())
 	mux.HandleFunc("/login", authH.handleLogin)

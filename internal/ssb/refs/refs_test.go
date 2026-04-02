@@ -1,6 +1,7 @@
 package refs
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"testing"
 )
@@ -180,5 +181,77 @@ func TestSSBURI(t *testing.T) {
 
 	if !parsed.(*FeedURI).Ref.Equal(*alice) {
 		t.Errorf("parsed ref doesn't match")
+	}
+}
+
+func TestSSBURIUsesCanonicalRawBytes(t *testing.T) {
+	feed := MustNewFeedRef([]byte("abcdefghijklmnopqrstuvwxyz123456"), RefAlgoFeedSSB1)
+	msg := MustNewMessageRef([]byte("abcdefghijklmnopqrstuvwxyz123456"), RefAlgoMessageSSB1)
+	blob := MustNewBlobRef([]byte("abcdefghijklmnopqrstuvwxyz123456"))
+
+	if got, want := (&FeedURI{Ref: feed}).String(), "ssb:feed/classic/"+base64.URLEncoding.EncodeToString(feed.PubKey()); got != want {
+		t.Fatalf("feed URI mismatch: got %q want %q", got, want)
+	}
+	if got, want := (&MessageURI{Ref: msg}).String(), "ssb:message/classic/"+base64.URLEncoding.EncodeToString(msg.Hash()); got != want {
+		t.Fatalf("message URI mismatch: got %q want %q", got, want)
+	}
+	if got, want := (&BlobURI{Ref: blob}).String(), "ssb:blob/classic/"+base64.URLEncoding.EncodeToString(blob.Hash()); got != want {
+		t.Fatalf("blob URI mismatch: got %q want %q", got, want)
+	}
+}
+
+func TestParseSSBURIAcceptsColonSeparatedCanonicalForms(t *testing.T) {
+	feed := MustNewFeedRef([]byte("abcdefghijklmnopqrstuvwxyz123456"), RefAlgoFeedSSB1)
+	uri := "ssb:feed:classic:" + base64.URLEncoding.EncodeToString(feed.PubKey())
+
+	parsed, err := ParseSSBURI(uri)
+	if err != nil {
+		t.Fatalf("failed to parse colon-separated feed URI: %v", err)
+	}
+	if !parsed.(*FeedURI).Ref.Equal(*feed) {
+		t.Fatalf("parsed feed ref mismatch")
+	}
+}
+
+func TestParseSSBURIAcceptsDeprecatedAlgorithmAliases(t *testing.T) {
+	feed := MustNewFeedRef([]byte("abcdefghijklmnopqrstuvwxyz123456"), RefAlgoFeedSSB1)
+	msg := MustNewMessageRef([]byte("abcdefghijklmnopqrstuvwxyz123456"), RefAlgoMessageSSB1)
+	blob := MustNewBlobRef([]byte("abcdefghijklmnopqrstuvwxyz123456"))
+
+	feedURI := "ssb:feed/ed25519/" + base64.URLEncoding.EncodeToString(feed.PubKey())
+	parsedFeed, err := ParseSSBURI(feedURI)
+	if err != nil {
+		t.Fatalf("failed to parse deprecated feed URI: %v", err)
+	}
+	if !parsedFeed.(*FeedURI).Ref.Equal(*feed) {
+		t.Fatalf("parsed deprecated feed ref mismatch")
+	}
+
+	msgURI := "ssb:message/sha256/" + base64.URLEncoding.EncodeToString(msg.Hash())
+	parsedMsg, err := ParseSSBURI(msgURI)
+	if err != nil {
+		t.Fatalf("failed to parse deprecated message URI: %v", err)
+	}
+	if !parsedMsg.(*MessageURI).Ref.Equal(*msg) {
+		t.Fatalf("parsed deprecated message ref mismatch")
+	}
+
+	blobURI := "ssb:blob/sha256/" + base64.URLEncoding.EncodeToString(blob.Hash())
+	parsedBlob, err := ParseSSBURI(blobURI)
+	if err != nil {
+		t.Fatalf("failed to parse deprecated blob URI: %v", err)
+	}
+	if !parsedBlob.(*BlobURI).Ref.Equal(*blob) {
+		t.Fatalf("parsed deprecated blob ref mismatch")
+	}
+}
+
+func TestParseSSBURIRejectsLegacyTextPayloads(t *testing.T) {
+	feed := MustNewFeedRef([]byte("abcdefghijklmnopqrstuvwxyz123456"), RefAlgoFeedSSB1)
+	legacyPayload := base64.URLEncoding.EncodeToString([]byte(feed.String()[1:]))
+	uri := "ssb:feed/classic/" + legacyPayload
+
+	if _, err := ParseSSBURI(uri); err == nil {
+		t.Fatalf("expected legacy text payload to be rejected")
 	}
 }

@@ -22,6 +22,7 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/room"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomdb"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssbruntime"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/web/handlers"
@@ -252,7 +253,6 @@ func runRoomTunnelBootstrap(ctx context.Context, ssbRT *ssbruntime.Runtime, room
 	const reannounceEvery = 30 * time.Second
 
 	bridgeFeed := ssbRT.Node().KeyPair.FeedRef()
-	sbotListenAddr := ssbRT.Node().ListenAddr()
 
 	// Ensure bridge is a room admin so it can announce.
 	if err := roomRT.AddMember(ctx, bridgeFeed, roomdb.RoleAdmin); err != nil {
@@ -261,20 +261,75 @@ func runRoomTunnelBootstrap(ctx context.Context, ssbRT *ssbruntime.Runtime, room
 		}
 	}
 
-	// Announce the bridge sbot directly in the room's peer state (in-process).
-	roomRT.AnnouncePeer(bridgeFeed, sbotListenAddr)
-	logger.Printf("event=room_tunnel_announce_success feed=%s addr=%s", bridgeFeed.Ref(), sbotListenAddr)
-
-	// Re-announce periodically to stay visible.
-	ticker := time.NewTicker(reannounceEvery)
-	defer ticker.Stop()
 	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			roomRT.AnnouncePeer(bridgeFeed, sbotListenAddr)
+		peer, err := ssbRT.Node().Connect(ctx, roomRT.Addr(), roomRT.RoomFeed().PubKey())
+		if err != nil {
+			logger.Printf("event=room_tunnel_connect_failed err=%v", err)
+			if !waitForRetry(ctx, 2*time.Second) {
+				return
+			}
+			continue
 		}
+		rpc := peer.RPC()
+		if rpc == nil {
+			logger.Printf("event=room_tunnel_connect_failed err=no_muxrpc_endpoint")
+			if !waitForRetry(ctx, 2*time.Second) {
+				return
+			}
+			continue
+		}
+
+		if err := announceRoomPeer(ctx, rpc); err != nil {
+			logger.Printf("event=room_tunnel_announce_failed err=%v", err)
+			_ = peer.Conn.Close()
+			if !waitForRetry(ctx, 2*time.Second) {
+				return
+			}
+			continue
+		}
+		logger.Printf("event=room_tunnel_announce_success feed=%s room=%s", bridgeFeed.Ref(), roomRT.Addr())
+
+		ticker := time.NewTicker(reannounceEvery)
+		keepSession := true
+		for keepSession {
+			select {
+			case <-ctx.Done():
+				ticker.Stop()
+				return
+			case <-ticker.C:
+				if err := announceRoomPeer(ctx, rpc); err != nil {
+					logger.Printf("event=room_tunnel_reannounce_failed err=%v", err)
+					_ = peer.Conn.Close()
+					ticker.Stop()
+					if !waitForRetry(ctx, 2*time.Second) {
+						return
+					}
+					keepSession = false
+				}
+			}
+		}
+	}
+}
+
+func announceRoomPeer(ctx context.Context, endpoint muxrpc.Endpoint) error {
+	var announced bool
+	if err := endpoint.Sync(ctx, &announced, muxrpc.TypeJSON, muxrpc.Method{"tunnel", "announce"}); err != nil {
+		return err
+	}
+	if !announced {
+		return fmt.Errorf("room tunnel announce returned false")
+	}
+	return nil
+}
+
+func waitForRetry(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
 	}
 }
 

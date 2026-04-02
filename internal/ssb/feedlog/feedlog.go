@@ -39,6 +39,7 @@ type StoredMessage struct {
 	Key      string
 	Value    []byte
 	Metadata *Metadata
+	Received int64
 }
 
 type Metadata struct {
@@ -419,7 +420,8 @@ func (l *logAdapter) Get(seq int64) (*StoredMessage, error) {
 	defer l.mu.RUnlock()
 
 	var data []byte
-	err := l.db.QueryRow("SELECT value_json FROM messages WHERE feed_id = ? AND seq = ?", l.feedID, seq).Scan(&data)
+	var createdAt int64
+	err := l.db.QueryRow("SELECT value_json, created_at FROM messages WHERE feed_id = ? AND seq = ?", l.feedID, seq).Scan(&data, &createdAt)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
 	}
@@ -436,6 +438,7 @@ func (l *logAdapter) Get(seq int64) (*StoredMessage, error) {
 		Key:      wrapper.Metadata.Hash,
 		Value:    wrapper.Content,
 		Metadata: wrapper.Metadata,
+		Received: createdAt,
 	}, nil
 }
 
@@ -508,7 +511,8 @@ func (l *receiveLog) Get(seq int64) (*StoredMessage, error) {
 	defer l.mu.RUnlock()
 
 	var data []byte
-	err := l.db.QueryRow("SELECT value_json FROM receive_log WHERE seq = ?", seq).Scan(&data)
+	var createdAt int64
+	err := l.db.QueryRow("SELECT value_json, created_at FROM receive_log WHERE seq = ?", seq).Scan(&data, &createdAt)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
 	}
@@ -525,6 +529,7 @@ func (l *receiveLog) Get(seq int64) (*StoredMessage, error) {
 		Key:      wrapper.Metadata.Hash,
 		Value:    wrapper.Content,
 		Metadata: wrapper.Metadata,
+		Received: createdAt,
 	}, nil
 }
 

@@ -2,20 +2,15 @@ package room
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
-	"log"
-	"net"
-	"strings"
 	"sync"
-	"time"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/keys"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomstate"
-	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/secretstream"
 )
 
 type TunnelHandler struct {
@@ -69,37 +64,25 @@ func (h *TunnelHandler) handleAnnounce(ctx context.Context, req *muxrpc.Request)
 		return
 	}
 
-	var args struct {
-		ID   string `json:"id"`
-		Addr string `json:"addr"`
-	}
-	if len(req.RawArgs) > 0 {
-		if err := json.Unmarshal(req.RawArgs, &args); err != nil {
-			req.CloseWithError(fmt.Errorf("tunnel.announce: parse args: %w", err))
-			return
-		}
-	}
-
-	if args.ID == "" {
-		req.CloseWithError(fmt.Errorf("tunnel.announce: id required"))
-		return
-	}
-
-	feedRef, err := refs.ParseFeedRef(args.ID)
+	feedRef, err := authenticatedFeedFromAddr(req.RemoteAddr())
 	if err != nil {
-		req.CloseWithError(fmt.Errorf("tunnel.announce: parse id: %w", err))
+		req.CloseWithError(fmt.Errorf("tunnel.announce: get caller: %w", err))
+		return
+	}
+	if !isInternalMember(h.server, ctx, feedRef) {
+		req.CloseWithError(fmt.Errorf("tunnel.announce: membership required"))
 		return
 	}
 
-	if h.server.denied.HasFeed(ctx, *feedRef) {
+	if h.server.denied.HasFeed(ctx, feedRef) {
 		req.CloseWithError(fmt.Errorf("tunnel.announce: denied"))
 		return
 	}
 
-	h.server.state.AddPeer(*feedRef, args.Addr)
+	h.server.state.AddPeer(feedRef, tunnelAddress(*h.server.keyPair, feedRef))
 
 	if h.announceHook != nil {
-		if err := h.announceHook(*feedRef); err != nil {
+		if err := h.announceHook(feedRef); err != nil {
 			req.CloseWithError(fmt.Errorf("tunnel.announce: hook: %w", err))
 			return
 		}
@@ -114,28 +97,17 @@ func (h *TunnelHandler) handleLeave(ctx context.Context, req *muxrpc.Request) {
 		return
 	}
 
-	var args struct {
-		ID string `json:"id"`
-	}
-	if len(req.RawArgs) > 0 {
-		if err := json.Unmarshal(req.RawArgs, &args); err != nil {
-			req.CloseWithError(fmt.Errorf("tunnel.leave: parse args: %w", err))
-			return
-		}
-	}
-
-	if args.ID == "" {
-		req.CloseWithError(fmt.Errorf("tunnel.leave: id required"))
-		return
-	}
-
-	feedRef, err := refs.ParseFeedRef(args.ID)
+	feedRef, err := authenticatedFeedFromAddr(req.RemoteAddr())
 	if err != nil {
-		req.CloseWithError(fmt.Errorf("tunnel.leave: parse id: %w", err))
+		req.CloseWithError(fmt.Errorf("tunnel.leave: get caller: %w", err))
+		return
+	}
+	if !isInternalMember(h.server, ctx, feedRef) {
+		req.CloseWithError(fmt.Errorf("tunnel.leave: membership required"))
 		return
 	}
 
-	h.server.state.RemovePeer(*feedRef)
+	h.server.state.RemovePeer(feedRef)
 
 	req.Return(ctx, true)
 }
@@ -147,45 +119,38 @@ func (h *TunnelHandler) handleConnect(ctx context.Context, req *muxrpc.Request) 
 	}
 
 	var args struct {
-		ID   string `json:"id"`
-		Addr string `json:"addr"`
+		Origin refs.FeedRef `json:"origin"`
+		Portal refs.FeedRef `json:"portal"`
+		Target refs.FeedRef `json:"target"`
 	}
-	if len(req.RawArgs) > 0 {
-		if err := json.Unmarshal(req.RawArgs, &args); err != nil {
-			req.CloseWithError(fmt.Errorf("tunnel.connect: parse args: %w", err))
-			return
-		}
-	}
-
-	if args.ID == "" {
-		req.CloseWithError(fmt.Errorf("tunnel.connect: id required"))
+	if err := parseSingleObjectArg(req.RawArgs, &args); err != nil {
+		req.CloseWithError(fmt.Errorf("tunnel.connect: parse args: %w", err))
 		return
 	}
 
-	log.Printf("[TUNNEL] handleConnect: id=%s addr=%s", args.ID, args.Addr)
+	if args.Target == (refs.FeedRef{}) {
+		req.CloseWithError(fmt.Errorf("tunnel.connect: target required"))
+		return
+	}
+	if args.Origin != (refs.FeedRef{}) {
+		req.CloseWithError(fmt.Errorf("tunnel.connect: forwarded target handling is not available in the room server"))
+		return
+	}
 
-	targetRef, err := refs.ParseFeedRef(args.ID)
+	origin, err := authenticatedFeedFromAddr(req.RemoteAddr())
 	if err != nil {
-		req.CloseWithError(fmt.Errorf("tunnel.connect: parse target id: %w", err))
+		req.CloseWithError(fmt.Errorf("tunnel.connect: get caller: %w", err))
+		return
+	}
+	if args.Portal != (refs.FeedRef{}) && !args.Portal.Equal(*h.server.keyPair) {
+		req.CloseWithError(fmt.Errorf("tunnel.connect: portal mismatch"))
+		return
+	}
+	if !h.server.state.HasPeer(args.Target) {
+		req.CloseWithError(fmt.Errorf("tunnel.connect: target not announced"))
 		return
 	}
 
-	log.Printf("[TUNNEL] handleConnect: parsed target=%s", targetRef.String())
-
-	log.Printf("[TUNNEL] tunnel.connect from %s to %s (addr: %s)", req.RemoteAddr(), args.ID, args.Addr)
-
-	var targetAddr string
-	if args.Addr != "" {
-		targetAddr = args.Addr
-	} else {
-		req.CloseWithError(fmt.Errorf("tunnel.connect: addr required for dialing"))
-		return
-	}
-
-	go h.dialAndBridge(ctx, req, *targetRef, targetAddr)
-}
-
-func (h *TunnelHandler) dialAndBridge(ctx context.Context, req *muxrpc.Request, targetRef refs.FeedRef, targetAddr string) {
 	callerSink, err := req.ResponseSink()
 	if err != nil {
 		req.CloseWithError(fmt.Errorf("tunnel.connect: get caller sink: %w", err))
@@ -199,18 +164,25 @@ func (h *TunnelHandler) dialAndBridge(ctx context.Context, req *muxrpc.Request, 
 		return
 	}
 
-	log.Printf("[TUNNEL] Dialing target peer at %s", targetAddr)
-
-	conn, err := h.dialPeer(ctx, targetAddr, targetRef)
-	if err != nil {
-		log.Printf("[TUNNEL] Failed to dial target peer: %v", err)
+	targetEndpoint := h.server.GetPeerMuxRPC(args.Target)
+	if targetEndpoint == nil {
 		callerSink.Close()
-		callerSource.Cancel(fmt.Errorf("tunnel: dial failed"))
-		req.CloseWithError(fmt.Errorf("tunnel.connect: dial failed: %w", err))
+		callerSource.Cancel(fmt.Errorf("tunnel: target unavailable"))
+		req.CloseWithError(fmt.Errorf("tunnel.connect: target unavailable"))
 		return
 	}
 
-	log.Printf("[TUNNEL] Successfully connected to target, starting bridge")
+	targetSource, targetSink, err := targetEndpoint.Duplex(ctx, muxrpc.TypeBinary, muxrpc.Method{"tunnel", "connect"}, map[string]interface{}{
+		"origin": origin,
+		"portal": *h.server.keyPair,
+		"target": args.Target,
+	})
+	if err != nil {
+		callerSink.Close()
+		callerSource.Cancel(fmt.Errorf("tunnel: target connect failed"))
+		req.CloseWithError(fmt.Errorf("tunnel.connect: target connect failed: %w", err))
+		return
+	}
 
 	var wg sync.WaitGroup
 	cleanupOnce := sync.Once{}
@@ -218,133 +190,32 @@ func (h *TunnelHandler) dialAndBridge(ctx context.Context, req *muxrpc.Request, 
 	cleanup := func() {
 		cleanupOnce.Do(func() {
 			callerSource.Cancel(fmt.Errorf("tunnel: closing"))
-			callerSink.Close()
-			conn.Close()
+			targetSource.Cancel(fmt.Errorf("tunnel: closing"))
+			_ = callerSink.Close()
+			_ = targetSink.Close()
 		})
 	}
 
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		h.copyStreamToConn(ctx, callerSource, conn, cleanup)
-		log.Printf("[TUNNEL] Caller -> Target stream closed")
+		h.copySourceToSink(ctx, callerSource, targetSink, cleanup)
 		cleanup()
 	}()
 	go func() {
 		defer wg.Done()
-		h.copyConnToStream(ctx, conn, callerSink, cleanup)
-		log.Printf("[TUNNEL] Target -> Caller stream closed")
+		h.copySourceToSink(ctx, targetSource, callerSink, cleanup)
 		cleanup()
 	}()
 
 	wg.Wait()
-	log.Printf("[TUNNEL] Tunnel bridge complete")
-
-	req.Close()
-}
-
-func parseMultiServerAddr(addr string) (string, error) {
-	if strings.HasPrefix(addr, "net:") {
-		addr = strings.TrimPrefix(addr, "net:")
-	}
-	parts := strings.Split(addr, "~shs:")
-	if len(parts) < 1 {
-		return "", fmt.Errorf("parse addr: invalid format")
-	}
-	return parts[0], nil
-}
-
-func (h *TunnelHandler) dialPeer(ctx context.Context, addr string, expectedFeed refs.FeedRef) (net.Conn, error) {
-	tcpAddr, err := parseMultiServerAddr(addr)
-	if err != nil {
-		return nil, fmt.Errorf("parse addr: %w", err)
-	}
-
-	log.Printf("[TUNNEL] dialPeer: raw=%s parsed=%s expectedFeed=%s", addr, tcpAddr, expectedFeed.String())
-
-	conn, err := net.DialTimeout("tcp", tcpAddr, 10*1000000000)
-	if err != nil {
-		return nil, fmt.Errorf("dial: %w", err)
-	}
-
-	shs, err := secretstream.NewClient(conn, secretstream.NewAppKey(h.appKey), h.keyPair.Private(), expectedFeed.PubKey())
-	if err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("create client: %w", err)
-	}
-
-	if err := shs.Handshake(); err != nil {
-		conn.Close()
-		return nil, fmt.Errorf("handshake: %w", err)
-	}
-
-	return conn, nil
-}
-
-func (h *TunnelHandler) copyStreamToConn(ctx context.Context, source *muxrpc.ByteSource, conn net.Conn, onClose func()) {
-	defer onClose()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-		if !source.Next(ctx) {
-			return
-		}
-		data, err := source.Bytes()
-		if err != nil {
-			return
-		}
-		if len(data) > 0 {
-			if _, err := conn.Write(data); err != nil {
-				return
-			}
-		}
-	}
-}
-
-func (h *TunnelHandler) copyConnToStream(ctx context.Context, conn net.Conn, sink *muxrpc.ByteSink, onClose func()) {
-	defer onClose()
-	buf := make([]byte, 8192)
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-		conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
-		n, err := conn.Read(buf)
-		if n > 0 {
-			sink.Write(buf[:n])
-		}
-		if err != nil {
-			if err == io.EOF {
-				return
-			}
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				continue
-			}
-			log.Printf("[TUNNEL] Read error: %v", err)
-			return
-		}
-	}
+	_ = req.Close()
 }
 
 func (h *TunnelHandler) handleEndpoints(ctx context.Context, req *muxrpc.Request) {
 	if req.Type != "source" {
 		req.CloseWithError(fmt.Errorf("tunnel.endpoints is a source handler"))
 		return
-	}
-
-	var args struct {
-		ID string `json:"id"`
-	}
-	if len(req.RawArgs) > 0 {
-		if err := json.Unmarshal(req.RawArgs, &args); err != nil {
-			req.CloseWithError(fmt.Errorf("tunnel.endpoints: parse args: %w", err))
-			return
-		}
 	}
 
 	peers := h.server.state.Peers()
@@ -375,6 +246,39 @@ func (h *TunnelHandler) streamEndpoints(ctx context.Context, req *muxrpc.Request
 			return
 		}
 	}
+}
+
+func (h *TunnelHandler) copySourceToSink(ctx context.Context, source *muxrpc.ByteSource, sink *muxrpc.ByteSink, onClose func()) {
+	defer onClose()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		if !source.Next(ctx) {
+			return
+		}
+		data, err := source.Bytes()
+		if err != nil {
+			return
+		}
+		if len(data) == 0 {
+			continue
+		}
+		if _, err := sink.Write(data); err != nil {
+			return
+		}
+	}
+}
+
+func tunnelAddress(portal refs.FeedRef, target refs.FeedRef) string {
+	return fmt.Sprintf(
+		"tunnel:%s:%s~shs:%s",
+		portal.String(),
+		target.String(),
+		base64.StdEncoding.EncodeToString(target.PubKey()),
+	)
 }
 
 func (h *TunnelHandler) handleIsRoom(ctx context.Context, req *muxrpc.Request) {

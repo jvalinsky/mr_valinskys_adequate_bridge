@@ -2,14 +2,14 @@ package handlers
 
 import (
 	"context"
+	"net"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 )
 
 func TestPDSClientUploadBlob(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "com.atproto.server.createSession") {
 			w.Header().Set("Content-Type", "application/json")
 			w.Write([]byte(`{
@@ -54,7 +54,7 @@ func TestPDSClientUploadBlob(t *testing.T) {
 }
 
 func TestPDSClientCreatePost(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "com.atproto.server.createSession") {
 			w.Header().Set("Content-Type", "application/json")
 			w.Write([]byte(`{
@@ -95,7 +95,7 @@ func TestPDSClientCreatePost(t *testing.T) {
 }
 
 func TestPDSClientCreateSessionError(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newIPv4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad auth", http.StatusUnauthorized)
 	}))
 	defer server.Close()
@@ -108,5 +108,40 @@ func TestPDSClientCreateSessionError(t *testing.T) {
 	_, err := client.UploadBlob(context.Background(), "alice", nil, "image/png")
 	if err == nil {
 		t.Fatal("expected error from bad session creation")
+	}
+}
+
+type localHTTPTestServer struct {
+	URL      string
+	server   *http.Server
+	listener net.Listener
+}
+
+func (s *localHTTPTestServer) Close() {
+	if s == nil {
+		return
+	}
+	_ = s.server.Close()
+	_ = s.listener.Close()
+}
+
+func newIPv4TestServer(t *testing.T, handler http.Handler) *localHTTPTestServer {
+	t.Helper()
+
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		if strings.Contains(err.Error(), "operation not permitted") {
+			t.Skipf("sandbox does not allow local listen sockets: %v", err)
+		}
+		t.Fatalf("listen test server: %v", err)
+	}
+	server := &http.Server{Handler: handler}
+	go func() {
+		_ = server.Serve(listener)
+	}()
+	return &localHTTPTestServer{
+		URL:      "http://" + listener.Addr().String(),
+		server:   server,
+		listener: listener,
 	}
 }

@@ -354,11 +354,11 @@ func verifyRoomConn(ctx context.Context, endpoint muxrpc.Endpoint) (*roomMetadat
 	}
 
 	var meta roomMetadata
-	if err := endpoint.Async(ctx, &meta, muxrpc.TypeJSON, muxrpc.Method{"tunnel", "isRoom"}); err != nil {
-		return nil, fmt.Errorf("room tunnel.isRoom failed: %w", err)
+	if err := endpoint.Async(ctx, &meta, muxrpc.TypeJSON, muxrpc.Method{"room", "metadata"}); err != nil {
+		return nil, fmt.Errorf("room metadata failed: %w", err)
 	}
 	if !containsString(meta.Features, "tunnel") {
-		return nil, fmt.Errorf("room tunnel.isRoom missing tunnel feature: %+v", meta)
+		return nil, fmt.Errorf("room metadata missing tunnel feature: %+v", meta)
 	}
 	return &meta, nil
 }

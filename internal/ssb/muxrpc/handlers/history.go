@@ -2,10 +2,13 @@ package handlers
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/feedlog"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/message/legacy"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 )
@@ -17,9 +20,11 @@ type HistoryStreamHandler struct {
 type HistoryStreamArgs struct {
 	ID       string `json:"id"`
 	Sequence int64  `json:"sequence"`
+	Seq      *int64 `json:"seq"`
 	Limit    int    `json:"limit"`
 	Live     bool   `json:"live"`
-	Old      bool   `json:"old"`
+	Old      *bool  `json:"old"`
+	Keys     *bool  `json:"keys"`
 }
 
 func NewHistoryStreamHandler(store *feedlog.StoreImpl) *HistoryStreamHandler {
@@ -36,12 +41,10 @@ func (h *HistoryStreamHandler) HandleCall(ctx context.Context, req *muxrpc.Reque
 		return
 	}
 
-	var args HistoryStreamArgs
-	if len(req.RawArgs) > 0 {
-		if err := json.Unmarshal(req.RawArgs, &args); err != nil {
-			req.CloseWithError(fmt.Errorf("parse args: %w", err))
-			return
-		}
+	args, err := parseHistoryStreamArgs(req.RawArgs)
+	if err != nil {
+		req.CloseWithError(fmt.Errorf("parse args: %w", err))
+		return
 	}
 
 	if args.ID == "" {
@@ -66,19 +69,15 @@ func (h *HistoryStreamHandler) HandleCall(ctx context.Context, req *muxrpc.Reque
 		return
 	}
 
-	if args.Limit == 0 {
-		args.Limit = 100
-	}
-
 	startSeq := args.Sequence
 	if startSeq < 0 {
 		startSeq = 0
 	}
 
-	go h.streamMessages(ctx, req, log, startSeq, int64(args.Limit))
+	go h.streamMessages(ctx, req, log, startSeq, args)
 }
 
-func (h *HistoryStreamHandler) streamMessages(ctx context.Context, req *muxrpc.Request, log feedlog.Log, startSeq, limit int64) {
+func (h *HistoryStreamHandler) streamMessages(ctx context.Context, req *muxrpc.Request, log feedlog.Log, startSeq int64, args HistoryStreamArgs) {
 	sink, err := req.ResponseSink()
 	if err != nil {
 		req.CloseWithError(fmt.Errorf("get response sink: %w", err))
@@ -92,40 +91,135 @@ func (h *HistoryStreamHandler) streamMessages(ctx context.Context, req *muxrpc.R
 		return
 	}
 
-	for i := startSeq + 1; i <= seq && i <= startSeq+limit; i++ {
+	nextSeq := startSeq + 1
+	sent := 0
+	limit := args.Limit
+	shouldSendBacklog := args.Old == nil || *args.Old
+
+	if shouldSendBacklog {
+		for nextSeq <= seq {
+			if limit > 0 && sent >= limit {
+				return
+			}
+			if err := h.writeMessage(ctx, sink, log, nextSeq, args); err != nil {
+				return
+			}
+			nextSeq++
+			sent++
+		}
+	} else {
+		nextSeq = seq + 1
+	}
+
+	if !args.Live || (limit > 0 && sent >= limit) {
+		return
+	}
+
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
 		select {
 		case <-ctx.Done():
 			return
-		default:
-		}
-
-		msg, err := log.Get(i)
-		if err != nil {
-			continue
-		}
-
-		var content map[string]interface{}
-		if err := json.Unmarshal(msg.Value, &content); err != nil {
-			content = map[string]interface{}{"text": string(msg.Value)}
-		}
-
-		msgData := map[string]interface{}{
-			"key":       msg.Key,
-			"value":     content,
-			"timestamp": msg.Metadata.Timestamp,
-			"signature": fmt.Sprintf("%x", msg.Metadata.Sig),
-		}
-
-		data, err := json.Marshal(msgData)
-		if err != nil {
-			continue
-		}
-
-		if _, err := sink.Write(data); err != nil {
-			return
+		case <-ticker.C:
+			currentSeq, err := log.Seq()
+			if err != nil {
+				return
+			}
+			for nextSeq <= currentSeq {
+				if limit > 0 && sent >= limit {
+					return
+				}
+				if err := h.writeMessage(ctx, sink, log, nextSeq, args); err != nil {
+					return
+				}
+				nextSeq++
+				sent++
+			}
 		}
 	}
 }
 
 func (h *HistoryStreamHandler) HandleConnect(ctx context.Context, edp muxrpc.Endpoint) {
+}
+
+func parseHistoryStreamArgs(raw json.RawMessage) (HistoryStreamArgs, error) {
+	var args HistoryStreamArgs
+	if len(raw) == 0 {
+		return args, nil
+	}
+
+	var arr []json.RawMessage
+	if err := json.Unmarshal(raw, &arr); err != nil {
+		return args, fmt.Errorf("expected muxrpc args array")
+	}
+	if len(arr) == 0 {
+		return args, nil
+	}
+	if len(arr) != 1 {
+		return args, fmt.Errorf("expected exactly one argument")
+	}
+	if err := json.Unmarshal(arr[0], &args); err != nil {
+		return args, err
+	}
+	if args.Seq != nil {
+		if args.Sequence != 0 && args.Sequence != *args.Seq {
+			return args, fmt.Errorf("sequence and seq conflict")
+		}
+		args.Sequence = *args.Seq
+	}
+	return args, nil
+}
+
+func (h *HistoryStreamHandler) writeMessage(ctx context.Context, sink *muxrpc.ByteSink, log feedlog.Log, seq int64, args HistoryStreamArgs) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
+	msg, err := log.Get(seq)
+	if err != nil {
+		return nil
+	}
+
+	payload := signedMessagePayload(msg)
+	var body interface{} = payload
+	if args.Keys == nil || *args.Keys {
+		body = map[string]interface{}{
+			"key":       msg.Key,
+			"value":     payload,
+			"timestamp": msg.Received,
+		}
+	}
+
+	data, err := json.Marshal(body)
+	if err != nil {
+		return nil
+	}
+	_, err = sink.Write(data)
+	return err
+}
+
+func signedMessagePayload(msg *feedlog.StoredMessage) map[string]interface{} {
+	var content interface{}
+	if err := json.Unmarshal(msg.Value, &content); err != nil {
+		content = string(msg.Value)
+	}
+
+	var previous interface{} = nil
+	if msg.Metadata.Previous != "" {
+		previous = msg.Metadata.Previous
+	}
+
+	return map[string]interface{}{
+		"previous":  previous,
+		"author":    msg.Metadata.Author,
+		"sequence":  msg.Metadata.Sequence,
+		"timestamp": msg.Metadata.Timestamp,
+		"hash":      legacy.HashAlgorithm,
+		"content":   content,
+		"signature": base64.StdEncoding.EncodeToString(msg.Metadata.Sig) + ".sig.ed25519",
+	}
 }

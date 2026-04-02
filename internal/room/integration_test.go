@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,6 +28,9 @@ func TestRoomIntegration(t *testing.T) {
 		Mode:           "open",
 	}, logger)
 	if err != nil {
+		if strings.Contains(err.Error(), "operation not permitted") {
+			t.Skipf("sandbox does not allow local listen sockets: %v", err)
+		}
 		t.Fatalf("failed to start room: %v", err)
 	}
 	defer rt.Close()

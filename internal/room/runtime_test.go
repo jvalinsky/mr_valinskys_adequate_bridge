@@ -3,6 +3,8 @@ package room
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -503,7 +505,7 @@ func TestRuntimeInviteConsumeJSONSuccess(t *testing.T) {
 	if payload.Status != "successful" {
 		t.Fatalf("expected successful status, got %q", payload.Status)
 	}
-	wantAddr := "net:" + rt.Addr() + "~shs:" + rt.RoomFeed().String()
+	wantAddr := "net:" + rt.Addr() + "~shs:" + base64.StdEncoding.EncodeToString(rt.RoomFeed().PubKey())
 	if payload.MultiserverAddress != wantAddr {
 		t.Fatalf("expected multiserver address %q, got %q", wantAddr, payload.MultiserverAddress)
 	}
@@ -1130,6 +1132,450 @@ func mustRuntimeTestFeedRef(t *testing.T, fill byte) *refs.FeedRef {
 	return ref
 }
 
+type runtimeRoomClient struct {
+	key      *keys.KeyPair
+	conn     net.Conn
+	endpoint *muxrpc.Server
+}
+
+func (c *runtimeRoomClient) Close() error {
+	if c == nil {
+		return nil
+	}
+	if c.endpoint != nil {
+		_ = c.endpoint.Terminate()
+	}
+	if c.conn != nil {
+		err := c.conn.Close()
+		if err != nil && strings.Contains(err.Error(), "use of closed network connection") {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+func connectRuntimeRoomClient(t *testing.T, ctx context.Context, rt *Runtime, key *keys.KeyPair, handler muxrpc.Handler) *runtimeRoomClient {
+	t.Helper()
+
+	conn, err := net.Dial("tcp", rt.Addr())
+	if err != nil {
+		t.Fatalf("dial muxrpc: %v", err)
+	}
+
+	appKey := secretstream.NewAppKey("boxstream")
+	shs, err := secretstream.NewClient(conn, appKey, key.Private(), rt.RoomFeed().PubKey())
+	if err != nil {
+		_ = conn.Close()
+		t.Fatalf("new SHS client: %v", err)
+	}
+	if err := shs.Handshake(); err != nil {
+		_ = conn.Close()
+		t.Fatalf("SHS handshake: %v", err)
+	}
+
+	client := &runtimeRoomClient{
+		key:      key,
+		conn:     conn,
+		endpoint: muxrpc.NewServer(ctx, shs, handler, nil),
+	}
+	t.Cleanup(func() {
+		_ = client.Close()
+	})
+	return client
+}
+
+func readSourceJSON(t *testing.T, ctx context.Context, src *muxrpc.ByteSource, dst interface{}) {
+	t.Helper()
+
+	if !src.Next(ctx) {
+		if err := src.Err(); err != nil {
+			t.Fatalf("source next failed: %v", err)
+		}
+		t.Fatal("source closed before next frame")
+	}
+
+	body, err := src.Bytes()
+	if err != nil {
+		t.Fatalf("source bytes: %v", err)
+	}
+	if err := json.Unmarshal(body, dst); err != nil {
+		t.Fatalf("decode source frame %q: %v", string(body), err)
+	}
+}
+
+type tunnelConnectCapture struct {
+	Origin refs.FeedRef `json:"origin"`
+	Portal refs.FeedRef `json:"portal"`
+	Target refs.FeedRef `json:"target"`
+}
+
+type captureTunnelHandler struct {
+	mu      sync.Mutex
+	args    tunnelConnectCapture
+	argsCh  chan tunnelConnectCapture
+	bytesCh chan []byte
+}
+
+func newCaptureTunnelHandler() *captureTunnelHandler {
+	return &captureTunnelHandler{
+		argsCh:  make(chan tunnelConnectCapture, 1),
+		bytesCh: make(chan []byte, 1),
+	}
+}
+
+func (h *captureTunnelHandler) Handled(m muxrpc.Method) bool {
+	return len(m) == 2 && m[0] == "tunnel" && m[1] == "connect"
+}
+
+func (h *captureTunnelHandler) HandleCall(ctx context.Context, req *muxrpc.Request) {
+	if req.Type != "duplex" {
+		req.CloseWithError(fmt.Errorf("expected duplex call"))
+		return
+	}
+
+	var rawArgs []json.RawMessage
+	if err := json.Unmarshal(req.RawArgs, &rawArgs); err != nil || len(rawArgs) != 1 {
+		req.CloseWithError(fmt.Errorf("expected single tunnel.connect arg"))
+		return
+	}
+
+	var args tunnelConnectCapture
+	if err := json.Unmarshal(rawArgs[0], &args); err != nil {
+		req.CloseWithError(fmt.Errorf("decode tunnel.connect args: %w", err))
+		return
+	}
+
+	h.mu.Lock()
+	h.args = args
+	h.mu.Unlock()
+	select {
+	case h.argsCh <- args:
+	default:
+	}
+
+	source := req.Source()
+	sink, err := req.ResponseSink()
+	if err != nil {
+		req.CloseWithError(err)
+		return
+	}
+
+	go func() {
+		defer sink.Close()
+		defer req.Close()
+		if source == nil || !source.Next(ctx) {
+			return
+		}
+		body, err := source.Bytes()
+		if err != nil {
+			return
+		}
+		cloned := append([]byte(nil), body...)
+		select {
+		case h.bytesCh <- cloned:
+		default:
+		}
+		_, _ = sink.Write(cloned)
+	}()
+}
+
+func (h *captureTunnelHandler) HandleConnect(ctx context.Context, edp muxrpc.Endpoint) {}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func TestRuntimeRoomMetadataReportsAuthenticatedMembership(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	rt := startTestRuntime(t, "open", nil)
+
+	memberKey, err := keys.Generate()
+	if err != nil {
+		t.Fatalf("generate member key: %v", err)
+	}
+	if _, err := rt.roomDB.Members().Add(ctx, memberKey.FeedRef(), roomdb.RoleMember); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+	memberClient := connectRuntimeRoomClient(t, ctx, rt, memberKey, nil)
+
+	externalKey, err := keys.Generate()
+	if err != nil {
+		t.Fatalf("generate external key: %v", err)
+	}
+	externalClient := connectRuntimeRoomClient(t, ctx, rt, externalKey, nil)
+
+	var memberMeta struct {
+		Name       string   `json:"name"`
+		Membership bool     `json:"membership"`
+		Features   []string `json:"features"`
+	}
+	if err := memberClient.endpoint.Async(ctx, &memberMeta, muxrpc.TypeJSON, muxrpc.Method{"room", "metadata"}); err != nil {
+		t.Fatalf("member metadata: %v", err)
+	}
+	if !memberMeta.Membership {
+		t.Fatalf("expected member metadata membership=true: %+v", memberMeta)
+	}
+	for _, want := range []string{"tunnel", "room2", "httpInvite", "alias"} {
+		if !containsString(memberMeta.Features, want) {
+			t.Fatalf("member metadata missing feature %q: %+v", want, memberMeta.Features)
+		}
+	}
+
+	var externalMeta struct {
+		Name       string   `json:"name"`
+		Membership bool     `json:"membership"`
+		Features   []string `json:"features"`
+	}
+	if err := externalClient.endpoint.Async(ctx, &externalMeta, muxrpc.TypeJSON, muxrpc.Method{"room", "metadata"}); err != nil {
+		t.Fatalf("external metadata: %v", err)
+	}
+	if externalMeta.Membership {
+		t.Fatalf("expected external metadata membership=false: %+v", externalMeta)
+	}
+}
+
+func TestRuntimeRoomAttendantsEmitStateJoinAndLeft(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	rt := startTestRuntime(t, "open", nil)
+
+	memberOne, err := keys.Generate()
+	if err != nil {
+		t.Fatalf("generate member one key: %v", err)
+	}
+	memberTwo, err := keys.Generate()
+	if err != nil {
+		t.Fatalf("generate member two key: %v", err)
+	}
+	for _, kp := range []*keys.KeyPair{memberOne, memberTwo} {
+		if _, err := rt.roomDB.Members().Add(ctx, kp.FeedRef(), roomdb.RoleMember); err != nil {
+			t.Fatalf("add member %s: %v", kp.FeedRef(), err)
+		}
+	}
+
+	clientOne := connectRuntimeRoomClient(t, ctx, rt, memberOne, nil)
+	var meta struct {
+		Membership bool `json:"membership"`
+	}
+	if err := clientOne.endpoint.Async(ctx, &meta, muxrpc.TypeJSON, muxrpc.Method{"room", "metadata"}); err != nil {
+		t.Fatalf("prime member one connection: %v", err)
+	}
+
+	src, err := clientOne.endpoint.Source(ctx, muxrpc.TypeJSON, muxrpc.Method{"room", "attendants"})
+	if err != nil {
+		t.Fatalf("room attendants source: %v", err)
+	}
+
+	var state struct {
+		Type string   `json:"type"`
+		IDs  []string `json:"ids"`
+	}
+	readSourceJSON(t, ctx, src, &state)
+	if state.Type != "state" {
+		t.Fatalf("expected state event, got %+v", state)
+	}
+	if len(state.IDs) != 1 || state.IDs[0] != memberOne.FeedRef().String() {
+		t.Fatalf("unexpected attendants state: %+v", state)
+	}
+
+	clientTwo := connectRuntimeRoomClient(t, ctx, rt, memberTwo, nil)
+
+	var joined struct {
+		Type string `json:"type"`
+		ID   string `json:"id"`
+	}
+	readSourceJSON(t, ctx, src, &joined)
+	if joined.Type != "joined" || joined.ID != memberTwo.FeedRef().String() {
+		t.Fatalf("unexpected joined event: %+v", joined)
+	}
+
+	if err := clientTwo.Close(); err != nil {
+		t.Fatalf("close member two: %v", err)
+	}
+}
+
+func TestRuntimeAliasRegisterEndpointAndRevoke(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	rt := startTestRuntime(t, "open", nil)
+
+	memberKey, err := keys.Generate()
+	if err != nil {
+		t.Fatalf("generate member key: %v", err)
+	}
+	if _, err := rt.roomDB.Members().Add(ctx, memberKey.FeedRef(), roomdb.RoleMember); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+
+	client := connectRuntimeRoomClient(t, ctx, rt, memberKey, nil)
+	alias := "oak"
+	registrationMsg := []byte("=room-alias-registration:" + rt.RoomFeed().String() + ":" + memberKey.FeedRef().String() + ":" + alias)
+	signature := ed25519.Sign(memberKey.Private(), registrationMsg)
+
+	var aliasURL string
+	if err := client.endpoint.Async(ctx, &aliasURL, muxrpc.TypeString, muxrpc.Method{"room", "registerAlias"}, alias, signature); err != nil {
+		t.Fatalf("register alias: %v", err)
+	}
+	if aliasURL != "/oak" {
+		t.Fatalf("expected /oak alias URL, got %q", aliasURL)
+	}
+
+	aliasMux := newServeMux(ctx, rt.roomDB, rt.state, rt.keyPair, rt.cfg.HTTPSDomain, rt.Addr())
+	jsonReq := httptest.NewRequest(http.MethodGet, "/oak?encoding=json", nil)
+	jsonRec := httptest.NewRecorder()
+	aliasMux.ServeHTTP(jsonRec, jsonReq)
+	if jsonRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 from alias json, got %d\nbody: %s", jsonRec.Code, jsonRec.Body.String())
+	}
+
+	var payload struct {
+		Status             string `json:"status"`
+		MultiserverAddress string `json:"multiserverAddress"`
+		RoomID             string `json:"roomId"`
+		UserID             string `json:"userId"`
+		Alias              string `json:"alias"`
+		Signature          string `json:"signature"`
+	}
+	if err := json.NewDecoder(jsonRec.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode alias json: %v", err)
+	}
+	if payload.Status != "successful" {
+		t.Fatalf("expected successful alias status, got %+v", payload)
+	}
+	if payload.RoomID != rt.RoomFeed().String() || payload.UserID != memberKey.FeedRef().String() || payload.Alias != alias {
+		t.Fatalf("unexpected alias payload: %+v", payload)
+	}
+	wantAddr := "net:" + rt.Addr() + "~shs:" + base64.StdEncoding.EncodeToString(rt.RoomFeed().PubKey())
+	if payload.MultiserverAddress != wantAddr {
+		t.Fatalf("expected multiserver address %q, got %q", wantAddr, payload.MultiserverAddress)
+	}
+	wantSig := base64.StdEncoding.EncodeToString(signature) + ".sig.ed25519"
+	if payload.Signature != wantSig {
+		t.Fatalf("expected signature %q, got %q", wantSig, payload.Signature)
+	}
+
+	htmlReq := httptest.NewRequest(http.MethodGet, "/oak", nil)
+	htmlRec := httptest.NewRecorder()
+	aliasMux.ServeHTTP(htmlRec, htmlReq)
+	if htmlRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 from alias html, got %d\nbody: %s", htmlRec.Code, htmlRec.Body.String())
+	}
+	if !strings.Contains(htmlRec.Body.String(), "consume-alias") || !strings.Contains(htmlRec.Body.String(), "oak") {
+		t.Fatalf("alias html missing expected content\nbody:\n%s", htmlRec.Body.String())
+	}
+
+	var revoked bool
+	if err := client.endpoint.Async(ctx, &revoked, muxrpc.TypeJSON, muxrpc.Method{"room", "revokeAlias"}, alias); err != nil {
+		t.Fatalf("revoke alias: %v", err)
+	}
+	if !revoked {
+		t.Fatalf("expected room.revokeAlias to return true")
+	}
+
+	missingReq := httptest.NewRequest(http.MethodGet, "/oak", nil)
+	missingRec := httptest.NewRecorder()
+	aliasMux.ServeHTTP(missingRec, missingReq)
+	if missingRec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 after alias revoke, got %d\nbody: %s", missingRec.Code, missingRec.Body.String())
+	}
+}
+
+func TestRuntimeTunnelConnectForwardsPortalArgsAndBytes(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	rt := startTestRuntime(t, "open", nil)
+
+	targetKey, err := keys.Generate()
+	if err != nil {
+		t.Fatalf("generate target key: %v", err)
+	}
+	if _, err := rt.roomDB.Members().Add(ctx, targetKey.FeedRef(), roomdb.RoleMember); err != nil {
+		t.Fatalf("add target member: %v", err)
+	}
+
+	targetHandler := newCaptureTunnelHandler()
+	targetClient := connectRuntimeRoomClient(t, ctx, rt, targetKey, targetHandler)
+
+	var announced bool
+	if err := targetClient.endpoint.Sync(ctx, &announced, muxrpc.TypeJSON, muxrpc.Method{"tunnel", "announce"}); err != nil {
+		t.Fatalf("announce target: %v", err)
+	}
+	if !announced {
+		t.Fatalf("expected tunnel.announce to return true")
+	}
+
+	originKey, err := keys.Generate()
+	if err != nil {
+		t.Fatalf("generate origin key: %v", err)
+	}
+	originClient := connectRuntimeRoomClient(t, ctx, rt, originKey, nil)
+
+	src, sink, err := originClient.endpoint.Duplex(ctx, muxrpc.TypeBinary, muxrpc.Method{"tunnel", "connect"}, struct {
+		Portal refs.FeedRef `json:"portal"`
+		Target refs.FeedRef `json:"target"`
+	}{
+		Portal: rt.RoomFeed(),
+		Target: targetKey.FeedRef(),
+	})
+	if err != nil {
+		t.Fatalf("open tunnel.connect: %v", err)
+	}
+
+	payload := []byte("ping through room")
+	if _, err := sink.Write(payload); err != nil {
+		t.Fatalf("write tunnel payload: %v", err)
+	}
+
+	var forwardedArgs tunnelConnectCapture
+	select {
+	case forwardedArgs = <-targetHandler.argsCh:
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for target tunnel args: %v", ctx.Err())
+	}
+	if !forwardedArgs.Origin.Equal(originKey.FeedRef()) {
+		t.Fatalf("expected origin %s, got %s", originKey.FeedRef(), forwardedArgs.Origin)
+	}
+	if !forwardedArgs.Portal.Equal(rt.RoomFeed()) {
+		t.Fatalf("expected portal %s, got %s", rt.RoomFeed(), forwardedArgs.Portal)
+	}
+	if !forwardedArgs.Target.Equal(targetKey.FeedRef()) {
+		t.Fatalf("expected target %s, got %s", targetKey.FeedRef(), forwardedArgs.Target)
+	}
+
+	select {
+	case got := <-targetHandler.bytesCh:
+		if !bytes.Equal(got, payload) {
+			t.Fatalf("target received %q, want %q", got, payload)
+		}
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for target payload: %v", ctx.Err())
+	}
+
+	if !src.Next(ctx) {
+		t.Fatalf("tunnel response missing: %v", src.Err())
+	}
+	echoed, err := src.Bytes()
+	if err != nil {
+		t.Fatalf("read tunnel response: %v", err)
+	}
+	if !bytes.Equal(echoed, payload) {
+		t.Fatalf("expected echoed payload %q, got %q", payload, echoed)
+	}
+
+	_ = sink.Close()
+}
+
 func TestRuntimeLoginPage(t *testing.T) {
 	rt := startTestRuntime(t, "open", nil)
 	client := &http.Client{Timeout: 2 * time.Second}
@@ -1558,10 +2004,9 @@ func TestRuntimeHandleMUXRPCConnExit(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
-	ln, _ := net.Listen("tcp", "127.0.0.1:0")
-	defer ln.Close()
-	conn, _ := net.Dial("tcp", ln.Addr().String())
+	conn, peer := net.Pipe()
 	defer conn.Close()
+	defer peer.Close()
 	// This will just return immediately because ctx is done
 	rt.handleMUXRPCConn(ctx, conn)
 }
@@ -1581,7 +2026,13 @@ func TestStartListenErrors(t *testing.T) {
 	}
 
 	// 2. HTTP port in use (trigger listen error)
-	ln, _ := net.Listen("tcp", "127.0.0.1:0")
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		if strings.Contains(err.Error(), "operation not permitted") {
+			t.Skipf("sandbox does not allow local listen sockets: %v", err)
+		}
+		t.Fatalf("listen http test socket: %v", err)
+	}
 	defer ln.Close()
 	_, err = Start(ctx, Config{
 		HTTPListenAddr: ln.Addr().String(),
@@ -1594,7 +2045,13 @@ func TestStartListenErrors(t *testing.T) {
 	}
 
 	// 3. MUXRPC port in use
-	ln2, _ := net.Listen("tcp", "127.0.0.1:0")
+	ln2, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		if strings.Contains(err.Error(), "operation not permitted") {
+			t.Skipf("sandbox does not allow local listen sockets: %v", err)
+		}
+		t.Fatalf("listen muxrpc test socket: %v", err)
+	}
 	defer ln2.Close()
 	_, err = Start(ctx, Config{
 		HTTPListenAddr: "127.0.0.1:0",

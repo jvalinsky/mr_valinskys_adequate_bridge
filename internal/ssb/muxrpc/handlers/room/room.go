@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
+	"strings"
 	"sync"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc"
@@ -127,51 +129,55 @@ func (h *AliasHandler) HandleCall(ctx context.Context, req *muxrpc.Request) {
 
 func (h *AliasHandler) HandleConnect(ctx context.Context, edp muxrpc.Endpoint) {}
 
-type RegisterAliasArgs struct {
-	Alias     string `json:"alias"`
-	Signature []byte `json:"signature"`
-}
-
 func (h *AliasHandler) handleRegisterAlias(ctx context.Context, req *muxrpc.Request) {
 	if req.Type != "async" {
 		req.CloseWithError(fmt.Errorf("room.registerAlias is async"))
 		return
 	}
 
-	var args RegisterAliasArgs
-	if len(req.RawArgs) > 0 {
-		if err := json.Unmarshal(req.RawArgs, &args); err != nil {
-			req.CloseWithError(fmt.Errorf("room.registerAlias: parse args: %w", err))
-			return
-		}
+	alias, signature, err := parseAliasRegisterArgs(req.RawArgs)
+	if err != nil {
+		req.CloseWithError(fmt.Errorf("room.registerAlias: parse args: %w", err))
+		return
 	}
 
-	if args.Alias == "" {
+	alias = strings.ToLower(strings.TrimSpace(alias))
+	if alias == "" {
 		req.CloseWithError(fmt.Errorf("room.registerAlias: alias required"))
 		return
 	}
 
-	if len(args.Signature) == 0 {
-		req.CloseWithError(fmt.Errorf("room.registerAlias: signature required"))
-		return
-	}
-
-	caller, err := h.getCallerFeed(ctx, req)
+	caller, err := h.getCallerFeed(req)
 	if err != nil {
 		req.CloseWithError(fmt.Errorf("room.registerAlias: get caller: %w", err))
 		return
 	}
+	if !isInternalMember(h.server, ctx, caller) {
+		req.CloseWithError(fmt.Errorf("room.registerAlias: membership required"))
+		return
+	}
+	mode, err := h.server.config.GetPrivacyMode(ctx)
+	if err != nil {
+		req.CloseWithError(fmt.Errorf("room.registerAlias: get mode: %w", err))
+		return
+	}
+	if mode == roomdb.ModeRestricted {
+		req.CloseWithError(fmt.Errorf("room.registerAlias: alias feature disabled"))
+		return
+	}
+	if err := validateAliasRegistration(*h.server.keyPair, caller, alias, signature); err != nil {
+		req.CloseWithError(fmt.Errorf("room.registerAlias: invalid signature: %w", err))
+		return
+	}
 
-	if err := h.server.aliases.Register(ctx, args.Alias, caller, args.Signature); err != nil {
+	if err := h.server.aliases.Register(ctx, alias, caller, signature); err != nil {
 		req.CloseWithError(fmt.Errorf("room.registerAlias: register: %w", err))
 		return
 	}
 
-	h.server.state.RegisterAlias(args.Alias, caller)
+	h.server.state.RegisterAlias(alias, caller)
 
-	req.Return(ctx, map[string]interface{}{
-		"alias": args.Alias,
-	})
+	req.Return(ctx, h.aliasURL(alias))
 }
 
 func (h *AliasHandler) handleRevokeAlias(ctx context.Context, req *muxrpc.Request) {
@@ -180,28 +186,29 @@ func (h *AliasHandler) handleRevokeAlias(ctx context.Context, req *muxrpc.Reques
 		return
 	}
 
-	var args struct {
-		Alias string `json:"alias"`
-	}
-	if len(req.RawArgs) > 0 {
-		if err := json.Unmarshal(req.RawArgs, &args); err != nil {
-			req.CloseWithError(fmt.Errorf("room.revokeAlias: parse args: %w", err))
-			return
-		}
+	aliasName, err := parseSingleStringArg(req.RawArgs)
+	if err != nil {
+		req.CloseWithError(fmt.Errorf("room.revokeAlias: parse args: %w", err))
+		return
 	}
 
-	if args.Alias == "" {
+	aliasName = strings.ToLower(strings.TrimSpace(aliasName))
+	if aliasName == "" {
 		req.CloseWithError(fmt.Errorf("room.revokeAlias: alias required"))
 		return
 	}
 
-	caller, err := h.getCallerFeed(ctx, req)
+	caller, err := h.getCallerFeed(req)
 	if err != nil {
 		req.CloseWithError(fmt.Errorf("room.revokeAlias: get caller: %w", err))
 		return
 	}
+	if !isInternalMember(h.server, ctx, caller) {
+		req.CloseWithError(fmt.Errorf("room.revokeAlias: membership required"))
+		return
+	}
 
-	alias, err := h.server.aliases.Resolve(ctx, args.Alias)
+	alias, err := h.server.aliases.Resolve(ctx, aliasName)
 	if err != nil {
 		req.CloseWithError(fmt.Errorf("room.revokeAlias: resolve: %w", err))
 		return
@@ -212,12 +219,12 @@ func (h *AliasHandler) handleRevokeAlias(ctx context.Context, req *muxrpc.Reques
 		return
 	}
 
-	if err := h.server.aliases.Revoke(ctx, args.Alias); err != nil {
+	if err := h.server.aliases.Revoke(ctx, aliasName); err != nil {
 		req.CloseWithError(fmt.Errorf("room.revokeAlias: revoke: %w", err))
 		return
 	}
 
-	h.server.state.RevokeAlias(args.Alias)
+	h.server.state.RevokeAlias(aliasName)
 
 	req.Return(ctx, true)
 }
@@ -293,42 +300,64 @@ func (h *AliasHandler) handleAttendants(ctx context.Context, req *muxrpc.Request
 		return
 	}
 
-	peers := h.server.state.Peers()
+	caller, err := h.getCallerFeed(req)
+	if err != nil {
+		req.CloseWithError(fmt.Errorf("room.attendants: get caller: %w", err))
+		return
+	}
+	if !isInternalMember(h.server, ctx, caller) {
+		req.CloseWithError(fmt.Errorf("room.attendants: membership required"))
+		return
+	}
 
-	go h.streamAttendants(ctx, req, peers)
+	peers, events, cancel := h.server.state.SubscribeAttendants()
+	go h.streamAttendants(ctx, req, peers, events, cancel)
 }
 
-func (h *AliasHandler) streamAttendants(ctx context.Context, req *muxrpc.Request, peers []roomstate.PeerInfo) {
+func (h *AliasHandler) streamAttendants(ctx context.Context, req *muxrpc.Request, peers []roomstate.PeerInfo, events <-chan roomstate.AttendantEvent, cancel func()) {
 	sink, err := req.ResponseSink()
 	if err != nil {
 		req.CloseWithError(fmt.Errorf("room.attendants: get sink: %w", err))
 		return
 	}
 	defer sink.Close()
+	defer cancel()
 
+	state := make([]string, 0, len(peers))
 	for _, p := range peers {
+		state = append(state, p.ID.String())
+	}
+	data, _ := json.Marshal(map[string]interface{}{
+		"type": "state",
+		"ids":  state,
+	})
+	if _, err := sink.Write(data); err != nil {
+		return
+	}
+
+	for {
 		select {
 		case <-ctx.Done():
 			return
-		default:
-		}
-
-		data, _ := json.Marshal(map[string]interface{}{
-			"id":   p.ID.String(),
-			"addr": p.Addr,
-		})
-		if _, err := sink.Write(data); err != nil {
-			return
+		case evt, ok := <-events:
+			if !ok {
+				return
+			}
+			payload, _ := json.Marshal(map[string]interface{}{
+				"type": evt.Type,
+				"id":   evt.ID.String(),
+			})
+			if _, err := sink.Write(payload); err != nil {
+				return
+			}
 		}
 	}
 }
 
 type MetadataResult struct {
-	RoomID      string `json:"roomId"`
-	RoomInfo    string `json:"roomInfo"`
-	Domain      string `json:"domain"`
-	Mode        string `json:"mode"`
-	Description string `json:"description"`
+	Name       string   `json:"name"`
+	Membership bool     `json:"membership"`
+	Features   []string `json:"features"`
 }
 
 func (h *AliasHandler) handleMetadata(ctx context.Context, req *muxrpc.Request) {
@@ -343,33 +372,34 @@ func (h *AliasHandler) handleMetadata(ctx context.Context, req *muxrpc.Request) 
 		return
 	}
 
-	modeStr := "community"
-	switch mode {
-	case roomdb.ModeOpen:
-		modeStr = "open"
-	case roomdb.ModeRestricted:
-		modeStr = "restricted"
+	name := "ATProto Bridge SSB Room"
+	if h.server.keyPair != nil {
+		name = h.server.keyPair.String()
+	}
+
+	caller, err := h.getCallerFeed(req)
+	membership := false
+	if err == nil {
+		membership = isInternalMember(h.server, ctx, caller)
 	}
 
 	req.Return(ctx, MetadataResult{
-		RoomID:      h.server.keyPair.String(),
-		RoomInfo:    "ATProto Bridge SSB Room",
-		Mode:        modeStr,
-		Description: "SSB Room for ATProto Bridge",
+		Name:       name,
+		Membership: membership,
+		Features:   roomFeatures(mode),
 	})
 }
 
-func (h *AliasHandler) getCallerFeed(ctx context.Context, req *muxrpc.Request) (refs.FeedRef, error) {
+func (h *AliasHandler) getCallerFeed(req *muxrpc.Request) (refs.FeedRef, error) {
 	if req.RemoteAddr() == nil {
 		return refs.FeedRef{}, fmt.Errorf("no remote addr")
 	}
+	return authenticatedFeedFromAddr(req.RemoteAddr())
+}
 
-	addr := req.RemoteAddr().String()
-	for _, p := range h.server.state.Peers() {
-		if p.Addr == addr {
-			return p.ID, nil
-		}
+func (h *AliasHandler) aliasURL(alias string) string {
+	if h.server == nil || h.server.keyPair == nil {
+		return "/" + alias
 	}
-
-	return refs.FeedRef{}, fmt.Errorf("caller not found")
+	return "/" + url.PathEscape(alias)
 }
