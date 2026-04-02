@@ -3,7 +3,6 @@ package backfill
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -13,15 +12,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bluesky-social/indigo/api/atproto"
-	appbsky "github.com/bluesky-social/indigo/api/bsky"
-	"github.com/bluesky-social/indigo/atproto/identity"
-	indigorepo "github.com/bluesky-social/indigo/repo"
-	"github.com/bluesky-social/indigo/xrpc"
 	blockformat "github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
 	ipld "github.com/ipfs/go-ipld-format"
-	car "github.com/ipld/go-car"
+
+	appbsky "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/appbsky"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/identity"
+	atrepo "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/repo"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/xrpc"
 )
 
 func TestDIDPDSResolverResolvePDSEndpoint(t *testing.T) {
@@ -251,7 +249,7 @@ func mustCreateRepoCAR(t *testing.T, did string) []byte {
 
 	ctx := context.Background()
 	bs := newMapBlockstore()
-	rr := indigorepo.NewRepo(ctx, did, bs)
+	rr := atrepo.NewRepo(did, bs)
 	if _, _, err := rr.CreateRecord(ctx, "app.bsky.feed.post", &appbsky.FeedPost{
 		LexiconTypeID: "app.bsky.feed.post",
 		Text:          "hello from backfill test",
@@ -260,7 +258,7 @@ func mustCreateRepoCAR(t *testing.T, did string) []byte {
 		t.Fatalf("create record: %v", err)
 	}
 
-	root, _, err := rr.Commit(ctx, func(context.Context, string, []byte) ([]byte, error) {
+	_, _, err := rr.Commit(ctx, func(context.Context, string, []byte) ([]byte, error) {
 		return []byte("test-signature"), nil
 	})
 	if err != nil {
@@ -268,50 +266,10 @@ func mustCreateRepoCAR(t *testing.T, did string) []byte {
 	}
 
 	buf := new(bytes.Buffer)
-	if _, err := writeCARHeader(buf, root); err != nil {
-		t.Fatalf("write car header: %v", err)
-	}
-	for _, blk := range bs.blocks {
-		if _, err := ldWrite(buf, blk.Cid().Bytes(), blk.RawData()); err != nil {
-			t.Fatalf("write car block: %v", err)
-		}
+	if err := rr.WriteCAR(buf); err != nil {
+		t.Fatalf("write car: %v", err)
 	}
 	return buf.Bytes()
-}
-
-func writeCARHeader(w io.Writer, root cid.Cid) (int64, error) {
-	buf := new(bytes.Buffer)
-	if err := car.WriteHeader(&car.CarHeader{
-		Roots:   []cid.Cid{root},
-		Version: 1,
-	}, buf); err != nil {
-		return 0, err
-	}
-	n, err := w.Write(buf.Bytes())
-	return int64(n), err
-}
-
-func ldWrite(w io.Writer, parts ...[]byte) (int64, error) {
-	var total uint64
-	for _, part := range parts {
-		total += uint64(len(part))
-	}
-
-	var prefix [binary.MaxVarintLen64]byte
-	prefixLen := binary.PutUvarint(prefix[:], total)
-	written, err := w.Write(prefix[:prefixLen])
-	if err != nil {
-		return 0, err
-	}
-
-	for _, part := range parts {
-		n, err := w.Write(part)
-		written += n
-		if err != nil {
-			return int64(written), err
-		}
-	}
-	return int64(written), nil
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -729,20 +687,19 @@ func TestRunForDIDWithUnsupportedCollection(t *testing.T) {
 	ctx := context.Background()
 	did := "did:plc:unsupported"
 	bs := newMapBlockstore()
-	rr := indigorepo.NewRepo(ctx, did, bs)
+	rr := atrepo.NewRepo(did, bs)
 	// Create unsupported record
 	rr.CreateRecord(ctx, "app.bsky.feed.repost", &appbsky.FeedRepost{
 		LexiconTypeID: "app.bsky.feed.repost",
-		Subject:       &atproto.RepoStrongRef{Uri: "at://did:plc:x/app.bsky.feed.post/y", Cid: "abc"},
+		Subject:       &appbsky.RepoStrongRef{Uri: "at://did:plc:x/app.bsky.feed.post/y", Cid: "abc"},
 		CreatedAt:     "2026-01-01T00:00:00Z",
 	})
 
-	root, _, _ := rr.Commit(ctx, func(ctx context.Context, did string, data []byte) ([]byte, error) { return []byte("sig"), nil })
+	_, _, _ = rr.Commit(ctx, func(ctx context.Context, did string, data []byte) ([]byte, error) { return []byte("sig"), nil })
 
 	buf := new(bytes.Buffer)
-	writeCARHeader(buf, root)
-	for _, blk := range bs.blocks {
-		ldWrite(buf, blk.Cid().Bytes(), blk.RawData())
+	if err := rr.WriteCAR(buf); err != nil {
+		t.Fatalf("write car: %v", err)
 	}
 
 	result := RunForDID(ctx, did, SinceFilter{}, &recordingProcessor{}, nil,
@@ -810,26 +767,20 @@ func TestResolvePDSEndpointNonPlcDID(t *testing.T) {
 func TestRunForDIDWithMalformedRecord(t *testing.T) {
 	ctx := context.Background()
 	did := "did:plc:malformed"
-	bs := newMapBlockstore()
-	rr := indigorepo.NewRepo(ctx, did, bs)
-	rr.CreateRecord(ctx, "app.bsky.feed.post", &appbsky.FeedPost{Text: "ok"})
-	root, _, _ := rr.Commit(ctx, func(ctx context.Context, did string, data []byte) ([]byte, error) { return []byte("sig"), nil })
-
-	buf := new(bytes.Buffer)
-	writeCARHeader(buf, root)
-	for _, blk := range bs.blocks {
-		data := blk.RawData()
-		if strings.Contains(string(data), "ok") {
-			data = []byte("not valid cbor")
-		}
-		ldWrite(buf, blk.Cid().Bytes(), data)
+	carBytes := mustCreateRepoCAR(t, did)
+	if len(carBytes) < 16 {
+		t.Fatalf("expected non-trivial car payload")
+	}
+	corrupt := append([]byte(nil), carBytes...)
+	for i := len(corrupt) - 8; i < len(corrupt); i++ {
+		corrupt[i] = 0xff
 	}
 
 	result := RunForDID(ctx, did, SinceFilter{}, &recordingProcessor{}, nil,
 		&stubHostResolver{hosts: map[string]string{did: "http://pds"}},
-		&stubRepoFetcher{payloads: map[string][]byte{did: buf.Bytes()}})
+		&stubRepoFetcher{payloads: map[string][]byte{did: corrupt}})
 
-	if result.Stats.Errors == 0 {
-		t.Error("expected error for malformed CBOR record")
+	if result.Err == nil && result.Stats.Errors == 0 {
+		t.Error("expected repo-level or record-level error for malformed repo payload")
 	}
 }

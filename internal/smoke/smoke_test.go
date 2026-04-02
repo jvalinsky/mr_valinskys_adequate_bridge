@@ -176,7 +176,29 @@ func TestBridgeSmoke(t *testing.T) {
 	}
 
 	if err := database.SetBridgeState(ctx, "firehose_seq", "9001"); err != nil {
-		t.Fatalf("set firehose cursor: %v", err)
+		t.Fatalf("set legacy firehose cursor: %v", err)
+	}
+	if err := database.SetBridgeState(ctx, "atproto_event_cursor", "9002"); err != nil {
+		t.Fatalf("set bridge replay cursor: %v", err)
+	}
+	if err := database.UpsertATProtoSource(ctx, db.ATProtoSource{
+		SourceKey: "default-relay",
+		RelayURL:  "wss://relay.example.test",
+		LastSeq:   9003,
+	}); err != nil {
+		t.Fatalf("set relay source cursor: %v", err)
+	}
+	if _, err := database.AppendATProtoEvent(ctx, db.ATProtoRecordEvent{
+		DID:        didSource,
+		Collection: mapper.RecordTypePost,
+		RKey:       "cursor-smoke",
+		ATURI:      "at://did:plc:smoketest/app.bsky.feed.post/cursor-smoke",
+		ATCID:      "bafy-smoke-cursor",
+		Action:     "upsert",
+		Rev:        "rev-smoke",
+		RecordJSON: `{"$type":"app.bsky.feed.post","text":"cursor smoke"}`,
+	}); err != nil {
+		t.Fatalf("append atproto event: %v", err)
 	}
 
 	if err := database.AddMessage(ctx, db.Message{
@@ -225,8 +247,11 @@ func TestBridgeSmoke(t *testing.T) {
 	if !strings.Contains(dashboard, "Publish Failures") {
 		t.Fatalf("dashboard missing failure stat")
 	}
-	if !strings.Contains(dashboard, "9001") {
-		t.Fatalf("dashboard missing firehose cursor value")
+	if !strings.Contains(dashboard, "Bridge Replay Cursor") || !strings.Contains(dashboard, "9002") {
+		t.Fatalf("dashboard missing bridge replay cursor value")
+	}
+	if !strings.Contains(dashboard, "Relay Source Cursor") || !strings.Contains(dashboard, "9003") {
+		t.Fatalf("dashboard missing relay source cursor value")
 	}
 
 	failures := fetch("/failures")

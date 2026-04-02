@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bluesky-social/indigo/api/atproto"
-	"github.com/bluesky-social/indigo/atproto/identity"
-	"github.com/bluesky-social/indigo/atproto/syntax"
-	"github.com/bluesky-social/indigo/xrpc"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/identity"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/syntax"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/xrpc"
 )
 
 var (

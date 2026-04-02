@@ -3,7 +3,7 @@ package mapper
 import (
 	"testing"
 
-	appbsky "github.com/bluesky-social/indigo/api/bsky"
+	appbsky "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/appbsky"
 )
 
 func TestMapLike(t *testing.T) {

@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bluesky-social/indigo/api/atproto"
-	appbsky "github.com/bluesky-social/indigo/api/bsky"
-	lexutil "github.com/bluesky-social/indigo/lex/util"
-	"github.com/bluesky-social/indigo/xrpc"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto"
+	appbsky "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/appbsky"
+	lexutil "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/lexutil"
+	xrpc "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/xrpc"
 )
 
 func TestDockerIntegrationFirehose(t *testing.T) {

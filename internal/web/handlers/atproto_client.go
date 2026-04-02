@@ -9,16 +9,16 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/bluesky-social/indigo/api/atproto"
-	appbsky "github.com/bluesky-social/indigo/api/bsky"
-	lexutil "github.com/bluesky-social/indigo/lex/util"
-	"github.com/bluesky-social/indigo/xrpc"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto"
+	appbsky "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/appbsky"
+	lexutil "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/lexutil"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/xrpc"
 )
 
 // PDSClientInterface defines the interactions with a PDS.
 type PDSClientInterface interface {
-	UploadBlob(ctx context.Context, identifier string, reader io.Reader, mime string) (*lexutil.LexBlob, error)
-	CreatePost(ctx context.Context, identifier string, text string, imageBlob *lexutil.LexBlob) (string, error)
+	UploadBlob(ctx context.Context, identifier string, reader io.Reader, mime string) (*appbsky.LexBlob, error)
+	CreatePost(ctx context.Context, identifier string, text string, imageBlob *appbsky.LexBlob) (string, error)
 }
 
 // PDSClient handles XRPC interactions with the PDS.
@@ -56,7 +56,7 @@ func (c *PDSClient) createSession(ctx context.Context, identifier string) (*xrpc
 	return client, nil
 }
 
-func (c *PDSClient) UploadBlob(ctx context.Context, identifier string, reader io.Reader, mime string) (*lexutil.LexBlob, error) {
+func (c *PDSClient) UploadBlob(ctx context.Context, identifier string, reader io.Reader, mime string) (*appbsky.LexBlob, error) {
 	log.Printf("unit=pds event=upload_blob_start identifier=%q mime=%q", identifier, mime)
 	client, err := c.createSession(ctx, identifier)
 	if err != nil {
@@ -70,10 +70,14 @@ func (c *PDSClient) UploadBlob(ctx context.Context, identifier string, reader io
 	}
 
 	log.Printf("unit=pds event=upload_blob_success identifier=%q cid=%q", identifier, resp.Blob.Ref)
-	return resp.Blob, nil
+	return &appbsky.LexBlob{
+		Ref:      resp.Blob.Ref,
+		MimeType: resp.Blob.MimeType,
+		Size:     resp.Blob.Size,
+	}, nil
 }
 
-func (c *PDSClient) CreatePost(ctx context.Context, identifier string, text string, imageBlob *lexutil.LexBlob) (string, error) {
+func (c *PDSClient) CreatePost(ctx context.Context, identifier string, text string, imageBlob *appbsky.LexBlob) (string, error) {
 	client, err := c.createSession(ctx, identifier)
 	if err != nil {
 		return "", err

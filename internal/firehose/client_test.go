@@ -3,7 +3,6 @@ package firehose
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -17,16 +16,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bluesky-social/indigo/api/atproto"
-	appbsky "github.com/bluesky-social/indigo/api/bsky"
-	"github.com/bluesky-social/indigo/events"
-	"github.com/bluesky-social/indigo/lex/util"
-	indigorepo "github.com/bluesky-social/indigo/repo"
 	"github.com/gorilla/websocket"
 	blockformat "github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
 	ipld "github.com/ipfs/go-ipld-format"
-	car "github.com/ipld/go-car"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/appbsky"
+	atfirehose "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/firehose"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/lexutil"
+	atrepo "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/repo"
 )
 
 func ptrInt64(v int64) *int64 {
@@ -295,7 +293,7 @@ func TestParseCommitWithNilBlocks(t *testing.T) {
 }
 
 func TestProcessOpsWithSkipActions(t *testing.T) {
-	rr := &indigorepo.Repo{}
+	rr := &atrepo.Repo{}
 	evt := &atproto.SyncSubscribeRepos_Commit{
 		Ops: []*atproto.SyncSubscribeRepos_RepoOp{
 			{Action: "delete", Path: "/some/path"},
@@ -310,7 +308,7 @@ func TestProcessOpsWithSkipActions(t *testing.T) {
 }
 
 func TestProcessOpsWithEmptyOps(t *testing.T) {
-	rr := &indigorepo.Repo{}
+	rr := &atrepo.Repo{}
 	evt := &atproto.SyncSubscribeRepos_Commit{
 		Ops: []*atproto.SyncSubscribeRepos_RepoOp{},
 	}
@@ -361,7 +359,7 @@ func (bs *testBlockstore) Get(_ context.Context, c cid.Cid) (blockformat.Block, 
 func createTestCAR(did string, records map[string]interface{}) ([]byte, error) {
 	ctx := context.Background()
 	bs := newTestBlockstore()
-	rr := indigorepo.NewRepo(ctx, did, bs)
+	rr := atrepo.NewRepo(did, bs)
 
 	for path, record := range records {
 		parts := strings.SplitN(path, "/", 2)
@@ -381,7 +379,7 @@ func createTestCAR(did string, records map[string]interface{}) ([]byte, error) {
 		}
 	}
 
-	root, _, err := rr.Commit(ctx, func(context.Context, string, []byte) ([]byte, error) {
+	_, _, err := rr.Commit(ctx, func(context.Context, string, []byte) ([]byte, error) {
 		return []byte("test-signature"), nil
 	})
 	if err != nil {
@@ -389,33 +387,8 @@ func createTestCAR(did string, records map[string]interface{}) ([]byte, error) {
 	}
 
 	buf := new(bytes.Buffer)
-	headerBuf := new(bytes.Buffer)
-	if err := car.WriteHeader(&car.CarHeader{
-		Roots:   []cid.Cid{root},
-		Version: 1,
-	}, headerBuf); err != nil {
+	if err := rr.WriteCAR(buf); err != nil {
 		return nil, err
-	}
-	if _, err := buf.Write(headerBuf.Bytes()); err != nil {
-		return nil, err
-	}
-	for _, blk := range bs.blocks {
-		var total uint64
-		cidBytes := blk.Cid().Bytes()
-		rawData := blk.RawData()
-		total = uint64(len(cidBytes) + len(rawData))
-
-		var prefix [binary.MaxVarintLen64]byte
-		prefixLen := binary.PutUvarint(prefix[:], total)
-		if _, err := buf.Write(prefix[:prefixLen]); err != nil {
-			return nil, err
-		}
-		if _, err := buf.Write(cidBytes); err != nil {
-			return nil, err
-		}
-		if _, err := buf.Write(rawData); err != nil {
-			return nil, err
-		}
 	}
 	return buf.Bytes(), nil
 }
@@ -605,12 +578,12 @@ func ptrString(s string) *string {
 	return &s
 }
 
-func ptrLexLink(s string) *util.LexLink {
+func ptrLexLink(s string) *lexutil.LexLink {
 	link, err := cid.Decode(s)
 	if err != nil {
 		return nil
 	}
-	l := util.LexLink(link)
+	l := lexutil.LexLink(link)
 	return &l
 }
 
@@ -751,7 +724,8 @@ func TestClientCallbacksCoverage(t *testing.T) {
 	})
 
 	t.Run("handleError", func(t *testing.T) {
-		err := c.handleError(&events.ErrorFrame{Message: "err"})
+		msg := "err"
+		err := c.handleError(&atfirehose.ErrorFrame{Message: &msg})
 		if err != nil {
 			t.Error(err)
 		}

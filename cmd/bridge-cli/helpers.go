@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/atindex"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/backfill"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/blobbridge"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/bridge"
@@ -144,6 +145,10 @@ func fallbackValue(value, fallback string) string {
 
 // readFirehoseCursor reads and parses the persisted firehose cursor sequence.
 func readFirehoseCursor(ctx context.Context, database *db.DB) (int64, bool, error) {
+	source, err := database.GetATProtoSource(ctx, "default-relay")
+	if err == nil && source != nil && source.LastSeq > 0 {
+		return source.LastSeq, true, nil
+	}
 	value, ok, err := database.GetBridgeState(ctx, "firehose_seq")
 	if err != nil || !ok || strings.TrimSpace(value) == "" {
 		return 0, ok, err
@@ -374,69 +379,41 @@ func runDeferredResolverScheduler(ctx context.Context, processor *bridge.Process
 	}
 }
 
-func runAutoBackfillScheduler(ctx context.Context, database *db.DB, processor *bridge.Processor, logger *log.Logger, plcURL string, insecure bool) {
-	if database == nil || processor == nil {
+func runATProtoTrackScheduler(ctx context.Context, database *db.DB, indexer *atindex.Service, logger *log.Logger) {
+	if database == nil || indexer == nil {
 		return
 	}
 	if logger == nil {
 		logger = logutil.NewTextLogger("bridge")
 	}
 
-	// We poll for accounts that need backfill less frequently.
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 
-	hostResolver := backfill.DIDPDSResolver{
-		PLCURL: plcURL,
-	}
-	if insecure {
-		hostResolver.HTTPClient = &http.Client{
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-			},
-		}
-	}
-	repoFetcher := backfill.XRPCRepoFetcher{
-		HTTPClient: hostResolver.HTTPClient,
-	}
+	trackActiveRepos(ctx, database, indexer, logger)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			accounts, err := database.GetAllBridgedAccounts(ctx)
-			if err != nil {
-				logger.Printf("event=auto_backfill_error err=%v", err)
-				continue
-			}
+			trackActiveRepos(ctx, database, indexer, logger)
+		}
+	}
+}
 
-			for _, account := range accounts {
-				if !account.Active {
-					continue
-				}
-
-				// Check if we have any messages for this account.
-				count, err := database.CountMessagesByDID(ctx, account.ATDID)
-				if err != nil {
-					continue
-				}
-
-				if count == 0 {
-					logger.Printf("event=auto_backfill_trigger did=%s", account.ATDID)
-					// Run backfill for this DID.
-					// For safety in a scheduler, we use a timeout and limit.
-					backfillCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-					result := backfill.RunForDID(backfillCtx, account.ATDID, backfill.SinceFilter{}, processor, logger, hostResolver, repoFetcher)
-					cancel()
-
-					if result.Err != nil {
-						logger.Printf("event=auto_backfill_failed did=%s err=%v", account.ATDID, result.Err)
-					} else {
-						logger.Printf("event=auto_backfill_success did=%s processed=%d skipped=%d", account.ATDID, result.Stats.Processed, result.Stats.Skipped)
-					}
-				}
-			}
+func trackActiveRepos(ctx context.Context, database *db.DB, indexer *atindex.Service, logger *log.Logger) {
+	accounts, err := database.GetAllBridgedAccounts(ctx)
+	if err != nil {
+		logger.Printf("event=auto_backfill_error err=%v", err)
+		return
+	}
+	for _, account := range accounts {
+		if !account.Active {
+			continue
+		}
+		if err := indexer.TrackRepo(ctx, account.ATDID, "active_bridged_account"); err != nil {
+			logger.Printf("event=atindex_track_failed did=%s err=%v", account.ATDID, err)
 		}
 	}
 }

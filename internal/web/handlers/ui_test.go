@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -15,10 +16,11 @@ import (
 	"testing"
 	"time"
 
-	lexutil "github.com/bluesky-social/indigo/lex/util"
 	"github.com/go-chi/chi/v5"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/atindex"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/mapper"
+	appbsky "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/appbsky"
 )
 
 type mockSSBStatus struct{}
@@ -93,6 +95,53 @@ func TestDashboardDefaultsRuntimeStatusToUnknown(t *testing.T) {
 	body := fetchUI(t, database, "/")
 	if !strings.Contains(body, "Bridge Status") || !strings.Contains(body, "unknown") {
 		t.Fatalf("dashboard should render unknown runtime status when unset: %s", body)
+	}
+}
+
+func TestDashboardShowsSeparatedATProtoCursors(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	ctx := context.Background()
+	if err := database.SetBridgeState(ctx, "atproto_event_cursor", "888"); err != nil {
+		t.Fatalf("set atproto_event_cursor: %v", err)
+	}
+	if err := database.SetBridgeState(ctx, "firehose_seq", "777"); err != nil {
+		t.Fatalf("set firehose_seq: %v", err)
+	}
+	if err := database.UpsertATProtoSource(ctx, db.ATProtoSource{
+		SourceKey: "default-relay",
+		RelayURL:  "wss://relay.example.test",
+		LastSeq:   999,
+	}); err != nil {
+		t.Fatalf("upsert atproto source: %v", err)
+	}
+	eventCursor, err := database.AppendATProtoEvent(ctx, db.ATProtoRecordEvent{
+		DID:        "did:plc:test",
+		Collection: mapper.RecordTypePost,
+		RKey:       "post1",
+		ATURI:      "at://did:plc:test/app.bsky.feed.post/post1",
+		ATCID:      "bafytest",
+		Action:     "upsert",
+		Rev:        "rev1",
+		RecordJSON: `{"$type":"app.bsky.feed.post","text":"hello"}`,
+	})
+	if err != nil {
+		t.Fatalf("append atproto event: %v", err)
+	}
+
+	body := fetchUI(t, database, "/")
+	if !strings.Contains(body, "Bridge Replay Cursor") || !strings.Contains(body, "888") {
+		t.Fatalf("dashboard missing bridge replay cursor: %s", body)
+	}
+	if !strings.Contains(body, "Relay Source Cursor") || !strings.Contains(body, "999") {
+		t.Fatalf("dashboard missing relay source cursor: %s", body)
+	}
+	if !strings.Contains(body, "Event-Log Head") || !strings.Contains(body, fmt.Sprintf("%d", eventCursor)) {
+		t.Fatalf("dashboard missing event-log head cursor: %s", body)
+	}
+	if strings.Contains(body, "Legacy firehose cursor") || strings.Contains(body, ">777<") {
+		t.Fatalf("dashboard should not present the legacy firehose cursor as the active replay cursor: %s", body)
 	}
 }
 
@@ -194,6 +243,224 @@ func TestStatePageWithData(t *testing.T) {
 	body := fetchUI(t, database, "/state")
 	if !strings.Contains(body, "k1") || !strings.Contains(body, "v1") {
 		t.Fatalf("state page missing key/value: %s", body)
+	}
+}
+
+func TestATProtoAPIRequiresConfiguration(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	router := chi.NewRouter()
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).Mount(router)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/atproto/health", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestATProtoAPIReadEndpoints(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	ctx := context.Background()
+	if err := database.SetBridgeState(ctx, "atproto_event_cursor", "41"); err != nil {
+		t.Fatalf("set atproto_event_cursor: %v", err)
+	}
+	now := time.Now().UTC()
+	lastSeq := int64(123)
+	eventSeq := int64(55)
+	if err := database.UpsertATProtoSource(ctx, db.ATProtoSource{
+		SourceKey:   "default-relay",
+		RelayURL:    "wss://relay.example.test",
+		LastSeq:     lastSeq,
+		ConnectedAt: &now,
+	}); err != nil {
+		t.Fatalf("upsert source: %v", err)
+	}
+	if err := database.UpsertATProtoRepo(ctx, db.ATProtoRepo{
+		DID:        "did:plc:alice",
+		Tracking:   true,
+		Reason:     "test",
+		SyncState:  atindex.StateSynced,
+		Generation: 2,
+		Handle:     "alice.test",
+		PDSURL:     "https://pds.alice.test",
+	}); err != nil {
+		t.Fatalf("upsert repo: %v", err)
+	}
+	if err := database.UpsertATProtoRecord(ctx, db.ATProtoRecord{
+		DID:        "did:plc:alice",
+		Collection: mapper.RecordTypePost,
+		RKey:       "post1",
+		ATURI:      "at://did:plc:alice/app.bsky.feed.post/post1",
+		ATCID:      "bafyrecord",
+		RecordJSON: `{"$type":"app.bsky.feed.post","text":"hello"}`,
+		LastRev:    "rev1",
+		LastSeq:    &eventSeq,
+	}); err != nil {
+		t.Fatalf("upsert record: %v", err)
+	}
+	cursor, err := database.AppendATProtoEvent(ctx, db.ATProtoRecordEvent{
+		DID:        "did:plc:alice",
+		Collection: mapper.RecordTypePost,
+		RKey:       "post1",
+		ATURI:      "at://did:plc:alice/app.bsky.feed.post/post1",
+		ATCID:      "bafyrecord",
+		Action:     "upsert",
+		Live:       true,
+		Rev:        "rev1",
+		Seq:        &eventSeq,
+		RecordJSON: `{"$type":"app.bsky.feed.post","text":"hello"}`,
+	})
+	if err != nil {
+		t.Fatalf("append event: %v", err)
+	}
+
+	indexer := atindex.New(database, nil, nil, "wss://relay.example.test", nil)
+	router := chi.NewRouter()
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).WithATProto(database, indexer).Mount(router)
+
+	t.Run("health", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/atproto/health", nil)
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("health status=%d body=%s", rr.Code, rr.Body.String())
+		}
+
+		var body map[string]any
+		if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode health json: %v", err)
+		}
+		if body["bridge_replay_cursor"] != "41" {
+			t.Fatalf("unexpected event cursor: %#v", body)
+		}
+		if body["atproto_event_cursor"] != "41" {
+			t.Fatalf("unexpected compatibility event cursor: %#v", body)
+		}
+		if body["event_log_head_cursor"] != fmt.Sprintf("%d", cursor) {
+			t.Fatalf("unexpected event-log head cursor: %#v", body)
+		}
+		if body["relay_source_cursor"] != float64(123) {
+			t.Fatalf("unexpected relay source cursor: %#v", body)
+		}
+	})
+
+	t.Run("source", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/atproto/source", nil)
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("source status=%d body=%s", rr.Code, rr.Body.String())
+		}
+		if !strings.Contains(rr.Body.String(), "relay.example.test") {
+			t.Fatalf("source body missing relay url: %s", rr.Body.String())
+		}
+	})
+
+	t.Run("repos", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/atproto/repos?state=synced", nil)
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("repos status=%d body=%s", rr.Code, rr.Body.String())
+		}
+		if !strings.Contains(rr.Body.String(), "did:plc:alice") {
+			t.Fatalf("repos body missing did: %s", rr.Body.String())
+		}
+	})
+
+	t.Run("repo", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/atproto/repo?did=did:plc:alice", nil)
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("repo status=%d body=%s", rr.Code, rr.Body.String())
+		}
+		if !strings.Contains(rr.Body.String(), "alice.test") {
+			t.Fatalf("repo body missing handle: %s", rr.Body.String())
+		}
+	})
+
+	t.Run("record", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/atproto/record?at_uri=at://did:plc:alice/app.bsky.feed.post/post1", nil)
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("record status=%d body=%s", rr.Code, rr.Body.String())
+		}
+		if !strings.Contains(rr.Body.String(), "hello") {
+			t.Fatalf("record body missing payload: %s", rr.Body.String())
+		}
+	})
+
+	t.Run("records", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/atproto/records?did=did:plc:alice&collection=app.bsky.feed.post&limit=10", nil)
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("records status=%d body=%s", rr.Code, rr.Body.String())
+		}
+		if !strings.Contains(rr.Body.String(), "post1") {
+			t.Fatalf("records body missing rkey: %s", rr.Body.String())
+		}
+	})
+
+	t.Run("events", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/api/atproto/events?cursor=0&limit=10", nil)
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("events status=%d body=%s", rr.Code, rr.Body.String())
+		}
+		if !strings.Contains(rr.Body.String(), fmt.Sprintf("\"next_cursor\":%d", cursor)) {
+			t.Fatalf("events body missing next cursor: %s", rr.Body.String())
+		}
+	})
+}
+
+func TestATProtoAPITrackAndUntrackRepo(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	indexer := atindex.New(database, nil, nil, "wss://relay.example.test", nil)
+	router := chi.NewRouter()
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).WithATProto(database, indexer).Mount(router)
+
+	trackBody := bytes.NewBufferString(`{"did":"did:plc:trackme","reason":"ui_test"}`)
+	trackReq := httptest.NewRequest(http.MethodPost, "/api/atproto/repos/track", trackBody)
+	trackReq.Header.Set("Content-Type", "application/json")
+	trackRR := httptest.NewRecorder()
+	router.ServeHTTP(trackRR, trackReq)
+	if trackRR.Code != http.StatusAccepted {
+		t.Fatalf("track status=%d body=%s", trackRR.Code, trackRR.Body.String())
+	}
+
+	repo, err := database.GetATProtoRepo(context.Background(), "did:plc:trackme")
+	if err != nil {
+		t.Fatalf("get tracked repo: %v", err)
+	}
+	if repo == nil || !repo.Tracking {
+		t.Fatalf("expected tracked repo, got %#v", repo)
+	}
+
+	untrackReq := httptest.NewRequest(http.MethodPost, "/api/atproto/repos/untrack?did=did:plc:trackme", nil)
+	untrackRR := httptest.NewRecorder()
+	router.ServeHTTP(untrackRR, untrackReq)
+	if untrackRR.Code != http.StatusOK {
+		t.Fatalf("untrack status=%d body=%s", untrackRR.Code, untrackRR.Body.String())
+	}
+
+	repo, err = database.GetATProtoRepo(context.Background(), "did:plc:trackme")
+	if err != nil {
+		t.Fatalf("get untracked repo: %v", err)
+	}
+	if repo == nil || repo.Tracking {
+		t.Fatalf("expected untracked repo, got %#v", repo)
 	}
 }
 
@@ -608,6 +875,20 @@ func (e *erroringDB) CountBlobs(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("forced error")
 	}
 	return 0, nil
+}
+
+func (e *erroringDB) GetLatestATProtoEventCursor(ctx context.Context) (int64, bool, error) {
+	if e.failMethod == "GetLatestATProtoEventCursor" {
+		return 0, false, fmt.Errorf("forced error")
+	}
+	return 0, false, nil
+}
+
+func (e *erroringDB) GetATProtoSource(ctx context.Context, sourceKey string) (*db.ATProtoSource, error) {
+	if e.failMethod == "GetATProtoSource" {
+		return nil, fmt.Errorf("forced error")
+	}
+	return nil, nil
 }
 
 func (e *erroringDB) GetBridgeState(ctx context.Context, key string) (string, bool, error) {
@@ -1517,6 +1798,12 @@ func (m *mockDatabase) GetAllBridgeState(ctx context.Context) ([]db.BridgeState,
 func (m *mockDatabase) GetLatestDeferredReason(ctx context.Context) (string, bool, error) {
 	return "", false, m.err
 }
+func (m *mockDatabase) GetLatestATProtoEventCursor(ctx context.Context) (int64, bool, error) {
+	return 0, false, m.err
+}
+func (m *mockDatabase) GetATProtoSource(ctx context.Context, sourceKey string) (*db.ATProtoSource, error) {
+	return nil, m.err
+}
 func (m *mockDatabase) ResetMessageForRetry(ctx context.Context, atURI string) error {
 	return m.err
 }
@@ -1540,11 +1827,11 @@ type mockPDSClient struct {
 	err error
 }
 
-func (m *mockPDSClient) UploadBlob(ctx context.Context, identifier string, reader io.Reader, mime string) (*lexutil.LexBlob, error) {
+func (m *mockPDSClient) UploadBlob(ctx context.Context, identifier string, reader io.Reader, mime string) (*appbsky.LexBlob, error) {
 	return nil, m.err
 }
 
-func (m *mockPDSClient) CreatePost(ctx context.Context, identifier string, text string, imageBlob *lexutil.LexBlob) (string, error) {
+func (m *mockPDSClient) CreatePost(ctx context.Context, identifier string, text string, imageBlob *appbsky.LexBlob) (string, error) {
 	return "at://did:plc:alice/app.bsky.feed.post/post1", m.err
 }
 
@@ -1792,6 +2079,8 @@ type granularMockDatabase struct {
 	getRecentBlobsErr               error
 	getAllBridgeStateErr            error
 	getLatestDeferredReasonErr      error
+	getLatestATProtoEventCursorErr  error
+	getATProtoSourceErr             error
 }
 
 func (m *granularMockDatabase) CheckBridgeHealth(ctx context.Context, maxStale time.Duration) (*db.BridgeHealthStatus, error) {
@@ -1889,6 +2178,18 @@ func (m *granularMockDatabase) GetLatestDeferredReason(ctx context.Context) (str
 	}
 	return "", false, m.err
 }
+func (m *granularMockDatabase) GetLatestATProtoEventCursor(ctx context.Context) (int64, bool, error) {
+	if m.getLatestATProtoEventCursorErr != nil {
+		return 0, false, m.getLatestATProtoEventCursorErr
+	}
+	return 0, false, m.err
+}
+func (m *granularMockDatabase) GetATProtoSource(ctx context.Context, sourceKey string) (*db.ATProtoSource, error) {
+	if m.getATProtoSourceErr != nil {
+		return nil, m.getATProtoSourceErr
+	}
+	return nil, m.err
+}
 func (m *granularMockDatabase) ResetMessageForRetry(ctx context.Context, atURI string) error {
 	return m.err
 }
@@ -1937,7 +2238,8 @@ func TestUIHandlerDashboardAllErrors(t *testing.T) {
 		"CountDeferredMessages",
 		"CountDeletedMessages",
 		"CountBlobs",
-		"GetBridgeState_firehose",
+		"GetLatestATProtoEventCursor",
+		"GetATProtoSource",
 		"GetBridgeState_status",
 		"GetBridgeState_heartbeat",
 		"ListTopDeferredReasons",
@@ -1962,8 +2264,10 @@ func TestUIHandlerDashboardAllErrors(t *testing.T) {
 				m.countDeletedMessagesErr = errBoom
 			case "CountBlobs":
 				m.countBlobsErr = errBoom
-			case "GetBridgeState_firehose":
-				m.getBridgeStateErrs = map[string]error{"firehose_seq": errBoom}
+			case "GetLatestATProtoEventCursor":
+				m.getLatestATProtoEventCursorErr = errBoom
+			case "GetATProtoSource":
+				m.getATProtoSourceErr = errBoom
 			case "GetBridgeState_status":
 				m.getBridgeStateErrs = map[string]error{"bridge_runtime_status": errBoom}
 			case "GetBridgeState_heartbeat":

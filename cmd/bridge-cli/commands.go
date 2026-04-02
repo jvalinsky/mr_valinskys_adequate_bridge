@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/atindex"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/backfill"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/bots"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/bridge"
@@ -155,6 +156,18 @@ func runStats(ctx context.Context, dbPath string) error {
 	if err != nil {
 		return err
 	}
+	replayCursor, _, err := database.GetBridgeState(ctx, "atproto_event_cursor")
+	if err != nil {
+		return err
+	}
+	source, err := database.GetATProtoSource(ctx, "default-relay")
+	if err != nil {
+		return err
+	}
+	eventHeadCursor, eventHeadOK, err := database.GetLatestATProtoEventCursor(ctx)
+	if err != nil {
+		return err
+	}
 
 	fmt.Printf("Bridge stats\n")
 	fmt.Printf("- Accounts: %d total (%d active)\n", totalAccounts, activeAccounts)
@@ -164,8 +177,17 @@ func runStats(ctx context.Context, dbPath string) error {
 	fmt.Printf("- Messages deferred: %d\n", deferredMessages)
 	fmt.Printf("- Messages deleted: %d\n", deletedMessages)
 	fmt.Printf("- Blobs bridged: %d\n", totalBlobs)
+	if replayCursor != "" {
+		fmt.Printf("- Bridge replay cursor: %s\n", replayCursor)
+	}
+	if eventHeadOK {
+		fmt.Printf("- ATProto event-log head: %d\n", eventHeadCursor)
+	}
+	if source != nil {
+		fmt.Printf("- Relay source cursor: %d (%s)\n", source.LastSeq, fallbackValue(source.RelayURL, "-"))
+	}
 	if cursorVal != "" {
-		fmt.Printf("- Firehose cursor: %s\n", cursorVal)
+		fmt.Printf("- Legacy firehose cursor: %s\n", cursorVal)
 	}
 	return nil
 }
@@ -188,22 +210,22 @@ func runStart(c *cli.Context) error {
 	}
 
 	cfg := AppConfig{
-		DBPath:         dbPath,
-		RepoPath:       repoPath,
-		BotSeed:        botSeed,
-		HMACKey:        hmacKey,
-		AppKey:         c.String("app-key"),
-		SSBListenAddr:  c.String("ssb-listen-addr"),
-		PublishWorkers: c.Int("publish-workers"),
-		FirehoseEnable: c.Bool("firehose-enable"),
-		RelayURL:       relayURL,
-		XRPCReadHost:   c.String("xrpc-host"),
-		RoomEnable:     c.Bool("room-enable"),
-		RoomListenAddr: c.String("room-listen-addr"),
-		RoomHTTPAddr:   c.String("room-http-listen-addr"),
-		RoomMode:       c.String("room-mode"),
-		RoomDomain:     c.String("room-https-domain"),
-		PLCURL:         c.String("plc-url"),
+		DBPath:          dbPath,
+		RepoPath:        repoPath,
+		BotSeed:         botSeed,
+		HMACKey:         hmacKey,
+		AppKey:          c.String("app-key"),
+		SSBListenAddr:   c.String("ssb-listen-addr"),
+		PublishWorkers:  c.Int("publish-workers"),
+		FirehoseEnable:  c.Bool("firehose-enable"),
+		RelayURL:        relayURL,
+		XRPCReadHost:    c.String("xrpc-host"),
+		RoomEnable:      c.Bool("room-enable"),
+		RoomListenAddr:  c.String("room-listen-addr"),
+		RoomHTTPAddr:    c.String("room-http-listen-addr"),
+		RoomMode:        c.String("room-mode"),
+		RoomDomain:      c.String("room-https-domain"),
+		PLCURL:          c.String("plc-url"),
 		AtprotoInsecure: c.Bool("atproto-insecure"),
 	}
 
@@ -241,14 +263,14 @@ func runBackfill(c *cli.Context) error {
 	}
 
 	cfg := AppConfig{
-		DBPath:         dbPath,
-		RepoPath:       repoPath,
-		BotSeed:        botSeed,
-		HMACKey:        hmacKey,
-		AppKey:         c.String("app-key"),
-		PublishWorkers: c.Int("publish-workers"),
-		XRPCReadHost:   c.String("xrpc-host"),
-		PLCURL:         c.String("plc-url"),
+		DBPath:          dbPath,
+		RepoPath:        repoPath,
+		BotSeed:         botSeed,
+		HMACKey:         hmacKey,
+		AppKey:          c.String("app-key"),
+		PublishWorkers:  c.Int("publish-workers"),
+		XRPCReadHost:    c.String("xrpc-host"),
+		PLCURL:          c.String("plc-url"),
 		AtprotoInsecure: c.Bool("atproto-insecure"),
 	}
 
@@ -257,8 +279,9 @@ func runBackfill(c *cli.Context) error {
 		return err
 	}
 	defer app.Stop()
-
-	bridgeLogger := logRuntime.Logger("bridge")
+	if err := app.StartIndexerPipeline(c.Context); err != nil {
+		return err
+	}
 
 	dids := append([]string{}, c.StringSlice("did")...)
 	if c.Bool("active-accounts") {
@@ -281,69 +304,64 @@ func runBackfill(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
-
-	hostResolver, err := resolveBackfillHostResolver(c.String("xrpc-host"), c.String("plc-url"), c.Bool("atproto-insecure"))
-	if err != nil {
-		return err
+	if sinceFilter.Raw != "" {
+		fmt.Printf("Backfill note: --since is currently advisory under the queued atindex worker and is not applied to sync.getRepo snapshots in v1.\n")
 	}
-	httpClient := &http.Client{Timeout: 30 * time.Second}
-	if c.Bool("atproto-insecure") {
-		httpClient.Transport = &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		}
-	}
-	repoFetcher := backfill.XRPCRepoFetcher{HTTPClient: httpClient}
 
-	total := backfill.Stats{}
-	statusCounts := map[backfill.DIDStatus]int{}
+	stateCounts := map[string]int{}
+	failed := 0
+	var maxReplayCursor int64
 	for _, did := range dids {
-		result := backfill.RunForDID(c.Context, did, sinceFilter, app.Processor(), bridgeLogger, hostResolver, repoFetcher)
-		statusCounts[result.Status]++
-		total.Processed += result.Stats.Processed
-		total.Skipped += result.Stats.Skipped
-		total.Errors += result.Stats.Errors
-
-		if result.Err != nil {
-			fmt.Printf(
-				"Backfill did=%s pds=%s status=%s processed=%d skipped=%d record_errors=%d err=%v\n",
-				result.DID,
-				fallbackValue(result.PDSHost, "-"),
-				result.Status,
-				result.Stats.Processed,
-				result.Stats.Skipped,
-				result.Stats.Errors,
-				result.Err,
-			)
+		if err := app.Indexer().RequestResync(c.Context, did, "cli_backfill"); err != nil {
+			failed++
+			fmt.Printf("Backfill did=%s status=error err=%v\n", did, err)
 			continue
 		}
-
+		info, waitErr := waitForIndexedRepoState(c.Context, app.Indexer(), did, 5*time.Minute)
+		if waitErr != nil {
+			failed++
+			fmt.Printf("Backfill did=%s status=error err=%v\n", did, waitErr)
+			continue
+		}
+		stateCounts[info.SyncState]++
+		if info.SyncState != atindex.StateSynced {
+			failed++
+		}
+		if info.LastEventCursor != nil && *info.LastEventCursor > maxReplayCursor {
+			maxReplayCursor = *info.LastEventCursor
+		}
 		fmt.Printf(
-			"Backfill did=%s pds=%s status=%s processed=%d skipped=%d record_errors=%d\n",
-			result.DID,
-			fallbackValue(result.PDSHost, "-"),
-			result.Status,
-			result.Stats.Processed,
-			result.Stats.Skipped,
-			result.Stats.Errors,
+			"Backfill did=%s pds=%s status=%s generation=%d last_error=%s\n",
+			did,
+			fallbackValue(info.PDSURL, "-"),
+			info.SyncState,
+			info.Generation,
+			fallbackValue(info.LastError, "-"),
 		)
 	}
+	if failed == 0 && maxReplayCursor > 0 {
+		if err := waitForReplayCursor(c.Context, app.DB(), maxReplayCursor, 5*time.Minute); err != nil {
+			failed++
+			fmt.Printf("Backfill replay status=error target_cursor=%d err=%v\n", maxReplayCursor, err)
+		}
+	}
 
-	failedCount := len(dids) - statusCounts[backfill.StatusSuccess]
 	fmt.Printf(
-		"Backfill summary: dids=%d processed=%d skipped=%d record_errors=%d auth_required=%d not_found=%d malformed_did_doc=%d unsupported_did=%d transport_error=%d failed=%d\n",
+		"Backfill summary: dids=%d pending=%d backfilling=%d synced=%d desynchronized=%d deleted=%d deactivated=%d takendown=%d suspended=%d error=%d failed=%d\n",
 		len(dids),
-		total.Processed,
-		total.Skipped,
-		total.Errors,
-		statusCounts[backfill.StatusAuthRequired],
-		statusCounts[backfill.StatusNotFound],
-		statusCounts[backfill.StatusMalformedDIDDoc],
-		statusCounts[backfill.StatusUnsupportedDID],
-		statusCounts[backfill.StatusTransportError],
-		failedCount,
+		stateCounts[atindex.StatePending],
+		stateCounts[atindex.StateBackfilling],
+		stateCounts[atindex.StateSynced],
+		stateCounts[atindex.StateDesynchronized],
+		stateCounts[atindex.StateDeleted],
+		stateCounts[atindex.StateDeactivated],
+		stateCounts[atindex.StateTakendown],
+		stateCounts[atindex.StateSuspended],
+		stateCounts[atindex.StateError],
+		failed,
 	)
-	if failedCount > 0 {
-		return fmt.Errorf("backfill failed for %d did(s)", failedCount)
+	if failed > 0 {
+		return fmt.Errorf("backfill failed for %d did(s)", failed)
 	}
 	return nil
 }
@@ -366,13 +384,13 @@ func runRetryFailures(c *cli.Context) error {
 	}
 
 	cfg := AppConfig{
-		DBPath:         dbPath,
-		RepoPath:       repoPath,
-		BotSeed:        botSeed,
-		HMACKey:        hmacKey,
-		AppKey:         c.String("app-key"),
-		PublishWorkers: c.Int("publish-workers"),
-		PLCURL:         c.String("plc-url"),
+		DBPath:          dbPath,
+		RepoPath:        repoPath,
+		BotSeed:         botSeed,
+		HMACKey:         hmacKey,
+		AppKey:          c.String("app-key"),
+		PublishWorkers:  c.Int("publish-workers"),
+		PLCURL:          c.String("plc-url"),
 		AtprotoInsecure: c.Bool("atproto-insecure"),
 	}
 
@@ -453,6 +471,20 @@ func runServeUI(c *cli.Context) error {
 	}
 
 	uiLogger := logRuntime.Logger("ui")
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+	if c.Bool("atproto-insecure") {
+		httpClient.Transport = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		}
+	}
+	indexer := atindex.New(
+		database,
+		backfill.DIDPDSResolver{PLCURL: c.String("plc-url"), HTTPClient: httpClient},
+		backfill.XRPCRepoFetcher{HTTPClient: httpClient},
+		relayURL,
+		uiLogger,
+	)
+
 	var ssbStatus handlers.SSBStatusProvider
 	var blobStore handlers.BlobStore
 	if repo := c.String("repo-path"); repo != "" {
@@ -462,7 +494,7 @@ func runServeUI(c *cli.Context) error {
 			GossipDB:   database,
 		}, logRuntime.Logger("ssb"))
 
-		// We always wrap the blob store in a composite that checks the filesystem 
+		// We always wrap the blob store in a composite that checks the filesystem
 		// (RepoPath/blobs) if the runtime doesn't have it.
 		var primaryStore handlers.BlobStore
 		if err == nil {
@@ -477,6 +509,10 @@ func runServeUI(c *cli.Context) error {
 			fsPath:  filepath.Join(repo, "blobs"),
 		}
 	}
+	ctx, stop := signal.NotifyContext(c.Context, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	indexer.Start(ctx)
+
 	r := chi.NewRouter()
 	r.Use(websecurity.RequestLogMiddleware(uiLogger))
 	r.Use(websecurity.SecurityHeadersMiddleware(true))
@@ -484,16 +520,13 @@ func runServeUI(c *cli.Context) error {
 		r.Use(websecurity.BasicAuthMiddleware(authUser, authPass))
 	}
 
-	ui := handlers.NewUIHandler(database, uiLogger, atpClient, blobStore, ssbStatus)
+	ui := handlers.NewUIHandler(database, uiLogger, atpClient, blobStore, ssbStatus).WithATProto(database, indexer)
 	ui.Mount(r)
 
 	server := &http.Server{
 		Addr:    listenAddr,
 		Handler: r,
 	}
-
-	ctx, stop := signal.NotifyContext(c.Context, os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -511,5 +544,73 @@ func runServeUI(c *cli.Context) error {
 			return err
 		}
 		return nil
+	}
+}
+
+func waitForIndexedRepoState(ctx context.Context, indexer *atindex.Service, did string, timeout time.Duration) (*db.ATProtoRepo, error) {
+	if indexer == nil {
+		return nil, fmt.Errorf("indexer not configured")
+	}
+	if timeout <= 0 {
+		timeout = 5 * time.Minute
+	}
+
+	deadlineCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		info, err := indexer.GetRepoInfo(deadlineCtx, did)
+		if err != nil {
+			return nil, err
+		}
+		if info != nil {
+			switch info.SyncState {
+			case atindex.StateSynced, atindex.StateDeleted, atindex.StateDeactivated, atindex.StateTakendown, atindex.StateSuspended, atindex.StateError:
+				return info, nil
+			}
+		}
+
+		select {
+		case <-deadlineCtx.Done():
+			return nil, deadlineCtx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func waitForReplayCursor(ctx context.Context, database *db.DB, target int64, timeout time.Duration) error {
+	if database == nil {
+		return fmt.Errorf("database not configured")
+	}
+	if target <= 0 {
+		return nil
+	}
+	if timeout <= 0 {
+		timeout = 5 * time.Minute
+	}
+
+	deadlineCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		cursor, err := readATProtoEventCursor(deadlineCtx, database)
+		if err != nil {
+			return err
+		}
+		if cursor >= target {
+			return nil
+		}
+
+		select {
+		case <-deadlineCtx.Done():
+			return deadlineCtx.Err()
+		case <-ticker.C:
+		}
 	}
 }

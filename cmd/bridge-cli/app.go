@@ -8,9 +8,11 @@ import (
 	"log"
 	"net/http"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
-	"github.com/bluesky-social/indigo/xrpc"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/atindex"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/backfill"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/blobbridge"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/bridge"
@@ -19,6 +21,7 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/publishqueue"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/room"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssbruntime"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/xrpc"
 )
 
 type BridgeApp struct {
@@ -26,6 +29,7 @@ type BridgeApp struct {
 	ssbRuntime *ssbruntime.Runtime
 	publisher  *publishqueue.WorkerPublisher
 	processor  *bridge.Processor
+	indexer    *atindex.Service
 	firehose   *firehose.Client
 	room       *room.Runtime
 	logger     *log.Logger
@@ -108,6 +112,7 @@ func (a *BridgeApp) Init(ctx context.Context) error {
 		PLCURL:     a.cfg.PLCURL,
 		HTTPClient: httpClient,
 	}
+	a.indexer = atindex.New(a.db, pdsResolver, backfill.XRPCRepoFetcher{HTTPClient: httpClient}, a.cfg.RelayURL, a.logger)
 	recordFetcher := bridge.NewPDSAwareRecordFetcher(pdsResolver, xrpcClient)
 
 	dependencyResolver := bridge.NewATProtoDependencyResolver(
@@ -136,7 +141,7 @@ func (a *BridgeApp) Init(ctx context.Context) error {
 		firehoseOpts = append(firehoseOpts, firehose.WithConnectedCallback(func() {
 			setBridgeStateBestEffort(ctx, a.db, "firehose_connected", "1", a.logger)
 		}))
-		a.firehose = firehose.NewClient(a.cfg.RelayURL, a.processor, a.logger, firehoseOpts...)
+		a.firehose = firehose.NewClient(a.cfg.RelayURL, a.indexer, a.logger, firehoseOpts...)
 	}
 
 	if a.cfg.RoomEnable {
@@ -160,6 +165,10 @@ func (a *BridgeApp) Init(ctx context.Context) error {
 }
 
 func (a *BridgeApp) Start(ctx context.Context) error {
+	if err := a.StartIndexerPipeline(ctx); err != nil {
+		return err
+	}
+
 	if a.firehose != nil {
 		go func() {
 			err := a.firehose.RunWithReconnect(ctx, firehose.ReconnectConfig{
@@ -179,12 +188,22 @@ func (a *BridgeApp) Start(ctx context.Context) error {
 
 	go runRetryScheduler(ctx, a.processor, a.logger)
 	go runDeferredResolverScheduler(ctx, a.processor, a.logger)
-	go runAutoBackfillScheduler(ctx, a.db, a.processor, a.logger, a.cfg.PLCURL, a.cfg.AtprotoInsecure)
+	go runATProtoTrackScheduler(ctx, a.db, a.indexer, a.logger)
 	go runRuntimeHeartbeatScheduler(ctx, a.db, a.logger, 10*time.Second)
 
 	setBridgeStateBestEffort(ctx, a.db, bridgeRuntimeStatusKey, "live", a.logger)
 	setBridgeStateBestEffort(ctx, a.db, bridgeRuntimeStartedAtKey, time.Now().UTC().Format(time.RFC3339), a.logger)
 
+	return nil
+}
+
+func (a *BridgeApp) StartIndexerPipeline(ctx context.Context) error {
+	if a.indexer != nil {
+		a.indexer.Start(ctx)
+		if err := a.startIndexerConsumer(ctx); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -229,6 +248,54 @@ func (a *BridgeApp) Processor() *bridge.Processor {
 	return a.processor
 }
 
+func (a *BridgeApp) Indexer() *atindex.Service {
+	return a.indexer
+}
+
 func (a *BridgeApp) SSB() *ssbruntime.Runtime {
 	return a.ssbRuntime
+}
+
+func (a *BridgeApp) startIndexerConsumer(ctx context.Context) error {
+	if a.indexer == nil || a.processor == nil {
+		return nil
+	}
+
+	cursor, err := readATProtoEventCursor(ctx, a.db)
+	if err != nil {
+		return err
+	}
+	stream, err := a.indexer.Subscribe(ctx, cursor)
+	if err != nil {
+		return err
+	}
+
+	go func() {
+		for note := range stream {
+			if note.Kind != atindex.EventKindRecord || note.Record == nil {
+				continue
+			}
+			if err := a.processor.HandleRecordEvent(ctx, *note.Record); err != nil {
+				a.logger.Printf("event=atindex_consumer_error at_uri=%s action=%s err=%v", note.Record.ATURI, note.Record.Action, err)
+				continue
+			}
+			setBridgeStateBestEffort(ctx, a.db, "atproto_event_cursor", fmt.Sprintf("%d", note.Cursor), a.logger)
+		}
+	}()
+	return nil
+}
+
+func readATProtoEventCursor(ctx context.Context, database *db.DB) (int64, error) {
+	if database == nil {
+		return 0, nil
+	}
+	value, ok, err := database.GetBridgeState(ctx, "atproto_event_cursor")
+	if err != nil || !ok || strings.TrimSpace(value) == "" {
+		return 0, err
+	}
+	cursor, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse atproto_event_cursor %q: %w", value, err)
+	}
+	return cursor, nil
 }

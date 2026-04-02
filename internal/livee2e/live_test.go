@@ -13,11 +13,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bluesky-social/indigo/api/atproto"
-	appbsky "github.com/bluesky-social/indigo/api/bsky"
-	lexutil "github.com/bluesky-social/indigo/lex/util"
-	"github.com/bluesky-social/indigo/xrpc"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
+	atproto "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto"
+	appbsky "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/appbsky"
+	lexutil "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/lexutil"
+	xrpc "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/xrpc"
 	cbg "github.com/whyrusleeping/cbor-gen"
 )
 
@@ -27,6 +27,7 @@ func TestBridgeLiveInterop(t *testing.T) {
 	}
 
 	host := strings.TrimSpace(getEnvDefault("LIVE_ATPROTO_HOST", "https://bsky.social"))
+	plcURL := strings.TrimSpace(getEnvDefault("LIVE_ATPROTO_PLC_URL", host+":2582/plc"))
 	authCfg, err := resolveLiveAuthConfig(os.Getenv)
 	if err != nil {
 		t.Fatalf("resolve live auth config: %v", err)
@@ -100,6 +101,8 @@ func TestBridgeLiveInterop(t *testing.T) {
 		"--room-mode", roomMode,
 		"--publish-workers", "2",
 		"--xrpc-host", host,
+		"--plc-url", plcURL,
+		"--atproto-insecure",
 	}
 	bridgeProc := exec.CommandContext(ctx, "go", append([]string{"run", "./cmd/bridge-cli"}, startArgs...)...)
 	bridgeProc.Dir = moduleRoot
@@ -134,7 +137,7 @@ func TestBridgeLiveInterop(t *testing.T) {
 	likeURI, _ := createRecord(ctx, t, xrpcc, sourceDID, "app.bsky.feed.like", &appbsky.FeedLike{
 		LexiconTypeID: "app.bsky.feed.like",
 		CreatedAt:     time.Now().UTC().Format(time.RFC3339),
-		Subject: &atproto.RepoStrongRef{
+		Subject: &appbsky.RepoStrongRef{
 			Uri: postURI,
 			Cid: postCID,
 		},

@@ -3,21 +3,19 @@ package bridge
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"io"
 	"log"
 	"testing"
 	"time"
 
-	"github.com/bluesky-social/indigo/api/atproto"
-	appbsky "github.com/bluesky-social/indigo/api/bsky"
-	indigorepo "github.com/bluesky-social/indigo/repo"
 	blockformat "github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
 	ipld "github.com/ipfs/go-ipld-format"
-	car "github.com/ipld/go-car"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto"
+	appbsky "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/appbsky"
+	atrepo "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/repo"
 )
 
 type integrationBlockstore struct {
@@ -44,7 +42,7 @@ func (bs *integrationBlockstore) Get(_ context.Context, c cid.Cid) (blockformat.
 func createBridgeTestCAR(did string, records map[string]interface{}) ([]byte, error) {
 	ctx := context.Background()
 	bs := newIntegrationBlockstore()
-	rr := indigorepo.NewRepo(ctx, did, bs)
+	rr := atrepo.NewRepo(did, bs)
 
 	for path, record := range records {
 		for i := 0; i < len(path); i++ {
@@ -74,7 +72,7 @@ func createBridgeTestCAR(did string, records map[string]interface{}) ([]byte, er
 		}
 	}
 
-	root, _, err := rr.Commit(ctx, func(context.Context, string, []byte) ([]byte, error) {
+	_, _, err := rr.Commit(ctx, func(context.Context, string, []byte) ([]byte, error) {
 		return []byte("test-signature"), nil
 	})
 	if err != nil {
@@ -82,33 +80,8 @@ func createBridgeTestCAR(did string, records map[string]interface{}) ([]byte, er
 	}
 
 	buf := new(bytes.Buffer)
-	headerBuf := new(bytes.Buffer)
-	if err := car.WriteHeader(&car.CarHeader{
-		Roots:   []cid.Cid{root},
-		Version: 1,
-	}, headerBuf); err != nil {
+	if err := rr.WriteCAR(buf); err != nil {
 		return nil, err
-	}
-	if _, err := buf.Write(headerBuf.Bytes()); err != nil {
-		return nil, err
-	}
-	for _, blk := range bs.blocks {
-		var total uint64
-		cidBytes := blk.Cid().Bytes()
-		rawData := blk.RawData()
-		total = uint64(len(cidBytes) + len(rawData))
-
-		var prefix [binary.MaxVarintLen64]byte
-		prefixLen := binary.PutUvarint(prefix[:], total)
-		if _, err := buf.Write(prefix[:prefixLen]); err != nil {
-			return nil, err
-		}
-		if _, err := buf.Write(cidBytes); err != nil {
-			return nil, err
-		}
-		if _, err := buf.Write(rawData); err != nil {
-			return nil, err
-		}
 	}
 	return buf.Bytes(), nil
 }
@@ -287,7 +260,7 @@ func TestIntegrationProcessOpWithUnsupportedCollection(t *testing.T) {
 	records := map[string]interface{}{
 		"app.bsky.feed.repost/unsupported": &appbsky.FeedRepost{
 			LexiconTypeID: "app.bsky.feed.repost",
-			Subject: &atproto.RepoStrongRef{
+			Subject: &appbsky.RepoStrongRef{
 				Uri: "at://did:plc:test/app.bsky.feed.post/1",
 				Cid: "bafytest",
 			},
@@ -298,7 +271,7 @@ func TestIntegrationProcessOpWithUnsupportedCollection(t *testing.T) {
 		t.Fatalf("create test CAR: %v", err)
 	}
 
-	rr, err := indigorepo.ReadRepoFromCar(ctx, bytes.NewReader(carData))
+	rr, err := atrepo.ReadRepoFromCar(ctx, bytes.NewReader(carData))
 	if err != nil {
 		t.Fatalf("read repo: %v", err)
 	}
@@ -333,7 +306,7 @@ func TestIntegrationProcessOpWithMissingRecord(t *testing.T) {
 		t.Fatalf("create test CAR: %v", err)
 	}
 
-	rr, err := indigorepo.ReadRepoFromCar(ctx, bytes.NewReader(carData))
+	rr, err := atrepo.ReadRepoFromCar(ctx, bytes.NewReader(carData))
 	if err != nil {
 		t.Fatalf("read repo: %v", err)
 	}
@@ -485,7 +458,7 @@ func TestIntegrationProcessOpWithInvalidPath(t *testing.T) {
 		t.Fatalf("create test CAR: %v", err)
 	}
 
-	rr, err := indigorepo.ReadRepoFromCar(ctx, bytes.NewReader(carData))
+	rr, err := atrepo.ReadRepoFromCar(ctx, bytes.NewReader(carData))
 	if err != nil {
 		t.Fatalf("read repo: %v", err)
 	}

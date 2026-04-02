@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	appbsky "github.com/bluesky-social/indigo/api/bsky"
+	appbsky "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/appbsky"
 )
 
 // RecordType* constants identify supported ATProto collections.

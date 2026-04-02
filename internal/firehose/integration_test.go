@@ -3,17 +3,15 @@ package firehose
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"testing"
 	"time"
 
-	"github.com/bluesky-social/indigo/api/atproto"
-	appbsky "github.com/bluesky-social/indigo/api/bsky"
-	indigorepo "github.com/bluesky-social/indigo/repo"
 	blockformat "github.com/ipfs/go-block-format"
 	"github.com/ipfs/go-cid"
 	ipld "github.com/ipfs/go-ipld-format"
-	car "github.com/ipld/go-car"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/appbsky"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/repo"
 )
 
 type integrationBlockstore struct {
@@ -40,7 +38,7 @@ func (bs *integrationBlockstore) Get(_ context.Context, c cid.Cid) (blockformat.
 func createIntegrationCAR(did string, records map[string]interface{}) ([]byte, error) {
 	ctx := context.Background()
 	bs := newIntegrationBlockstore()
-	rr := indigorepo.NewRepo(ctx, did, bs)
+	rr := repo.NewRepo(did, bs)
 
 	for path, record := range records {
 		parts := splitPath(path)
@@ -64,7 +62,7 @@ func createIntegrationCAR(did string, records map[string]interface{}) ([]byte, e
 		}
 	}
 
-	root, _, err := rr.Commit(ctx, func(context.Context, string, []byte) ([]byte, error) {
+	_, _, err := rr.Commit(ctx, func(context.Context, string, []byte) ([]byte, error) {
 		return []byte("integration-test-signature"), nil
 	})
 	if err != nil {
@@ -72,33 +70,8 @@ func createIntegrationCAR(did string, records map[string]interface{}) ([]byte, e
 	}
 
 	buf := new(bytes.Buffer)
-	headerBuf := new(bytes.Buffer)
-	if err := car.WriteHeader(&car.CarHeader{
-		Roots:   []cid.Cid{root},
-		Version: 1,
-	}, headerBuf); err != nil {
+	if err := rr.WriteCAR(buf); err != nil {
 		return nil, err
-	}
-	if _, err := buf.Write(headerBuf.Bytes()); err != nil {
-		return nil, err
-	}
-	for _, blk := range bs.blocks {
-		var total uint64
-		cidBytes := blk.Cid().Bytes()
-		rawData := blk.RawData()
-		total = uint64(len(cidBytes) + len(rawData))
-
-		var prefix [binary.MaxVarintLen64]byte
-		prefixLen := binary.PutUvarint(prefix[:], total)
-		if _, err := buf.Write(prefix[:prefixLen]); err != nil {
-			return nil, err
-		}
-		if _, err := buf.Write(cidBytes); err != nil {
-			return nil, err
-		}
-		if _, err := buf.Write(rawData); err != nil {
-			return nil, err
-		}
 	}
 	return buf.Bytes(), nil
 }

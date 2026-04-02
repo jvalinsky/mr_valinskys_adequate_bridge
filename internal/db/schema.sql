@@ -48,6 +48,90 @@ CREATE TABLE IF NOT EXISTS bridge_state (
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS atproto_sources (
+    source_key TEXT PRIMARY KEY,
+    relay_url TEXT NOT NULL,
+    last_seq INTEGER NOT NULL DEFAULT 0,
+    connected_at DATETIME,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS atproto_repos (
+    did TEXT PRIMARY KEY,
+    tracking BOOLEAN NOT NULL DEFAULT 1,
+    reason TEXT,
+    sync_state TEXT NOT NULL DEFAULT 'pending',
+    generation INTEGER NOT NULL DEFAULT 0,
+    current_rev TEXT,
+    current_commit_cid TEXT,
+    current_data_cid TEXT,
+    last_firehose_seq INTEGER,
+    last_backfill_at DATETIME,
+    last_event_cursor INTEGER,
+    handle TEXT,
+    pds_url TEXT,
+    account_active BOOLEAN,
+    account_status TEXT,
+    last_identity_at DATETIME,
+    last_account_at DATETIME,
+    last_error TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_atproto_repos_state ON atproto_repos(sync_state);
+CREATE INDEX IF NOT EXISTS idx_atproto_repos_tracking ON atproto_repos(tracking);
+
+CREATE TABLE IF NOT EXISTS atproto_commit_buffer (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    did TEXT NOT NULL,
+    generation INTEGER NOT NULL,
+    rev TEXT NOT NULL,
+    seq INTEGER NOT NULL DEFAULT 0,
+    raw_event_json TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(did, generation, rev)
+);
+
+CREATE INDEX IF NOT EXISTS idx_atproto_commit_buffer_repo ON atproto_commit_buffer(did, generation, seq, rev);
+
+CREATE TABLE IF NOT EXISTS atproto_records (
+    did TEXT NOT NULL,
+    collection TEXT NOT NULL,
+    rkey TEXT NOT NULL,
+    at_uri TEXT NOT NULL UNIQUE,
+    at_cid TEXT NOT NULL,
+    record_json TEXT NOT NULL,
+    last_rev TEXT,
+    last_seq INTEGER,
+    deleted BOOLEAN NOT NULL DEFAULT 0,
+    deleted_at DATETIME,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(did, collection, rkey)
+);
+
+CREATE INDEX IF NOT EXISTS idx_atproto_records_did_collection ON atproto_records(did, collection, rkey);
+CREATE INDEX IF NOT EXISTS idx_atproto_records_uri ON atproto_records(at_uri);
+
+CREATE TABLE IF NOT EXISTS atproto_event_log (
+    cursor INTEGER PRIMARY KEY AUTOINCREMENT,
+    did TEXT NOT NULL,
+    collection TEXT NOT NULL,
+    rkey TEXT NOT NULL,
+    at_uri TEXT NOT NULL,
+    at_cid TEXT,
+    action TEXT NOT NULL,
+    live BOOLEAN NOT NULL DEFAULT 1,
+    rev TEXT,
+    seq INTEGER,
+    record_json TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_atproto_event_log_cursor ON atproto_event_log(cursor);
+CREATE INDEX IF NOT EXISTS idx_atproto_event_log_repo ON atproto_event_log(did, cursor);
+
 CREATE TABLE IF NOT EXISTS known_peers (
     addr TEXT PRIMARY KEY,
     pubkey BLOB NOT NULL,

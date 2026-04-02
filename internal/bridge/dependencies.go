@@ -8,12 +8,12 @@ import (
 	"strings"
 	"sync"
 
-	comatproto "github.com/bluesky-social/indigo/api/atproto"
-	"github.com/bluesky-social/indigo/atproto/syntax"
-	lexutil "github.com/bluesky-social/indigo/lex/util"
-	"github.com/bluesky-social/indigo/xrpc"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil"
+	comatproto "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto"
+	lexutil "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/lexutil"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/syntax"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/xrpc"
 )
 
 const (

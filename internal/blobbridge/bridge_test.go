@@ -12,11 +12,10 @@ import (
 	"testing"
 	"time"
 
-	appbsky "github.com/bluesky-social/indigo/api/bsky"
-	lexutil "github.com/bluesky-social/indigo/lex/util"
-
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/mapper"
+	appbsky "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/appbsky"
+	lexutil "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/lexutil"
 )
 
 type fakeLexClient struct {
@@ -316,7 +315,7 @@ func TestPostBlobCandidatesWithVideo(t *testing.T) {
 		Embed: &appbsky.FeedPost_Embed{
 			EmbedVideo: &appbsky.EmbedVideo{
 				Alt:   &alt,
-				Video: &lexutil.LexBlob{MimeType: "video/mp4", Size: 1000},
+				Video: &appbsky.LexBlob{MimeType: "video/mp4", Size: 1000},
 			},
 		},
 	}
@@ -333,7 +332,7 @@ func TestPostBlobCandidatesWithRecordWithMedia(t *testing.T) {
 				Media: &appbsky.EmbedRecordWithMedia_Media{
 					EmbedImages: &appbsky.EmbedImages{
 						Images: []*appbsky.EmbedImages_Image{
-							{Image: &lexutil.LexBlob{MimeType: "image/png"}},
+							{Image: &appbsky.LexBlob{MimeType: "image/png"}},
 						},
 					},
 				},
@@ -368,7 +367,7 @@ func TestImageCandidatesWithAspectRatio(t *testing.T) {
 		{
 			Alt:         alt,
 			AspectRatio: &appbsky.EmbedDefs_AspectRatio{Width: 1920, Height: 1080},
-			Image:       &lexutil.LexBlob{MimeType: "image/png", Size: 1000},
+			Image:       &appbsky.LexBlob{MimeType: "image/png", Size: 1000},
 		},
 	})
 	if len(candidates) != 1 {
@@ -562,7 +561,7 @@ func TestPostBlobCandidatesRecordWithMediaVideo(t *testing.T) {
 				Media: &appbsky.EmbedRecordWithMedia_Media{
 					EmbedVideo: &appbsky.EmbedVideo{
 						Alt:   &alt,
-						Video: &lexutil.LexBlob{MimeType: "video/mp4", Size: 5000},
+						Video: &appbsky.LexBlob{MimeType: "video/mp4", Size: 5000},
 					},
 				},
 			},
@@ -616,7 +615,7 @@ func TestVideoCandidateNilVideo(t *testing.T) {
 func TestVideoCandidateNilAlt(t *testing.T) {
 	cs := videoCandidates(&appbsky.EmbedVideo{
 		Alt:   nil,
-		Video: &lexutil.LexBlob{MimeType: "video/mp4", Size: 100},
+		Video: &appbsky.LexBlob{MimeType: "video/mp4", Size: 100},
 	}, 2)
 	if len(cs) == 0 {
 		t.Fatal("expected at least 1 candidate")
@@ -631,7 +630,7 @@ func TestVideoCandidateWithAspectRatio(t *testing.T) {
 	alt := "clip"
 	cs := videoCandidates(&appbsky.EmbedVideo{
 		Alt:         &alt,
-		Video:       &lexutil.LexBlob{MimeType: "video/mp4", Size: 999},
+		Video:       &appbsky.LexBlob{MimeType: "video/mp4", Size: 999},
 		AspectRatio: &appbsky.EmbedDefs_AspectRatio{Width: 1280, Height: 720},
 	}, 0)
 	if len(cs) == 0 {

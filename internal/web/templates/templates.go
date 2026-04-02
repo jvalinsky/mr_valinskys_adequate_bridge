@@ -758,7 +758,9 @@ const dashboardContent = `
         <dl class="details-grid" style="margin-top:10px">
             <div class="detail-card"><dt>Bridge Status</dt><dd>{{.BridgeStatus}}</dd></div>
             <div class="detail-card"><dt>Last Heartbeat</dt><dd>{{if .LastHeartbeat}}{{.LastHeartbeat}}{{else}}(not set){{end}}</dd></div>
-            <div class="detail-card"><dt>Firehose Cursor</dt><dd>{{if .FirehoseCursor}}{{.FirehoseCursor}}{{else}}(not set){{end}}</dd></div>
+            <div class="detail-card"><dt>Bridge Replay Cursor</dt><dd>{{if .BridgeReplayCursor}}{{.BridgeReplayCursor}}{{else}}(not set){{end}}</dd></div>
+            <div class="detail-card"><dt>Relay Source Cursor</dt><dd>{{if .RelaySourceCursor}}{{.RelaySourceCursor}}{{else}}(not set){{end}}</dd></div>
+            <div class="detail-card"><dt>Event-Log Head</dt><dd>{{if .EventLogHeadCursor}}{{.EventLogHeadCursor}}{{else}}(not set){{end}}</dd></div>
         </dl>
     </article>
 
@@ -1305,7 +1307,7 @@ const stateContent = `
         {{template "stateRows" .RuntimeState}}
     </article>
     <article class="section">
-        <div class="section-pad"><h2 class="page-title" style="font-size:1.2rem">Firehose Keys</h2></div>
+        <div class="section-pad"><h2 class="page-title" style="font-size:1.2rem">ATProto / Firehose Keys</h2></div>
         {{template "stateRows" .FirehoseState}}
     </article>
 </section>
@@ -1391,7 +1393,9 @@ type DashboardData struct {
 	Metrics                  []DashboardMetric
 	BridgeStatus             string
 	LastHeartbeat            string
-	FirehoseCursor           string
+	BridgeReplayCursor       string
+	RelaySourceCursor        string
+	EventLogHeadCursor       string
 	RuntimeHealth            string
 	RuntimeHealthDescription string
 	TopDeferredReasons       []DeferredReasonView

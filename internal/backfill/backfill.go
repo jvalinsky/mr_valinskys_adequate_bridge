@@ -11,11 +11,11 @@ import (
 	"strings"
 	"time"
 
-	lexutil "github.com/bluesky-social/indigo/lex/util"
-	indigorepo "github.com/bluesky-social/indigo/repo"
 	"github.com/ipfs/go-cid"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/mapper"
+	lexutil "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/lexutil"
+	atrepo "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/repo"
 )
 
 // RecordProcessor handles a decoded record during backfill traversal.
@@ -139,7 +139,7 @@ func RunForDID(ctx context.Context, did string, since SinceFilter, processor Rec
 }
 
 func processRepoCAR(ctx context.Context, carBytes []byte, did string, since SinceFilter, processor RecordProcessor, logger *log.Logger) (Stats, error) {
-	rr, err := indigorepo.ReadRepoFromCar(ctx, bytes.NewReader(carBytes))
+	rr, err := atrepo.ReadRepoFromCar(ctx, bytes.NewReader(carBytes))
 	if err != nil {
 		return Stats{}, fmt.Errorf("read repo car did=%s: %w", did, err)
 	}

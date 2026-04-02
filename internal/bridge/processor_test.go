@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bluesky-social/indigo/api/atproto"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/mapper"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto"
 )
 
 type mockPublisher struct {

@@ -15,17 +15,24 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bluesky-social/indigo/api/atproto"
-	"github.com/bluesky-social/indigo/events"
-	"github.com/bluesky-social/indigo/events/schedulers/sequential"
-	"github.com/bluesky-social/indigo/repo"
 	"github.com/gorilla/websocket"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto"
+	atfirehose "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/firehose"
+	atrepo "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/repo"
 )
 
 // EventHandler handles repository commit events emitted by the firehose stream.
 type EventHandler interface {
 	HandleCommit(ctx context.Context, evt *atproto.SyncSubscribeRepos_Commit) error
+}
+
+type IdentityHandler interface {
+	HandleIdentity(ctx context.Context, evt *atproto.SyncSubscribeRepos_Identity) error
+}
+
+type AccountHandler interface {
+	HandleAccount(ctx context.Context, evt *atproto.SyncSubscribeRepos_Account) error
 }
 
 // Client connects to subscribeRepos and forwards commits to an EventHandler.
@@ -102,14 +109,101 @@ func (c *Client) Run(ctx context.Context) error {
 		c.ConnectedCallback()
 	}
 
-	callbacks := &events.RepoStreamCallbacks{
-		RepoCommit: c.handleRepoCommit,
-		RepoInfo:   c.handleRepoInfo,
-		Error:      c.handleError,
+	return c.handleStream(ctx, con)
+}
+
+func (c *Client) handleStream(ctx context.Context, con *websocket.Conn) error {
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+
+		failures := 0
+		for {
+			select {
+			case <-ctx.Done():
+				_ = con.Close()
+				return
+			case <-ticker.C:
+				if err := con.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(10*time.Second)); err != nil {
+					c.logger.Printf("event=firehose_ping_failed err=%v", err)
+					failures++
+					if failures >= 4 {
+						_ = con.Close()
+						return
+					}
+					continue
+				}
+				failures = 0
+			}
+		}
+	}()
+
+	con.SetPingHandler(func(message string) error {
+		err := con.WriteControl(websocket.PongMessage, []byte(message), time.Now().Add(60*time.Second))
+		if err == websocket.ErrCloseSent {
+			return nil
+		}
+		return err
+	})
+	con.SetPongHandler(func(_ string) error {
+		return con.SetReadDeadline(time.Now().Add(time.Minute))
+	})
+	if err := con.SetReadDeadline(time.Now().Add(time.Minute)); err != nil {
+		return fmt.Errorf("set initial read deadline: %w", err)
 	}
 
-	sched := sequential.NewScheduler("firehose", callbacks.EventHandler)
-	return events.HandleRepoStream(ctx, con, sched, nil)
+	lastSeq := int64(-1)
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		messageType, reader, err := con.NextReader()
+		if err != nil {
+			return fmt.Errorf("read firehose frame: %w", err)
+		}
+		if messageType != websocket.BinaryMessage {
+			return fmt.Errorf("expected binary message from subscription endpoint")
+		}
+
+		event, err := atfirehose.ReadEvent(reader)
+		if err != nil {
+			return err
+		}
+
+		switch {
+		case event.RepoCommit != nil:
+			if event.RepoCommit.Seq < lastSeq {
+				c.logger.Printf("event=firehose_out_of_order seq=%d prev=%d repo=%s", event.RepoCommit.Seq, lastSeq, event.RepoCommit.Repo)
+			}
+			lastSeq = event.RepoCommit.Seq
+			if err := c.handleRepoCommit(event.RepoCommit); err != nil {
+				return err
+			}
+		case event.RepoInfo != nil:
+			if err := c.handleRepoInfo(event.RepoInfo); err != nil {
+				return err
+			}
+		case event.RepoIdentity != nil:
+			if handler, ok := c.handler.(IdentityHandler); ok {
+				if err := handler.HandleIdentity(context.Background(), event.RepoIdentity); err != nil {
+					return err
+				}
+			}
+		case event.RepoAccount != nil:
+			if handler, ok := c.handler.(AccountHandler); ok {
+				if err := handler.HandleAccount(context.Background(), event.RepoAccount); err != nil {
+					return err
+				}
+			}
+		case event.Error != nil:
+			if err := c.handleError(event.Error); err != nil {
+				return err
+			}
+		}
+	}
 }
 
 func (c *Client) handleRepoCommit(evt *atproto.SyncSubscribeRepos_Commit) error {
@@ -134,8 +228,15 @@ func (c *Client) handleRepoInfo(info *atproto.SyncSubscribeRepos_Info) error {
 	return nil
 }
 
-func (c *Client) handleError(errEvt *events.ErrorFrame) error {
-	c.logger.Printf("Error from firehose: %v", errEvt.Message)
+func (c *Client) handleError(errEvt *atfirehose.ErrorFrame) error {
+	if errEvt == nil {
+		return nil
+	}
+	if errEvt.Message != nil {
+		c.logger.Printf("Error from firehose: %s", *errEvt.Message)
+		return nil
+	}
+	c.logger.Printf("Error from firehose: %s", errEvt.Error)
 	return nil
 }
 
@@ -242,12 +343,12 @@ func (c *Client) streamURL() (string, error) {
 }
 
 // ParseCommit parses the CAR payload embedded in a commit event.
-func ParseCommit(ctx context.Context, evt *atproto.SyncSubscribeRepos_Commit) (*repo.Repo, error) {
+func ParseCommit(ctx context.Context, evt *atproto.SyncSubscribeRepos_Commit) (*atrepo.Repo, error) {
 	if evt.Blocks == nil {
 		return nil, fmt.Errorf("no blocks in commit")
 	}
 
-	rr, err := repo.ReadRepoFromCar(ctx, bytes.NewReader(evt.Blocks))
+	rr, err := atrepo.ReadRepoFromCar(ctx, bytes.NewReader(evt.Blocks))
 	if err != nil {
 		return nil, fmt.Errorf("reading repo from car: %w", err)
 	}
@@ -256,7 +357,7 @@ func ParseCommit(ctx context.Context, evt *atproto.SyncSubscribeRepos_Commit) (*
 }
 
 // ProcessOps validates that create/update operations can be decoded from the CAR.
-func ProcessOps(ctx context.Context, rr *repo.Repo, evt *atproto.SyncSubscribeRepos_Commit) error {
+func ProcessOps(ctx context.Context, rr *atrepo.Repo, evt *atproto.SyncSubscribeRepos_Commit) error {
 	for _, op := range evt.Ops {
 		if op.Action != "create" && op.Action != "update" {
 			continue

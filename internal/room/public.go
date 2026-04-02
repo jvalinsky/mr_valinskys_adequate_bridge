@@ -10,12 +10,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bluesky-social/indigo/atproto/syntax"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/presentation"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomdb"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/web/security"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/syntax"
 )
 
 type bridgeRoomHandler struct {

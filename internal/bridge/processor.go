@@ -10,13 +10,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bluesky-social/indigo/api/atproto"
-	lexutil "github.com/bluesky-social/indigo/lex/util"
-	indigorepo "github.com/bluesky-social/indigo/repo"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/firehose"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/mapper"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto"
+	lexutil "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/lexutil"
+	atrepo "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/repo"
 )
 
 var supportedCollections = map[string]struct{}{
@@ -151,7 +151,7 @@ func (p *Processor) HandleCommit(ctx context.Context, evt *atproto.SyncSubscribe
 		return nil
 	}
 
-	var rr *indigorepo.Repo
+	var rr *atrepo.Repo
 
 	processed := 0
 	for _, op := range evt.Ops {
@@ -195,7 +195,7 @@ func (p *Processor) HandleCommit(ctx context.Context, evt *atproto.SyncSubscribe
 	return nil
 }
 
-func (p *Processor) processOp(ctx context.Context, rr *indigorepo.Repo, atDID, path, atCID string, seq int64) error {
+func (p *Processor) processOp(ctx context.Context, rr *atrepo.Repo, atDID, path, atCID string, seq int64) error {
 	collection, ok := collectionFromPath(path)
 	if !ok || !isSupportedCollection(collection) {
 		return nil
@@ -229,15 +229,35 @@ func (p *Processor) processDeleteOp(ctx context.Context, atDID, path string, seq
 	}
 
 	atURI := fmt.Sprintf("at://%s/%s", atDID, path)
+	return p.ProcessDeletedRecord(ctx, atDID, atURI, "", collection, nil, seq)
+}
+
+// HandleRecordEvent processes a normalized atindex record event.
+func (p *Processor) HandleRecordEvent(ctx context.Context, event db.ATProtoRecordEvent) error {
+	seq := int64(0)
+	if event.Seq != nil {
+		seq = *event.Seq
+	}
+	if event.Action == "delete" {
+		return p.ProcessDeletedRecord(ctx, event.DID, event.ATURI, event.ATCID, event.Collection, []byte(event.RecordJSON), seq)
+	}
+	return p.ProcessRecord(ctx, event.DID, event.ATURI, event.ATCID, event.Collection, []byte(event.RecordJSON))
+}
+
+// ProcessDeletedRecord translates a normalized delete event into a bridge message update.
+func (p *Processor) ProcessDeletedRecord(ctx context.Context, atDID, atURI, atCID, collection string, rawRecordJSON []byte, seq int64) error {
 	existing, err := p.db.GetMessage(ctx, atURI)
 	if err != nil {
 		return fmt.Errorf("load existing message for delete %s: %w", atURI, err)
 	}
 
 	now := time.Now().UTC()
-	atCID := fmt.Sprintf("deleted-seq-%d", seq)
-	if existing != nil && strings.TrimSpace(existing.ATCID) != "" {
-		atCID = existing.ATCID
+	if strings.TrimSpace(atCID) == "" {
+		if existing != nil && strings.TrimSpace(existing.ATCID) != "" {
+			atCID = existing.ATCID
+		} else {
+			atCID = fmt.Sprintf("deleted-seq-%d", seq)
+		}
 	}
 
 	rawATJSON := fmt.Sprintf(`{"op":"delete","at_uri":%q,"seq":%d}`, atURI, seq)
@@ -261,6 +281,10 @@ func (p *Processor) processDeleteOp(ctx context.Context, atDID, path string, seq
 		DeletedAt:     &now,
 		DeletedSeq:    &seq,
 		DeletedReason: fmt.Sprintf("atproto_delete seq=%d", seq),
+	}
+
+	if len(rawRecordJSON) > 0 {
+		rawATJSON = string(rawRecordJSON)
 	}
 
 	if collection == mapper.RecordTypeProfile || collection == mapper.RecordTypePost || strings.TrimSpace(rawATJSON) == "" || strings.Contains(rawATJSON, `"op":"delete"`) {

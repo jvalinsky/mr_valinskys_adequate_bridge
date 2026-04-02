@@ -19,13 +19,13 @@ import (
 	"strings"
 	"time"
 
-	lexutil "github.com/bluesky-social/indigo/lex/util"
 	"github.com/go-chi/chi/v5"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/presentation"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/web/templates"
+	appbsky "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/appbsky"
 )
 
 // Database defines the persistence surface required by UI handlers.
@@ -53,6 +53,8 @@ type Database interface {
 	ResetMessageForRetry(ctx context.Context, atURI string) error
 	GetBlobBySSBRef(ctx context.Context, ssbBlobRef string) (*db.Blob, error)
 	GetLatestDeferredReason(ctx context.Context) (string, bool, error)
+	GetLatestATProtoEventCursor(ctx context.Context) (int64, bool, error)
+	GetATProtoSource(ctx context.Context, sourceKey string) (*db.ATProtoSource, error)
 	GetBridgedAccount(ctx context.Context, atDID string) (*db.BridgedAccount, error)
 	ListPublishedMessagesGlobal(ctx context.Context, limit int) ([]db.Message, error)
 }
@@ -69,6 +71,22 @@ type SSBStatusProvider interface {
 	ConnectPeer(ctx context.Context, addr string, pubKey []byte) error
 }
 
+// ATProtoDebugStore provides direct read access to indexer state persisted in SQLite.
+type ATProtoDebugStore interface {
+	GetATProtoSource(ctx context.Context, sourceKey string) (*db.ATProtoSource, error)
+	ListTrackedATProtoRepos(ctx context.Context, state string) ([]db.ATProtoRepo, error)
+	ListATProtoEventsAfter(ctx context.Context, cursor int64, limit int) ([]db.ATProtoRecordEvent, error)
+}
+
+// ATProtoService exposes the in-process indexer API used by debug routes.
+type ATProtoService interface {
+	TrackRepo(ctx context.Context, did, reason string) error
+	UntrackRepo(ctx context.Context, did string) error
+	GetRepoInfo(ctx context.Context, did string) (*db.ATProtoRepo, error)
+	GetRecord(ctx context.Context, atURI string) (*db.ATProtoRecord, error)
+	ListRecords(ctx context.Context, did, collection, cursor string, limit int) ([]db.ATProtoRecord, error)
+}
+
 type PeerStatus struct {
 	Addr       string
 	Feed       string
@@ -79,11 +97,13 @@ type PeerStatus struct {
 
 // UIHandler serves admin pages backed by bridge database state.
 type UIHandler struct {
-	db        Database
-	logger    *log.Logger
-	atpClient PDSClientInterface
-	blobStore BlobStore
-	ssbStatus SSBStatusProvider
+	db           Database
+	logger       *log.Logger
+	atpClient    PDSClientInterface
+	blobStore    BlobStore
+	ssbStatus    SSBStatusProvider
+	atprotoStore ATProtoDebugStore
+	atprotoSvc   ATProtoService
 }
 
 // NewUIHandler creates a UIHandler bound to database.
@@ -95,6 +115,13 @@ func NewUIHandler(database Database, logger *log.Logger, atpClient PDSClientInte
 		blobStore: blobStore,
 		ssbStatus: ssbStatus,
 	}
+}
+
+// WithATProto attaches ATProto debug and service surfaces to the UI handler.
+func (h *UIHandler) WithATProto(store ATProtoDebugStore, service ATProtoService) *UIHandler {
+	h.atprotoStore = store
+	h.atprotoSvc = service
+	return h
 }
 
 // Mount registers admin UI routes on r.
@@ -115,6 +142,17 @@ func (h *UIHandler) Mount(r chi.Router) {
 	r.Get("/connections", h.handleConnections)
 	r.Post("/connections/add", h.handleConnectionAdd)
 	r.Post("/connections/connect", h.handleConnectionConnect)
+	r.Route("/api/atproto", func(r chi.Router) {
+		r.Get("/health", h.handleATProtoHealth)
+		r.Get("/source", h.handleATProtoSource)
+		r.Get("/repo", h.handleATProtoRepo)
+		r.Get("/repos", h.handleATProtoRepos)
+		r.Post("/repos/track", h.handleATProtoTrackRepo)
+		r.Post("/repos/untrack", h.handleATProtoUntrackRepo)
+		r.Get("/record", h.handleATProtoRecord)
+		r.Get("/records", h.handleATProtoRecords)
+		r.Get("/events", h.handleATProtoEvents)
+	})
 }
 
 func (h *UIHandler) handleConnections(w http.ResponseWriter, r *http.Request) {
@@ -313,10 +351,24 @@ func (h *UIHandler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cursorValue, _, err := h.db.GetBridgeState(r.Context(), "firehose_seq")
+	replayCursor, err := h.bridgeReplayCursor(r.Context())
 	if err != nil {
 		h.writeInternalError(w, "dashboard", "Failed to get cursor state", err)
 		return
+	}
+	eventLogHeadCursor, err := h.eventLogHeadCursor(r.Context())
+	if err != nil {
+		h.writeInternalError(w, "dashboard", "Failed to get event-log cursor state", err)
+		return
+	}
+	relaySourceCursor := ""
+	source, err := h.db.GetATProtoSource(r.Context(), defaultATProtoSourceKey)
+	if err != nil {
+		h.writeInternalError(w, "dashboard", "Failed to get relay source cursor", err)
+		return
+	}
+	if source != nil {
+		relaySourceCursor = strconv.FormatInt(source.LastSeq, 10)
 	}
 
 	bridgeStatus, ok, err := h.db.GetBridgeState(r.Context(), "bridge_runtime_status")
@@ -395,7 +447,9 @@ func (h *UIHandler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		Metrics:                  metrics,
 		BridgeStatus:             bridgeStatus,
 		LastHeartbeat:            lastHeartbeat,
-		FirehoseCursor:           cursorValue,
+		BridgeReplayCursor:       replayCursor,
+		RelaySourceCursor:        relaySourceCursor,
+		EventLogHeadCursor:       eventLogHeadCursor,
 		RuntimeHealth:            healthLabel,
 		RuntimeHealthDescription: healthDesc,
 		TopDeferredReasons:       topReasons,
@@ -796,7 +850,7 @@ func (h *UIHandler) handleState(w http.ResponseWriter, r *http.Request) {
 			if s.Key == "bridge_runtime_last_heartbeat_at" {
 				heartbeatValue = s.Value
 			}
-		case strings.Contains(s.Key, "firehose"):
+		case strings.Contains(s.Key, "firehose") || strings.HasPrefix(s.Key, "atproto_"):
 			firehoseRows = append(firehoseRows, row)
 		default:
 			otherRows = append(otherRows, row)
@@ -824,11 +878,11 @@ func (h *UIHandler) handleState(w http.ResponseWriter, r *http.Request) {
 	heartbeatStale, heartbeatAge := heartbeatFreshness(heartbeatValue)
 	statusTone := "success"
 	statusTitle := "State health: runtime heartbeat fresh"
-	statusBody := "Runtime and firehose keys are grouped for faster incident inspection."
+	statusBody := "Runtime and ATProto/firehose keys are grouped for faster incident inspection."
 	if heartbeatStale {
 		statusTone = "warning"
 		statusTitle = "State health: heartbeat stale"
-		statusBody = "Runtime heartbeat appears stale; verify bridge runtime and firehose connectivity."
+		statusBody = "Runtime heartbeat appears stale; verify bridge runtime and ATProto/firehose connectivity."
 	}
 
 	w.Header().Set("Content-Type", "text/html")
@@ -901,11 +955,6 @@ func (h *UIHandler) handlePost(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *UIHandler) handlePostAction(w http.ResponseWriter, r *http.Request) {
-	if h.atpClient == nil {
-		http.Error(w, "ATProto posting is not configured on this bridge instance; please restart with --pds-host and --pds-password", http.StatusServiceUnavailable)
-		return
-	}
-
 	if err := r.ParseMultipartForm(10 << 20); err != nil { // 10MB limit
 		http.Error(w, "Unable to parse form", http.StatusBadRequest)
 		return
@@ -934,7 +983,12 @@ func (h *UIHandler) handlePostAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var imageBlob *lexutil.LexBlob
+	if h.atpClient == nil {
+		http.Error(w, "ATProto posting is not configured on this bridge instance; please restart with --pds-host and --pds-password", http.StatusServiceUnavailable)
+		return
+	}
+
+	var imageBlob *appbsky.LexBlob
 
 	if len(r.MultipartForm.File["image"]) > 0 {
 		fh := r.MultipartForm.File["image"][0]
