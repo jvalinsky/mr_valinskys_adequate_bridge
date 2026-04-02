@@ -2374,6 +2374,49 @@ func TestProcessDeleteOpLikeWithExistingRawJSON(t *testing.T) {
 	}
 }
 
+func TestProcessDeletedRecordPrefersDeleteEventRawPayload(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	processor := NewProcessor(database, log.New(io.Discard, "", 0))
+
+	atURI := "at://did:plc:alice/app.bsky.actor.profile/self"
+	if err := database.AddMessage(ctx, db.Message{
+		ATURI:        atURI,
+		ATCID:        "bafy-profile-old",
+		ATDID:        "did:plc:alice",
+		Type:         mapper.RecordTypeProfile,
+		MessageState: db.MessageStatePublished,
+		RawATJson:    `{"displayName":"before"}`,
+		RawSSBJson:   `{"type":"about","name":"before"}`,
+	}); err != nil {
+		t.Fatalf("seed existing profile row: %v", err)
+	}
+
+	deletePayload := `{"displayName":"from-delete-event"}`
+	if err := processor.ProcessDeletedRecord(ctx, "did:plc:alice", atURI, "", mapper.RecordTypeProfile, []byte(deletePayload), 99); err != nil {
+		t.Fatalf("process deleted profile: %v", err)
+	}
+
+	stored, err := database.GetMessage(ctx, atURI)
+	if err != nil {
+		t.Fatalf("get message: %v", err)
+	}
+	if stored == nil {
+		t.Fatal("expected stored deleted profile row")
+	}
+	if stored.RawATJson != deletePayload {
+		t.Fatalf("expected delete event payload to persist, got %s", stored.RawATJson)
+	}
+	if stored.MessageState != db.MessageStateDeleted {
+		t.Fatalf("expected deleted state, got %q", stored.MessageState)
+	}
+}
+
 func TestProcessDeleteOpPublishFailure(t *testing.T) {
 	database, err := db.Open(":memory:")
 	if err != nil {

@@ -268,6 +268,9 @@ func (p *Processor) ProcessDeletedRecord(ctx context.Context, atDID, atURI, atCI
 		}
 		rawSSBJSON = existing.RawSSBJson
 	}
+	if len(rawRecordJSON) > 0 {
+		rawATJSON = string(rawRecordJSON)
+	}
 
 	msg := db.Message{
 		ATURI:         atURI,
@@ -281,10 +284,6 @@ func (p *Processor) ProcessDeletedRecord(ctx context.Context, atDID, atURI, atCI
 		DeletedAt:     &now,
 		DeletedSeq:    &seq,
 		DeletedReason: fmt.Sprintf("atproto_delete seq=%d", seq),
-	}
-
-	if len(rawRecordJSON) > 0 {
-		rawATJSON = string(rawRecordJSON)
 	}
 
 	if collection == mapper.RecordTypeProfile || collection == mapper.RecordTypePost || strings.TrimSpace(rawATJSON) == "" || strings.Contains(rawATJSON, `"op":"delete"`) {
@@ -307,26 +306,19 @@ func (p *Processor) ProcessDeletedRecord(ctx context.Context, atDID, atURI, atCI
 
 	unresolved := mapper.UnresolvedATProtoRefs(mapped)
 	if len(unresolved) > 0 {
-		msg.MessageState = db.MessageStateDeferred
-		msg.DeferReason = strings.Join(unresolved, ";")
-		msg.DeferAttempts = 1
-		msg.LastDeferAttemptAt = &now
+		p.markDeferred(&msg, strings.Join(unresolved, ";"), now)
 	} else {
 		msg.MessageState = db.MessageStatePending
 	}
 	if len(unresolved) == 0 && p.publisher != nil {
-		msg.PublishAttempts = 1
-		msg.LastPublishAttemptAt = &now
+		p.markPublishAttempt(&msg, now)
 		ssbMsgRef, publishErr := p.publisher.Publish(ctx, atDID, mapped)
 		if publishErr != nil {
-			msg.MessageState = db.MessageStateFailed
-			msg.PublishError = publishErr.Error()
+			p.markPublishFailed(&msg, publishErr)
 			p.logger.Printf("event=delete_publish_failed did=%s at_uri=%s seq=%d err=%v", atDID, atURI, seq, publishErr)
 		} else {
 			publishedAt := time.Now().UTC()
-			msg.MessageState = db.MessageStatePublished
-			msg.SSBMsgRef = ssbMsgRef
-			msg.PublishedAt = &publishedAt
+			p.markPublished(&msg, ssbMsgRef, publishedAt)
 			p.logger.Printf("event=deleted did=%s at_uri=%s seq=%d ssb_msg_ref=%s", atDID, atURI, seq, ssbMsgRef)
 		}
 	}
@@ -347,13 +339,7 @@ func (p *Processor) ProcessRecord(ctx context.Context, atDID, atURI, atCID, coll
 		return fmt.Errorf("map record: %w", err)
 	}
 
-	var blobErr error
-	if p.blobBridge != nil {
-		if err := p.blobBridge.BridgeRecordBlobs(ctx, atDID, collection, mapped, recordJSON); err != nil {
-			blobErr = err
-			p.logger.Printf("event=blob_bridge_error did=%s at_uri=%s record_type=%s err=%v", atDID, atURI, collection, err)
-		}
-	}
+	blobErr := p.tryBlobBridge(ctx, atDID, atURI, collection, mapped, recordJSON)
 
 	rawSSBJSON, err := json.Marshal(mapped)
 	if err != nil {
@@ -374,12 +360,9 @@ func (p *Processor) ProcessRecord(ctx context.Context, atDID, atURI, atCID, coll
 	unresolved := mapper.UnresolvedATProtoRefs(mapped)
 	if len(unresolved) > 0 {
 		now := time.Now().UTC()
-		msg.MessageState = db.MessageStateDeferred
-		msg.DeferReason = strings.Join(unresolved, ";")
-		msg.DeferAttempts = 1
-		msg.LastDeferAttemptAt = &now
+		p.markDeferred(&msg, strings.Join(unresolved, ";"), now)
 		if blobErr != nil {
-			msg.PublishError = fmt.Sprintf("blob_fallback=%v", blobErr)
+			msg.PublishError = annotateBlobFallback(msg.PublishError, blobErr)
 		}
 		p.logger.Printf("event=publish_deferred did=%s at_uri=%s record_type=%s unresolved=%q", atDID, atURI, collection, msg.DeferReason)
 	} else if p.publisher != nil {
@@ -390,10 +373,7 @@ func (p *Processor) ProcessRecord(ctx context.Context, atDID, atURI, atCID, coll
 			// Required fields missing (e.g. contact without target, vote without link).
 			// Keep as deferred rather than publishing a malformed message.
 			now := time.Now().UTC()
-			msg.MessageState = db.MessageStateDeferred
-			msg.DeferReason = "missing_required_fields_after_sanitize"
-			msg.DeferAttempts = 1
-			msg.LastDeferAttemptAt = &now
+			p.markDeferred(&msg, "missing_required_fields_after_sanitize", now)
 			p.logger.Printf("event=publish_deferred_incomplete did=%s at_uri=%s record_type=%s", atDID, atURI, collection)
 		} else {
 			rawSSBJSON, marshalErr := json.Marshal(mapped)
@@ -401,29 +381,25 @@ func (p *Processor) ProcessRecord(ctx context.Context, atDID, atURI, atCID, coll
 				msg.RawSSBJson = string(rawSSBJSON)
 			}
 			attemptedAt := time.Now().UTC()
-			msg.PublishAttempts = 1
-			msg.LastPublishAttemptAt = &attemptedAt
+			p.markPublishAttempt(&msg, attemptedAt)
 			ssbMsgRef, publishErr := p.publisher.Publish(ctx, atDID, mapped)
 			if publishErr != nil {
-				msg.MessageState = db.MessageStateFailed
-				msg.PublishError = publishErr.Error()
+				p.markPublishFailed(&msg, publishErr)
 				if blobErr != nil {
-					msg.PublishError = fmt.Sprintf("%s; blob_fallback=%v", msg.PublishError, blobErr)
+					msg.PublishError = annotateBlobFallback(msg.PublishError, blobErr)
 				}
 				p.logger.Printf("event=publish_failed did=%s at_uri=%s record_type=%s err=%v", atDID, atURI, collection, publishErr)
 			} else {
-				msg.MessageState = db.MessageStatePublished
 				now := time.Now().UTC()
-				msg.SSBMsgRef = ssbMsgRef
-				msg.PublishedAt = &now
+				p.markPublished(&msg, ssbMsgRef, now)
 				if blobErr != nil {
-					msg.PublishError = fmt.Sprintf("blob_fallback=%v", blobErr)
+					msg.PublishError = annotateBlobFallback("", blobErr)
 				}
 				p.logger.Printf("event=published did=%s at_uri=%s record_type=%s ssb_msg_ref=%s", atDID, atURI, collection, ssbMsgRef)
 			}
 		}
 	} else if blobErr != nil {
-		msg.PublishError = fmt.Sprintf("blob_fallback=%v", blobErr)
+		msg.PublishError = annotateBlobFallback("", blobErr)
 	}
 
 	if err := p.db.AddMessage(ctx, msg); err != nil {
@@ -578,10 +554,8 @@ func (p *Processor) resolveDeferredMessage(ctx context.Context, msg db.Message) 
 	unresolved := mapper.UnresolvedATProtoRefs(mapped)
 
 	var blobErr error
-	if p.blobBridge != nil && msg.DeletedAt == nil {
-		if err := p.blobBridge.BridgeRecordBlobs(ctx, msg.ATDID, msg.Type, mapped, []byte(msg.RawATJson)); err != nil {
-			blobErr = err
-		}
+	if msg.DeletedAt == nil {
+		blobErr = p.tryBlobBridge(ctx, msg.ATDID, msg.ATURI, msg.Type, mapped, []byte(msg.RawATJson))
 	}
 
 	rawSSBJSON, err := json.Marshal(mapped)
@@ -609,9 +583,9 @@ func (p *Processor) resolveDeferredMessage(ctx context.Context, msg db.Message) 
 	}
 
 	if len(unresolved) > 0 {
-		update.DeferReason = strings.Join(unresolved, ";")
+		p.markDeferred(&update, strings.Join(unresolved, ";"), now)
 		if blobErr != nil {
-			update.PublishError = fmt.Sprintf("blob_fallback=%v", blobErr)
+			update.PublishError = annotateBlobFallback(update.PublishError, blobErr)
 		}
 		if err := p.db.AddMessage(ctx, update); err != nil {
 			return db.MessageStateDeferred, fmt.Errorf("persist deferred unresolved: %w", err)
@@ -622,7 +596,7 @@ func (p *Processor) resolveDeferredMessage(ctx context.Context, msg db.Message) 
 	if p.publisher == nil {
 		update.MessageState = db.MessageStatePending
 		if blobErr != nil {
-			update.PublishError = fmt.Sprintf("blob_fallback=%v", blobErr)
+			update.PublishError = annotateBlobFallback(update.PublishError, blobErr)
 		}
 		if err := p.db.AddMessage(ctx, update); err != nil {
 			return db.MessageStatePending, fmt.Errorf("persist deferred pending: %w", err)
@@ -633,7 +607,7 @@ func (p *Processor) resolveDeferredMessage(ctx context.Context, msg db.Message) 
 	// Strip internal bridge fields and validate before publishing.
 	mapper.SanitizeForPublish(mapped)
 	if !mapper.ReadyForPublish(mapped) {
-		update.DeferReason = "missing_required_fields_after_sanitize"
+		p.markDeferred(&update, "missing_required_fields_after_sanitize", now)
 		if err := p.db.AddMessage(ctx, update); err != nil {
 			return db.MessageStateDeferred, fmt.Errorf("persist deferred incomplete: %w", err)
 		}
@@ -645,16 +619,14 @@ func (p *Processor) resolveDeferredMessage(ctx context.Context, msg db.Message) 
 		update.RawSSBJson = string(rawSSBJSON)
 	}
 
-	update.PublishAttempts = 1
-	update.LastPublishAttemptAt = &now
+	p.markPublishAttempt(&update, now)
 	update.DeferReason = ""
 
 	ssbMsgRef, publishErr := p.publisher.Publish(ctx, msg.ATDID, mapped)
 	if publishErr != nil {
-		update.MessageState = db.MessageStateFailed
-		update.PublishError = publishErr.Error()
+		p.markPublishFailed(&update, publishErr)
 		if blobErr != nil {
-			update.PublishError = fmt.Sprintf("%s; blob_fallback=%v", update.PublishError, blobErr)
+			update.PublishError = annotateBlobFallback(update.PublishError, blobErr)
 		}
 		if err := p.db.AddMessage(ctx, update); err != nil {
 			return db.MessageStateFailed, fmt.Errorf("persist deferred publish failure: %w", err)
@@ -663,11 +635,9 @@ func (p *Processor) resolveDeferredMessage(ctx context.Context, msg db.Message) 
 	}
 
 	publishedAt := time.Now().UTC()
-	update.MessageState = db.MessageStatePublished
-	update.SSBMsgRef = ssbMsgRef
-	update.PublishedAt = &publishedAt
+	p.markPublished(&update, ssbMsgRef, publishedAt)
 	if blobErr != nil {
-		update.PublishError = fmt.Sprintf("blob_fallback=%v", blobErr)
+		update.PublishError = annotateBlobFallback("", blobErr)
 	}
 	if err := p.db.AddMessage(ctx, update); err != nil {
 		return db.MessageStatePublished, fmt.Errorf("persist deferred publish success: %w", err)
@@ -721,23 +691,22 @@ func (p *Processor) RetryFailedMessages(ctx context.Context, cfg RetryConfig) (R
 func (p *Processor) retryMessage(ctx context.Context, msg db.Message) error {
 	now := time.Now().UTC()
 	update := db.Message{
-		ATURI:                msg.ATURI,
-		ATCID:                msg.ATCID,
-		SSBMsgRef:            "",
-		ATDID:                msg.ATDID,
-		Type:                 msg.Type,
-		MessageState:         db.MessageStateFailed,
-		RawATJson:            msg.RawATJson,
-		RawSSBJson:           msg.RawSSBJson,
-		PublishAttempts:      1,
-		LastPublishAttemptAt: &now,
-		DeferReason:          "",
-		DeferAttempts:        0,
-		LastDeferAttemptAt:   nil,
-		DeletedAt:            msg.DeletedAt,
-		DeletedSeq:           msg.DeletedSeq,
-		DeletedReason:        msg.DeletedReason,
+		ATURI:              msg.ATURI,
+		ATCID:              msg.ATCID,
+		SSBMsgRef:          "",
+		ATDID:              msg.ATDID,
+		Type:               msg.Type,
+		MessageState:       db.MessageStateFailed,
+		RawATJson:          msg.RawATJson,
+		RawSSBJson:         msg.RawSSBJson,
+		DeferReason:        "",
+		DeferAttempts:      0,
+		LastDeferAttemptAt: nil,
+		DeletedAt:          msg.DeletedAt,
+		DeletedSeq:         msg.DeletedSeq,
+		DeletedReason:      msg.DeletedReason,
 	}
+	p.markPublishAttempt(&update, now)
 
 	var mapped map[string]interface{}
 	if err := json.Unmarshal([]byte(msg.RawSSBJson), &mapped); err != nil {
@@ -750,7 +719,7 @@ func (p *Processor) retryMessage(ctx context.Context, msg db.Message) error {
 
 	ssbMsgRef, err := p.publisher.Publish(ctx, msg.ATDID, mapped)
 	if err != nil {
-		update.PublishError = err.Error()
+		p.markPublishFailed(&update, err)
 		if persistErr := p.db.AddMessage(ctx, update); persistErr != nil {
 			return fmt.Errorf("persist retry failure: %w", persistErr)
 		}
@@ -758,9 +727,7 @@ func (p *Processor) retryMessage(ctx context.Context, msg db.Message) error {
 	}
 
 	publishedAt := time.Now().UTC()
-	update.MessageState = db.MessageStatePublished
-	update.SSBMsgRef = ssbMsgRef
-	update.PublishedAt = &publishedAt
+	p.markPublished(&update, ssbMsgRef, publishedAt)
 	update.PublishError = ""
 	if err := p.db.AddMessage(ctx, update); err != nil {
 		return fmt.Errorf("persist retry success: %w", err)
@@ -768,6 +735,53 @@ func (p *Processor) retryMessage(ctx context.Context, msg db.Message) error {
 
 	p.logger.Printf("event=retry_published did=%s at_uri=%s ssb_msg_ref=%s", msg.ATDID, msg.ATURI, ssbMsgRef)
 	return nil
+}
+
+func (p *Processor) tryBlobBridge(ctx context.Context, atDID, atURI, collection string, mapped map[string]interface{}, rawRecordJSON []byte) error {
+	if p.blobBridge == nil {
+		return nil
+	}
+	if err := p.blobBridge.BridgeRecordBlobs(ctx, atDID, collection, mapped, rawRecordJSON); err != nil {
+		p.logger.Printf("event=blob_bridge_error did=%s at_uri=%s record_type=%s err=%v", atDID, atURI, collection, err)
+		return err
+	}
+	return nil
+}
+
+func (p *Processor) markDeferred(msg *db.Message, reason string, attemptedAt time.Time) {
+	msg.MessageState = db.MessageStateDeferred
+	msg.DeferReason = reason
+	msg.DeferAttempts = 1
+	msg.LastDeferAttemptAt = &attemptedAt
+}
+
+func (p *Processor) markPublishAttempt(msg *db.Message, attemptedAt time.Time) {
+	msg.PublishAttempts = 1
+	msg.LastPublishAttemptAt = &attemptedAt
+}
+
+func (p *Processor) markPublishFailed(msg *db.Message, publishErr error) {
+	msg.MessageState = db.MessageStateFailed
+	if publishErr != nil {
+		msg.PublishError = publishErr.Error()
+	}
+}
+
+func (p *Processor) markPublished(msg *db.Message, ssbMsgRef string, publishedAt time.Time) {
+	msg.MessageState = db.MessageStatePublished
+	msg.SSBMsgRef = ssbMsgRef
+	msg.PublishedAt = &publishedAt
+}
+
+func annotateBlobFallback(current string, blobErr error) string {
+	if blobErr == nil {
+		return current
+	}
+	blobMsg := fmt.Sprintf("blob_fallback=%v", blobErr)
+	if strings.TrimSpace(current) == "" {
+		return blobMsg
+	}
+	return fmt.Sprintf("%s; %s", current, blobMsg)
 }
 
 func retryDue(msg db.Message, now time.Time, baseBackoff time.Duration) bool {
