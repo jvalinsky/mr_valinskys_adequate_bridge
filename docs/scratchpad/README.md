@@ -49,6 +49,16 @@ These drafts were incorporated into the main README:
 | [020-readme-architecture.md](020-readme-architecture.md) | Data flow diagram and internal packages table |
 | [021-readme-dev-scripts-infra.md](021-readme-dev-scripts-infra.md) | Development workflow, scripts (smoke/E2E/local/testnet), Docker infra |
 
+## Current Migration Work
+
+| File | Description | DG Nodes | Status |
+|------|-------------|----------|--------|
+| [033-atproto-independence-migration.md](033-atproto-independence-migration.md) | Overall Indigo-exit migration log, Hydrant alignment notes, runtime shape, and final Indigo removal snapshot | 688-699, 724 | Historical |
+| [034-atproto-module-design.md](034-atproto-module-design.md) | Local `pkg/atproto` package boundary, lazy CAR/MST notes, and AT URI parser fixes | 692, 696 | Historical |
+| [035-atindex-state-machine-and-backfill.md](035-atindex-state-machine-and-backfill.md) | `internal/atindex` repo-state model, buffered live commit handling, replay log, and durability fixes | 693, 697, 722, 723 | Historical |
+| [036-bridge-cutover-off-indigo.md](036-bridge-cutover-off-indigo.md) | Bridge/runtime/UI/operator cutover notes, cursor semantics, and backfill consumer restoration | 695, 698, 700, 722, 723 | Historical |
+| [037-indigo-test-fixture-migration.md](037-indigo-test-fixture-migration.md) | Final Indigo test-fixture and module cleanup notes, including vendoring removal and verification | 706-721, 724 | Historical |
+
 ## Understanding Scratchpad Status
 
 - **Historical**: Completed work, implementation details are in source code
