@@ -574,10 +574,6 @@ func TestProcessOpsWithUnknownAction(t *testing.T) {
 	}
 }
 
-func ptrString(s string) *string {
-	return &s
-}
-
 func ptrLexLink(s string) *lexutil.LexLink {
 	link, err := cid.Decode(s)
 	if err != nil {

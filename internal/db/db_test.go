@@ -2204,13 +2204,13 @@ func TestListMessagesSearchFilter(t *testing.T) {
 		t.Fatalf("add: %v", err)
 	}
 
-	messages, err := db.ListMessages(ctx, MessageListQuery{Search: "unique_searchterm", Limit: 10})
+	_, err = db.ListMessages(ctx, MessageListQuery{Search: "unique_searchterm", Limit: 10})
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}
 	// Search is on at_uri, at_did, ssb_msg_ref, publish_error, defer_reason, deleted_reason - not raw JSON.
 	// So searching for the DID should work.
-	messages, err = db.ListMessages(ctx, MessageListQuery{Search: "did:plc:alice", Limit: 10})
+	messages, err := db.ListMessages(ctx, MessageListQuery{Search: "did:plc:alice", Limit: 10})
 	if err != nil {
 		t.Fatalf("ListMessages: %v", err)
 	}

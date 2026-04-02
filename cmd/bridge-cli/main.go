@@ -12,16 +12,14 @@ import (
 )
 
 var (
-	dbPath          string
-	relayURL        string
-	botSeed         string
-	otelEndpoint    string
-	otelProtocol    string
-	otelInsecure    bool
-	otelService     string
-	localLogOutput  string
-	plcURL          string
-	atprotoInsecure bool
+	dbPath         string
+	relayURL       string
+	botSeed        string
+	otelEndpoint   string
+	otelProtocol   string
+	otelInsecure   bool
+	otelService    string
+	localLogOutput string
 )
 
 const (
@@ -192,10 +190,10 @@ func main() {
 						Usage: "enable ATProto firehose subscribeRepos ingestion loop",
 					},
 					&cli.StringFlag{
-						Name:        "plc-url",
-						Value:       "https://plc.directory",
-						EnvVars:     []string{"BRIDGE_PLC_URL"},
-						Usage:       "ATProto PLC directory URL (local/test stacks only)",
+						Name:    "plc-url",
+						Value:   "https://plc.directory",
+						EnvVars: []string{"BRIDGE_PLC_URL"},
+						Usage:   "ATProto PLC directory URL (local/test stacks only)",
 					},
 					&cli.BoolFlag{
 						Name:    "atproto-insecure",
@@ -243,10 +241,10 @@ func main() {
 						Usage: "publish worker count (default 1 keeps deterministic ordering)",
 					},
 					&cli.StringFlag{
-						Name:        "plc-url",
-						Value:       "https://plc.directory",
-						EnvVars:     []string{"BRIDGE_PLC_URL"},
-						Usage:       "ATProto PLC directory URL (local/test stacks only)",
+						Name:    "plc-url",
+						Value:   "https://plc.directory",
+						EnvVars: []string{"BRIDGE_PLC_URL"},
+						Usage:   "ATProto PLC directory URL (local/test stacks only)",
 					},
 					&cli.BoolFlag{
 						Name:    "atproto-insecure",

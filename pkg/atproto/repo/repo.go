@@ -35,7 +35,6 @@ type SignedCommit struct {
 }
 
 type Repo struct {
-	did    string
 	commit SignedCommit
 	bs     *memBlockstore
 	root   *mstNode
@@ -378,7 +377,7 @@ func (r *WriteRepo) generateRkey() string {
 }
 
 func (r *WriteRepo) WriteCAR(w io.Writer) error {
-	commitCID := cid.Cid{}
+	var commitCID cid.Cid
 	roots := make([]cid.Cid, 0, 1)
 	if r.commitCache != nil {
 		data, err := cbornode.DumpObject(*r.commitCache)

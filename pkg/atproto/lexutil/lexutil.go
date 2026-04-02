@@ -33,22 +33,19 @@ func CborTypeExtract(b []byte) (string, error) {
 	}
 
 	nameBuf := make([]byte, 8)
-	for {
-		nameLen, ok, err := cbg.ReadFullStringIntoBuf(cr, nameBuf, 1000000)
-		if err != nil {
-			return "", err
-		}
-		if !ok {
-			break
-		}
-		if string(nameBuf[:nameLen]) == "$type" {
-			typ, err := cbg.ReadString(cr)
-			return typ, err
-		}
-		if _, err := io.ReadAll(cr); err != nil {
-			return "", err
-		}
-		break
+	nameLen, ok, err := cbg.ReadFullStringIntoBuf(cr, nameBuf, 1000000)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", nil
+	}
+	if string(nameBuf[:nameLen]) == "$type" {
+		typ, err := cbg.ReadString(cr)
+		return typ, err
+	}
+	if _, err := io.ReadAll(cr); err != nil {
+		return "", err
 	}
 
 	return "", nil
@@ -56,7 +53,9 @@ func CborTypeExtract(b []byte) (string, error) {
 
 func CborTypeExtractReader(r io.Reader) (string, []byte, error) {
 	buf := new(bytes.Buffer)
-	io.TeeReader(r, buf)
+	if _, err := io.Copy(io.Discard, io.TeeReader(r, buf)); err != nil {
+		return "", nil, err
+	}
 
 	typ, err := CborTypeExtract(buf.Bytes())
 	return typ, buf.Bytes(), err

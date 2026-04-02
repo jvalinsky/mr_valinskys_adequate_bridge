@@ -41,7 +41,7 @@ func TestRPCSink(t *testing.T) {
 			req.Close()
 		},
 	}
-	
+
 	server := NewRPC(ctx, p2, handler, nil)
 	defer server.Terminate()
 
@@ -98,7 +98,7 @@ func TestRPCDuplex(t *testing.T) {
 			sink.Close()
 		},
 	}
-	
+
 	server := NewRPC(ctx, p2, handler, nil)
 	defer server.Terminate()
 

@@ -27,24 +27,24 @@ type ServerCreateSession_Input struct {
 }
 
 type ServerCreateSession_Output struct {
-	AccessJwt       string       `json:"accessJwt"`
-	Active          *bool        `json:"active,omitempty"`
-	Did             string       `json:"did"`
-	DidDoc          *any         `json:"didDoc,omitempty"`
-	Email           *string      `json:"email,omitempty"`
-	EmailAuthFactor *bool        `json:"emailAuthFactor,omitempty"`
-	EmailConfirmed  *bool        `json:"emailConfirmed,omitempty"`
-	Handle          string       `json:"handle"`
-	RefreshJwt      string       `json:"refreshJwt"`
-	Status          *string      `json:"status,omitempty"`
+	AccessJwt       string  `json:"accessJwt"`
+	Active          *bool   `json:"active,omitempty"`
+	Did             string  `json:"did"`
+	DidDoc          *any    `json:"didDoc,omitempty"`
+	Email           *string `json:"email,omitempty"`
+	EmailAuthFactor *bool   `json:"emailAuthFactor,omitempty"`
+	EmailConfirmed  *bool   `json:"emailConfirmed,omitempty"`
+	Handle          string  `json:"handle"`
+	RefreshJwt      string  `json:"refreshJwt"`
+	Status          *string `json:"status,omitempty"`
 }
 
 type ServerCreateAccount_Input struct {
-	Did       *string `json:"did,omitempty"`
-	Email     *string `json:"email,omitempty"`
-	Handle    string  `json:"handle"`
+	Did        *string `json:"did,omitempty"`
+	Email      *string `json:"email,omitempty"`
+	Handle     string  `json:"handle"`
 	InviteCode *string `json:"inviteCode,omitempty"`
-	Password  *string `json:"password,omitempty"`
+	Password   *string `json:"password,omitempty"`
 }
 
 type ServerCreateAccount_Output struct {
@@ -55,12 +55,12 @@ type ServerCreateAccount_Output struct {
 }
 
 type RepoCreateRecord_Input struct {
-	Collection string                    `json:"collection"`
+	Collection string                      `json:"collection"`
 	Record     *lexutil.LexiconTypeDecoder `json:"record"`
-	Repo       string                    `json:"repo"`
-	Rkey       *string                   `json:"rkey,omitempty"`
-	SwapCommit *string                   `json:"swapCommit,omitempty"`
-	Validate   *bool                     `json:"validate,omitempty"`
+	Repo       string                      `json:"repo"`
+	Rkey       *string                     `json:"rkey,omitempty"`
+	SwapCommit *string                     `json:"swapCommit,omitempty"`
+	Validate   *bool                       `json:"validate,omitempty"`
 }
 
 type RepoCreateRecord_Output struct {
@@ -71,8 +71,8 @@ type RepoCreateRecord_Output struct {
 }
 
 type RepoGetRecord_Output struct {
-	Cid   *string                    `json:"cid,omitempty"`
-	Uri   string                     `json:"uri"`
+	Cid   *string                     `json:"cid,omitempty"`
+	Uri   string                      `json:"uri"`
 	Value *lexutil.LexiconTypeDecoder `json:"value"`
 }
 
@@ -81,18 +81,18 @@ type RepoUploadBlob_Output struct {
 }
 
 type SyncSubscribeRepos_Commit struct {
-	Blobs    []lexutil.LexLink              `json:"blobs" refmt:"blobs"`
-	Blocks   lexutil.LexBytes               `json:"blocks,omitempty" refmt:"blocks,omitempty"`
-	Commit   lexutil.LexLink                `json:"commit" refmt:"commit"`
-	Ops      []*SyncSubscribeRepos_RepoOp   `json:"ops" refmt:"ops"`
-	PrevData *lexutil.LexLink               `json:"prevData,omitempty" refmt:"prevData,omitempty"`
-	Rebase   bool                           `json:"rebase" refmt:"rebase"`
-	Repo     string                         `json:"repo" refmt:"repo"`
-	Rev      string                         `json:"rev" refmt:"rev"`
-	Seq      int64                          `json:"seq" refmt:"seq"`
-	Since    *string                        `json:"since,omitempty" refmt:"since,omitempty"`
-	Time     string                         `json:"time" refmt:"time"`
-	TooBig   bool                           `json:"tooBig" refmt:"tooBig"`
+	Blobs    []lexutil.LexLink            `json:"blobs" refmt:"blobs"`
+	Blocks   lexutil.LexBytes             `json:"blocks,omitempty" refmt:"blocks,omitempty"`
+	Commit   lexutil.LexLink              `json:"commit" refmt:"commit"`
+	Ops      []*SyncSubscribeRepos_RepoOp `json:"ops" refmt:"ops"`
+	PrevData *lexutil.LexLink             `json:"prevData,omitempty" refmt:"prevData,omitempty"`
+	Rebase   bool                         `json:"rebase" refmt:"rebase"`
+	Repo     string                       `json:"repo" refmt:"repo"`
+	Rev      string                       `json:"rev" refmt:"rev"`
+	Seq      int64                        `json:"seq" refmt:"seq"`
+	Since    *string                      `json:"since,omitempty" refmt:"since,omitempty"`
+	Time     string                       `json:"time" refmt:"time"`
+	TooBig   bool                         `json:"tooBig" refmt:"tooBig"`
 }
 
 type SyncSubscribeRepos_RepoOp struct {

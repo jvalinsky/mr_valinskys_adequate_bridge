@@ -67,7 +67,7 @@ func TestBoxStream(t *testing.T) {
 func TestBoxStreamError(t *testing.T) {
 	key := make([]byte, 32)
 	nonce := make([]byte, 24)
-	
+
 	buf := &bytes.Buffer{}
 	var k [32]byte
 	var n [24]byte

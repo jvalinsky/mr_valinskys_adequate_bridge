@@ -596,30 +596,30 @@ func TestAppendFacetMentionsWithInvalidDID(t *testing.T) {
 func TestReplaceATProtoRefsEdgeCases(t *testing.T) {
 	lookupURI := func(uri string) string { return "%msg.sha256" }
 	lookupDID := func(did string) string { return "@alice.ed25519" }
-	
+
 	msg := map[string]interface{}{
-		"type": "post",
+		"type":                   "post",
 		"_atproto_quote_subject": "at://did:plc:alice/app.bsky.feed.post/1",
 		// Test vote without map structure
-		"vote": "not-a-map",
+		"vote":             "not-a-map",
 		"_atproto_subject": "at://did:plc:alice/app.bsky.feed.post/1",
 	}
-	
+
 	ReplaceATProtoRefs(msg, lookupURI, lookupDID)
-	
+
 	// Vote shouldn't be touched if it's not a map
 	if msg["vote"] != "not-a-map" {
 		t.Errorf("Expected vote to be unchanged, got %v", msg["vote"])
 	}
-	
+
 	// Test mentions processing
 	msg2 := map[string]interface{}{
-		"type": "post",
+		"type":                   "post",
 		"_atproto_quote_subject": "at://did:plc:alice/app.bsky.feed.post/1",
-		"mentions": "not-a-slice", // invalid mentions type
+		"mentions":               "not-a-slice", // invalid mentions type
 	}
 	ReplaceATProtoRefs(msg2, lookupURI, lookupDID)
-	
+
 	mentions, ok := msg2["mentions"].([]map[string]interface{})
 	if !ok || len(mentions) != 1 {
 		t.Errorf("Expected mentions to be replaced with new slice containing quote link")
@@ -650,7 +650,7 @@ func TestAppendFacetMentionsWithLink(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MapRecord failed: %v", err)
 	}
-	
+
 	// Text should have markdown link injected
 	if res["text"] != "Check out this [link](https://example.com)" {
 		t.Errorf("Expected markdown link, got %v", res["text"])
@@ -927,17 +927,17 @@ func TestAppendFacetMentionsWithTag(t *testing.T) {
 func TestReplaceATProtoRefsAdditionalBranches(t *testing.T) {
 	lookupURI := func(uri string) string { return "" } // return empty to test branch
 	lookupDID := func(did string) string { return "" }
-	
+
 	msg := map[string]interface{}{
-		"type": "post",
+		"type":                   "post",
 		"_atproto_quote_subject": "at://did:plc:alice/app.bsky.feed.post/1",
-		"_atproto_reply_root": "at://did:plc:alice/app.bsky.feed.post/1",
-		"_atproto_reply_parent": "at://did:plc:alice/app.bsky.feed.post/1",
-		"_atproto_subject": "at://did:plc:alice/app.bsky.feed.post/1",
+		"_atproto_reply_root":    "at://did:plc:alice/app.bsky.feed.post/1",
+		"_atproto_reply_parent":  "at://did:plc:alice/app.bsky.feed.post/1",
+		"_atproto_subject":       "at://did:plc:alice/app.bsky.feed.post/1",
 	}
-	
+
 	ReplaceATProtoRefs(msg, lookupURI, lookupDID)
-	
+
 	// Should remain when resolution fails
 	if _, ok := msg["_atproto_reply_root"]; !ok {
 		t.Errorf("Expected unresolved root to remain")

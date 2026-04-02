@@ -115,28 +115,6 @@ func resolveLiveBlobHostResolver(explicitHost, plcURL string, insecure bool) (bl
 	}, nil
 }
 
-func resolveBackfillHostResolver(fixedHost, plcURL string, insecure bool) (backfill.HostResolver, error) {
-	if strings.TrimSpace(fixedHost) != "" {
-		host, err := backfill.NormalizeServiceEndpoint(fixedHost)
-		if err != nil {
-			return nil, err
-		}
-		return backfill.FixedHostResolver{Host: host}, nil
-	}
-
-	httpClient := &http.Client{Timeout: 30 * time.Second}
-	if insecure {
-		httpClient.Transport = &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		}
-	}
-
-	return backfill.DIDPDSResolver{
-		PLCURL:     plcURL,
-		HTTPClient: httpClient,
-	}, nil
-}
-
 func fallbackValue(value, fallback string) string {
 	if strings.TrimSpace(value) == "" {
 		return fallback

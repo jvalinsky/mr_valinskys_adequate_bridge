@@ -86,7 +86,7 @@ func TestPublisherWhenNil(t *testing.T) {
 	if err == nil {
 		t.Errorf("Expected error for nil publisher")
 	}
-	
+
 	err = p.Close()
 	if err != nil {
 		t.Errorf("Expected nil error for closing nil publisher")
@@ -146,11 +146,11 @@ func (f publisherFunc) Publish(ctx context.Context, atDID string, content map[st
 func TestPublishContextCancellationEnqueuing(t *testing.T) {
 	mock := &recordingPublisher{}
 	p := New(mock, 1, log.New(io.Discard, "", 0))
-	
+
 	// Create context that is already canceled
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	
+
 	_, err := p.Publish(ctx, "did:plc:alice", map[string]interface{}{})
 	if err == nil || err != context.Canceled {
 		t.Errorf("Expected context.Canceled error, got %v", err)
