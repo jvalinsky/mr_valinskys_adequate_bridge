@@ -30,13 +30,6 @@
     observability.enable = false;
   };
 
-  systemd.services.mr-valinskys-adequate-bridge = {
-    serviceConfig.ExecStart = [
-      ""
-      "/var/lib/mr-valinskys-adequate-bridge/bridge-cli --db /var/lib/mr-valinskys-adequate-bridge/bridge.sqlite --relay-url wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos --local-log-output text start --repo-path /var/lib/mr-valinskys-adequate-bridge/.ssb-bridge --publish-workers 2 --ssb-listen-addr :8008 --firehose-enable=true --room-enable=true --room-listen-addr :8989 --room-http-listen-addr 127.0.0.1:8976 --room-mode open --room-https-domain room.snek.cc"
-    ];
-  };
-
   services.caddy.virtualHosts."room.snek.cc" = {
     extraConfig = ''
       reverse_proxy http://127.0.0.1:8976
