@@ -19,6 +19,7 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/bots"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/bridge"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomdb"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssbruntime"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/web/handlers"
 	websecurity "github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/web/security"
@@ -471,6 +472,16 @@ func runServeUI(c *cli.Context) error {
 	}
 
 	uiLogger := logRuntime.Logger("ui")
+	effectiveRepoPath := strings.TrimSpace(c.String("repo-path"))
+	if effectiveRepoPath == "" {
+		effectiveRepoPath = ".ssb-bridge"
+	}
+	roomRepoPath := strings.TrimSpace(c.String("room-repo-path"))
+	if roomRepoPath == "" {
+		roomRepoPath = filepath.Join(effectiveRepoPath, "room")
+	}
+	roomHTTPBaseURL := strings.TrimSpace(c.String("room-http-base-url"))
+
 	httpClient := &http.Client{Timeout: 30 * time.Second}
 	if c.Bool("atproto-insecure") {
 		httpClient.Transport = &http.Transport{
@@ -487,7 +498,7 @@ func runServeUI(c *cli.Context) error {
 
 	var ssbStatus handlers.SSBStatusProvider
 	var blobStore handlers.BlobStore
-	if repo := c.String("repo-path"); repo != "" {
+	if repo := strings.TrimSpace(c.String("repo-path")); repo != "" {
 		ssbRuntime, err := ssbruntime.Open(c.Context, ssbruntime.Config{
 			RepoPath:   repo,
 			MasterSeed: []byte(botSeed),
@@ -509,6 +520,16 @@ func runServeUI(c *cli.Context) error {
 			fsPath:  filepath.Join(repo, "blobs"),
 		}
 	}
+
+	var roomOps handlers.RoomOpsProvider
+	roomProvider, err := handlers.OpenSQLiteRoomOpsProvider(roomRepoPath, roomHTTPBaseURL, roomdb.RoleAdmin, uiLogger)
+	if err != nil {
+		uiLogger.Printf("event=room_ops_provider_unavailable room_repo=%s err=%v", roomRepoPath, err)
+	} else {
+		roomOps = roomProvider
+		defer roomOps.Close()
+	}
+
 	ctx, stop := signal.NotifyContext(c.Context, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	indexer.Start(ctx)
@@ -521,6 +542,9 @@ func runServeUI(c *cli.Context) error {
 	}
 
 	ui := handlers.NewUIHandler(database, uiLogger, atpClient, blobStore, ssbStatus).WithATProto(database, indexer)
+	if roomOps != nil {
+		ui = ui.WithRoomOps(roomOps)
+	}
 	ui.Mount(r)
 
 	server := &http.Server{
@@ -533,7 +557,13 @@ func runServeUI(c *cli.Context) error {
 		errCh <- server.ListenAndServe()
 	}()
 
-	fmt.Printf("Serving UI at http://%s (auth=%t)\n", listenAddr, authConfigured)
+	fmt.Printf(
+		"Serving UI at http://%s (auth=%t room_repo=%s room_data=%t)\n",
+		listenAddr,
+		authConfigured,
+		roomRepoPath,
+		roomOps != nil,
+	)
 	select {
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

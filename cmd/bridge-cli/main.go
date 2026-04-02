@@ -326,6 +326,14 @@ func main() {
 						Name:  "repo-path",
 						Usage: "shared SSB repo path for blob serving fallback",
 					},
+					&cli.StringFlag{
+						Name:  "room-repo-path",
+						Usage: "room repo path for room admin workspace data (default: <repo-path>/room)",
+					},
+					&cli.StringFlag{
+						Name:  "room-http-base-url",
+						Usage: "optional room HTTP base URL for health/status verification (for example http://127.0.0.1:8976)",
+					},
 					&cli.BoolFlag{
 						Name:    "atproto-insecure",
 						EnvVars: []string{"BRIDGE_ATPROTO_INSECURE"},

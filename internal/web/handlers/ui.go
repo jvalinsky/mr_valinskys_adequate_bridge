@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -48,6 +49,7 @@ type Database interface {
 	AddKnownPeer(ctx context.Context, p db.KnownPeer) error
 	ResetMessageForRetry(ctx context.Context, atURI string) error
 	GetBlobBySSBRef(ctx context.Context, ssbBlobRef string) (*db.Blob, error)
+	GetBlob(ctx context.Context, atCID string) (*db.Blob, error)
 	GetLatestDeferredReason(ctx context.Context) (string, bool, error)
 	GetLatestATProtoEventCursor(ctx context.Context) (int64, bool, error)
 	GetATProtoSource(ctx context.Context, sourceKey string) (*db.ATProtoSource, error)
@@ -100,6 +102,7 @@ type UIHandler struct {
 	ssbStatus    SSBStatusProvider
 	atprotoStore ATProtoDebugStore
 	atprotoSvc   ATProtoService
+	roomOps      RoomOpsProvider
 }
 
 // NewUIHandler creates a UIHandler bound to database.
@@ -117,6 +120,12 @@ func NewUIHandler(database Database, logger *log.Logger, atpClient PDSClientInte
 func (h *UIHandler) WithATProto(store ATProtoDebugStore, service ATProtoService) *UIHandler {
 	h.atprotoStore = store
 	h.atprotoSvc = service
+	return h
+}
+
+// WithRoomOps attaches room operations provider to the admin UI handler.
+func (h *UIHandler) WithRoomOps(provider RoomOpsProvider) *UIHandler {
+	h.roomOps = provider
 	return h
 }
 
@@ -138,6 +147,18 @@ func (h *UIHandler) Mount(r chi.Router) {
 	r.Get("/connections", h.handleConnections)
 	r.Post("/connections/add", h.handleConnectionAdd)
 	r.Post("/connections/connect", h.handleConnectionConnect)
+	r.Get("/room", h.handleRoomOverview)
+	r.Get("/room/members", h.handleRoomMembersRoles)
+	r.Get("/room/attendants", h.handleRoomAttendantsTunnels)
+	r.Get("/room/aliases", h.handleRoomAliasesInvites)
+	r.Get("/room/moderation", h.handleRoomModeration)
+	r.Post("/room/members/role", h.handleRoomMemberRoleSet)
+	r.Post("/room/members/remove", h.handleRoomMemberRemove)
+	r.Post("/room/invites/create", h.handleRoomInviteCreate)
+	r.Post("/room/invites/revoke", h.handleRoomInviteRevoke)
+	r.Post("/room/aliases/revoke", h.handleRoomAliasRevoke)
+	r.Post("/room/denied/add", h.handleRoomDeniedAdd)
+	r.Post("/room/denied/remove", h.handleRoomDeniedRemove)
 	r.Route("/api/atproto", func(r chi.Router) {
 		r.Get("/health", h.handleATProtoHealth)
 		r.Get("/source", h.handleATProtoSource)
@@ -167,6 +188,76 @@ func findBlobRefs(ssbJSON string) []string {
 		}
 	}
 	return res
+}
+
+func findATProtoBlobCIDs(rawATJSON string) []string {
+	rawATJSON = strings.TrimSpace(rawATJSON)
+	if rawATJSON == "" {
+		return nil
+	}
+
+	var payload any
+	if err := json.Unmarshal([]byte(rawATJSON), &payload); err != nil {
+		return nil
+	}
+
+	seen := make(map[string]struct{})
+	var cids []string
+
+	var walk func(node any)
+	walk = func(node any) {
+		switch typed := node.(type) {
+		case map[string]any:
+			if cid := extractATProtoBlobCID(typed); cid != "" {
+				if _, ok := seen[cid]; !ok {
+					seen[cid] = struct{}{}
+					cids = append(cids, cid)
+				}
+			}
+			for _, child := range typed {
+				walk(child)
+			}
+		case []any:
+			for _, child := range typed {
+				walk(child)
+			}
+		}
+	}
+
+	walk(payload)
+	sort.Strings(cids)
+	return cids
+}
+
+func extractATProtoBlobCID(node map[string]any) string {
+	typeValue, _ := node["$type"].(string)
+	if typeValue != "blob" {
+		return ""
+	}
+
+	if fromRef := extractATProtoBlobRefCID(node["ref"]); fromRef != "" {
+		return fromRef
+	}
+
+	if legacyCID, ok := node["cid"].(string); ok {
+		return strings.TrimSpace(legacyCID)
+	}
+	return ""
+}
+
+func extractATProtoBlobRefCID(ref any) string {
+	switch typed := ref.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	case map[string]any:
+		if link, ok := typed["$link"].(string); ok {
+			return strings.TrimSpace(link)
+		}
+		if cid, ok := typed["cid"].(string); ok {
+			return strings.TrimSpace(cid)
+		}
+	}
+	return ""
 }
 
 func (h *UIHandler) writeInternalError(w http.ResponseWriter, handler, message string, err error) {
@@ -505,18 +596,53 @@ func (h *UIHandler) handleMessageDetail(w http.ResponseWriter, r *http.Request) 
 		FilterByTypeURL:       "/messages?type=" + url.QueryEscape(message.Type),
 	}
 
-	// Extract blob references from SSB JSON and look them up
+	seenBlobRef := make(map[string]struct{})
+	seenBlobCID := make(map[string]struct{})
+	appendAssociatedBlob := func(blob *db.Blob) {
+		if blob == nil {
+			return
+		}
+		trimmedRef := strings.TrimSpace(blob.SSBBlobRef)
+		trimmedCID := strings.TrimSpace(blob.ATCID)
+		if trimmedRef != "" {
+			if _, exists := seenBlobRef[trimmedRef]; exists {
+				return
+			}
+		}
+		if trimmedCID != "" {
+			if _, exists := seenBlobCID[trimmedCID]; exists {
+				return
+			}
+		}
+		if trimmedRef != "" {
+			seenBlobRef[trimmedRef] = struct{}{}
+		}
+		if trimmedCID != "" {
+			seenBlobCID[trimmedCID] = struct{}{}
+		}
+		data.AssociatedBlobs = append(data.AssociatedBlobs, templates.BlobRow{
+			ATCID:        blob.ATCID,
+			SSBBlobRef:   blob.SSBBlobRef,
+			Size:         blob.Size,
+			MimeType:     blob.MimeType,
+			DownloadedAt: blob.DownloadedAt,
+		})
+	}
+
+	// Extract blob references from SSB JSON and look them up by SSB ref.
 	blobRefs := findBlobRefs(message.RawSSBJson)
 	for _, ref := range blobRefs {
 		blob, err := h.db.GetBlobBySSBRef(r.Context(), ref)
-		if err == nil && blob != nil {
-			data.AssociatedBlobs = append(data.AssociatedBlobs, templates.BlobRow{
-				ATCID:        blob.ATCID,
-				SSBBlobRef:   blob.SSBBlobRef,
-				Size:         blob.Size,
-				MimeType:     blob.MimeType,
-				DownloadedAt: blob.DownloadedAt,
-			})
+		if err == nil {
+			appendAssociatedBlob(blob)
+		}
+	}
+
+	// Also resolve blob references directly from the ATProto record payload.
+	for _, atCID := range findATProtoBlobCIDs(message.RawATJson) {
+		blob, err := h.db.GetBlob(r.Context(), atCID)
+		if err == nil {
+			appendAssociatedBlob(blob)
 		}
 	}
 

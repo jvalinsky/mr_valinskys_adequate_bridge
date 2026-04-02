@@ -374,6 +374,35 @@ const pageLayout = `
             margin-top: 10px;
         }
 
+        .room-subnav {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-top: 10px;
+        }
+
+        .room-subnav a {
+            border: 1px solid var(--line);
+            border-radius: 999px;
+            background: #fff;
+            padding: 7px 12px;
+            text-decoration: none;
+            font-size: 0.84rem;
+            font-weight: 700;
+        }
+
+        .room-subnav a:hover,
+        .room-subnav a:focus-visible {
+            border-color: var(--brand);
+            outline: none;
+        }
+
+        .room-subnav a.is-active {
+            background: var(--brand);
+            color: #fff;
+            border-color: var(--brand-strong);
+        }
+
         .filter-panel {
             position: sticky;
             top: 8px;
@@ -550,10 +579,11 @@ const pageLayout = `
                 <a href="/messages" class="{{navClass .Chrome.ActiveNav "messages"}}" {{navCurrent .Chrome.ActiveNav "messages"}}>Messages</a>
                 <a href="/feed" class="{{navClass .Chrome.ActiveNav "feed"}}" {{navCurrent .Chrome.ActiveNav "feed"}}>Global Feed</a>
                 <a href="/post" class="{{navClass .Chrome.ActiveNav "post"}}" {{navCurrent .Chrome.ActiveNav "post"}}>Compose Post</a>
-                 <a href="/failures" class="{{navClass .Chrome.ActiveNav "failures"}}" {{navCurrent .Chrome.ActiveNav "failures"}}>Failures</a>
-                 <a href="/blobs" class="{{navClass .Chrome.ActiveNav "blobs"}}" {{navCurrent .Chrome.ActiveNav "blobs"}}>Blobs</a>
-                 <a href="/connections" class="{{navClass .Chrome.ActiveNav "connections"}}" {{navCurrent .Chrome.ActiveNav "connections"}}>Connections</a>
-                 <a href="/state" class="{{navClass .Chrome.ActiveNav "state"}}" {{navCurrent .Chrome.ActiveNav "state"}}>State</a>
+                <a href="/failures" class="{{navClass .Chrome.ActiveNav "failures"}}" {{navCurrent .Chrome.ActiveNav "failures"}}>Failures</a>
+                <a href="/blobs" class="{{navClass .Chrome.ActiveNav "blobs"}}" {{navCurrent .Chrome.ActiveNav "blobs"}}>Blobs</a>
+                <a href="/room" class="{{navClass .Chrome.ActiveNav "room"}}" {{navCurrent .Chrome.ActiveNav "room"}}>Room</a>
+                <a href="/connections" class="{{navClass .Chrome.ActiveNav "connections"}}" {{navCurrent .Chrome.ActiveNav "connections"}}>Connections</a>
+                <a href="/state" class="{{navClass .Chrome.ActiveNav "state"}}" {{navCurrent .Chrome.ActiveNav "state"}}>State</a>
              </nav>
 
         </div>
@@ -1113,10 +1143,10 @@ const messageDetailContent = `
                     <td>{{humanizeBytes .Size}}</td>
                     <td>{{.MimeType}}</td>
                     <td>
-                        <a href="/blobs/view?ref={{.SSBBlobRef}}" target="_blank" class="button button-small">View</a>
+                        <a href="/blobs/view?ref={{.SSBBlobRef | urlquery}}" target="_blank" class="button button-small">View</a>
                         {{if hasPrefix .MimeType "image/"}}
                         <div style="margin-top:8px">
-                            <img src="/blobs/view?ref={{.SSBBlobRef}}" style="max-width:200px; max-height:200px; border-radius:4px; border:1px solid var(--line)" alt="Preview">
+                            <img src="/blobs/view?ref={{.SSBBlobRef | urlquery}}" style="max-width:200px; max-height:200px; border-radius:4px; border:1px solid var(--line)" alt="Preview">
                         </div>
                         {{end}}
                     </td>
@@ -1144,7 +1174,7 @@ const feedContent = `
         <div style="display:flex;gap:12px;align-items:flex-start;">
             {{if .HasImage}}
             <div style="flex-shrink:0;">
-                <img src="/blobs/view?ref={{.ImageRef}}" alt="SSB image" style="max-width:150px;border-radius:8px;">
+                <img src="/blobs/view?ref={{.ImageRef | urlquery}}" alt="SSB image" style="max-width:150px;border-radius:8px;">
             </div>
             {{end}}
             <div style="flex:1;">
@@ -1267,10 +1297,10 @@ const blobsContent = `
                     <td>{{.MimeType}}</td>
                     <td>{{fmtTime .DownloadedAt}}</td>
                     <td>
-                        <a href="/blobs/view?ref={{.SSBBlobRef}}" target="_blank" class="button button-small">View</a>
+                        <a href="/blobs/view?ref={{.SSBBlobRef | urlquery}}" target="_blank" class="button button-small">View</a>
                         {{if hasPrefix .MimeType "image/"}}
                         <div style="margin-top:8px">
-                            <img src="/blobs/view?ref={{.SSBBlobRef}}" style="max-width:100px; max-height:100px; border-radius:4px; border:1px solid var(--line)" alt="Preview">
+                            <img src="/blobs/view?ref={{.SSBBlobRef | urlquery}}" style="max-width:100px; max-height:100px; border-radius:4px; border:1px solid var(--line)" alt="Preview">
                         </div>
                         {{end}}
                     </td>

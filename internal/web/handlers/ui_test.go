@@ -685,6 +685,74 @@ func TestMessageDetailRendersStructuredAndRawPayloads(t *testing.T) {
 	}
 }
 
+func TestFindATProtoBlobCIDs(t *testing.T) {
+	raw := `{
+		"embed": {
+			"images": [
+				{"image": {"$type": "blob", "ref": {"$link": "bafy-two"}, "mimeType": "image/png", "size": 10}},
+				{"image": {"$type": "blob", "cid": "bafy-one", "mimeType": "image/png", "size": 20}},
+				{"image": {"$type": "blob", "ref": {"$link": "bafy-two"}, "mimeType": "image/png", "size": 10}}
+			]
+		},
+		"reply": {"root": {"cid": "bafy-not-a-blob"}}
+	}`
+
+	got := findATProtoBlobCIDs(raw)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 unique blob cids, got %d: %v", len(got), got)
+	}
+	if got[0] != "bafy-one" || got[1] != "bafy-two" {
+		t.Fatalf("unexpected blob cids order/content: %v", got)
+	}
+}
+
+func TestMessageDetailShowsBlobPreviewFromATProtoBlobRefs(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	ctx := context.Background()
+	messageURI := "at://did:plc:alice/app.bsky.feed.post/blob-preview"
+	blobCID := "bafkreie56pwhrs36n6u4reid75oifvea2rce3n763vof5qetb7zaj2q7de"
+	blobRef := "&AAE+fw==.sha256"
+
+	if err := database.AddBlob(ctx, db.Blob{
+		ATCID:      blobCID,
+		SSBBlobRef: blobRef,
+		Size:       1234,
+		MimeType:   "image/png",
+	}); err != nil {
+		t.Fatalf("seed blob mapping: %v", err)
+	}
+
+	rawAT := fmt.Sprintf(`{"text":"with image","embed":{"$type":"app.bsky.embed.images","images":[{"image":{"$type":"blob","ref":{"$link":"%s"},"mimeType":"image/png","size":1234}}]}}`, blobCID)
+	if err := database.AddMessage(ctx, db.Message{
+		ATURI:        messageURI,
+		ATCID:        "bafy-post",
+		ATDID:        "did:plc:alice",
+		Type:         mapper.RecordTypePost,
+		MessageState: db.MessageStatePublished,
+		RawATJson:    rawAT,
+		RawSSBJson:   `{"type":"post","text":"bridged text"}`,
+	}); err != nil {
+		t.Fatalf("seed detail message: %v", err)
+	}
+
+	path := "/messages/detail?at_uri=" + url.QueryEscape(messageURI)
+	body := fetchUI(t, database, path)
+	encodedRef := url.QueryEscape(blobRef)
+	for _, expected := range []string{
+		"Associated Blobs",
+		blobCID,
+		"image/png",
+		"/blobs/view?ref=" + encodedRef,
+		"<img src=\"/blobs/view?ref=" + encodedRef + "\"",
+	} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("message detail missing %q: %s", expected, body)
+		}
+	}
+}
+
 func TestHealthzReturns200WhenLive(t *testing.T) {
 	database := openTestDB(t)
 	defer database.Close()
@@ -1859,6 +1927,9 @@ func (m *mockDatabase) ListPublishedMessagesGlobal(ctx context.Context, limit in
 func (m *mockDatabase) GetBlobBySSBRef(ctx context.Context, ssbBlobRef string) (*db.Blob, error) {
 	return nil, m.err
 }
+func (m *mockDatabase) GetBlob(ctx context.Context, atCID string) (*db.Blob, error) {
+	return nil, m.err
+}
 func (m *mockDatabase) GetKnownPeers(ctx context.Context) ([]db.KnownPeer, error) {
 	return nil, m.err
 }
@@ -2340,6 +2411,9 @@ func (m *granularMockDatabase) ListPublishedMessagesGlobal(ctx context.Context, 
 	return nil, m.err
 }
 func (m *granularMockDatabase) GetBlobBySSBRef(ctx context.Context, ssbBlobRef string) (*db.Blob, error) {
+	return nil, m.err
+}
+func (m *granularMockDatabase) GetBlob(ctx context.Context, atCID string) (*db.Blob, error) {
 	return nil, m.err
 }
 func (m *granularMockDatabase) GetKnownPeers(ctx context.Context) ([]db.KnownPeer, error) {
