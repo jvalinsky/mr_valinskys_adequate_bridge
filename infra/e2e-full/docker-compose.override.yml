@@ -13,6 +13,3 @@ services:
       - "2470:2470"
     environment:
       RELAY_ALLOW_LOOPBACK: "true"
-  plc:
-    ports:
-      - "2582:2582"

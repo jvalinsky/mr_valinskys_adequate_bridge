@@ -162,6 +162,7 @@ services:
       BRIDGE_CLEAN_START: "1"
     ports:
       - "8976:8976"
+      - "8989:8989"
     volumes:
       - bridge-data:/data
       - ./bridge_entrypoint.sh:/scripts/bridge_entrypoint.sh:ro
