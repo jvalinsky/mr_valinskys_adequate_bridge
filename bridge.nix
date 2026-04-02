@@ -26,7 +26,7 @@
       httpsDomain = "room.snek.cc";
     };
 
-    ui.enable = false;
+    ui.enable = true;
     observability.enable = false;
   };
 
