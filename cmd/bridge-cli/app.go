@@ -256,6 +256,10 @@ func (a *BridgeApp) SSB() *ssbruntime.Runtime {
 	return a.ssbRuntime
 }
 
+func (a *BridgeApp) Room() *room.Runtime {
+	return a.room
+}
+
 func (a *BridgeApp) startIndexerConsumer(ctx context.Context) error {
 	if a.indexer == nil || a.processor == nil {
 		return nil
