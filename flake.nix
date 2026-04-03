@@ -1,118 +1,95 @@
 {
-  description = "Nix flake for Mr Valinsky's Adequate Bridge";
+  description = "NixOS configuration for nixos server";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    flake-utils.url = "github:numtide/flake-utils";
+    sops-nix.url = "github:Mic92/sops-nix";
+    alejandra.url = "github:kamadorueda/alejandra/4.0.0";
+    alejandra.inputs.nixpkgs.follows = "nixpkgs";
+    home-manager = {
+      url = "github:nix-community/home-manager";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    mr-valinskys-adequate-bridge = {
+      url = "github:jvalinsky/mr_valinskys_adequate_bridge";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
     {
       self,
       nixpkgs,
-      flake-utils,
-    }:
+      sops-nix,
+      alejandra,
+      home-manager,
+      mr-valinskys-adequate-bridge,
+      ...
+    }@inputs:
     let
-      supportedSystems = [
-        "x86_64-linux"
-        "aarch64-linux"
-        "x86_64-darwin"
-        "aarch64-darwin"
-      ];
-
-      mkBridgePackage = pkgs:
-        let
-          go = if pkgs ? go_1_26 then pkgs.go_1_26 else pkgs.go;
-        in
-        pkgs.buildGoModule {
-          pname = "mr-valinskys-adequate-bridge";
-          version = "0.0.0";
-
-          src = ./.;
-          subPackages = [ "cmd/bridge-cli" ];
-
-          env = {
-            CGO_ENABLED = "1";
-          };
-          nativeBuildInputs = [ pkgs.pkg-config ];
-          buildInputs = [ pkgs.sqlite ];
-          doCheck = false;
-
-          proxyVendor = true;
-          vendorHash = "sha256-OfF8nyKk2PHPC87TdwPoVjH2DBEL9QFPaSgtjjKK0JU=";
-          inherit go;
-        };
-
-      mkLinuxBridgePackage = pkgs:
-        let
-          go = if pkgs ? go_1_26 then pkgs.go_1_26 else pkgs.go;
-        in
-        pkgs.buildGoModule {
-          pname = "mr-valinskys-adequate-bridge";
-          version = "0.0.0";
-
-          src = ./.;
-          subPackages = [ "cmd/bridge-cli" ];
-
-          env = {
-            CGO_ENABLED = "1";
-          };
-          nativeBuildInputs = [ pkgs.pkg-config ];
-          buildInputs = [ pkgs.sqlite ];
-          doCheck = false;
-
-          proxyVendor = true;
-          vendorHash = "sha256-OfF8nyKk2PHPC87TdwPoVjH2DBEL9QFPaSgtjjKK0JU=";
-          inherit go;
-        };
+      system = "x86_64-linux";
     in
-    (flake-utils.lib.eachSystem supportedSystems (
-      system:
-      let
-        pkgs = import nixpkgs { inherit system; };
-        bridgeCli = mkBridgePackage pkgs;
-        go = if pkgs ? go_1_26 then pkgs.go_1_26 else pkgs.go;
-      in
-      {
-        packages = {
-          bridge-cli = bridgeCli;
-          default = bridgeCli;
-        };
+    {
+      nixosConfigurations = {
+        snek = nixpkgs.lib.nixosSystem {
+          inherit system;
 
-        apps = {
-          bridge-cli = {
-            type = "app";
-            program = "${bridgeCli}/bin/bridge-cli";
-          };
-          default = {
-            type = "app";
-            program = "${bridgeCli}/bin/bridge-cli";
-          };
-        };
+          specialArgs = { inherit inputs; lib = nixpkgs.lib; };
 
-        devShells.default = pkgs.mkShell {
-          packages = [
-            go
-            pkgs.gotools
-            pkgs.pkg-config
-            pkgs.sqlite
+          modules = [
+            sops-nix.nixosModules.sops
+            home-manager.nixosModules.home-manager
+            {
+              environment.systemPackages = [ alejandra.defaultPackage.${system} ];
+              home-manager.useGlobalPkgs = true;
+              home-manager.useUserPackages = true;
+              home-manager.users.atproto = import ./home.nix;
+            }
+
+            # Mr Valinsky's Adequate Bridge
+            mr-valinskys-adequate-bridge.nixosModules.mr-valinskys-adequate-bridge
+            {
+              nixpkgs.overlays = [ mr-valinskys-adequate-bridge.overlays.default ];
+
+              services.mr-valinskys-adequate-bridge = {
+                enable = true;
+                environmentFile = "/run/secrets/rendered/mr-valinskys-adequate-bridge-env";
+                firehoseEnable = true;
+                publishWorkers = 2;
+
+                room = {
+                  enable = true;
+                  listenAddr = ":8989";
+                  httpListenAddr = "127.0.0.1:8976";
+                  mode = "open";
+                  httpsDomain = "room.snek.cc";
+                };
+
+                ui.enable = true;
+                observability.enable = false;
+              };
+
+              services.caddy.virtualHosts."room.snek.cc" = {
+                extraConfig = ''
+                  reverse_proxy http://127.0.0.1:8976
+                '';
+              };
+            }
+
+            ./configuration.nix
           ];
-          CGO_ENABLED = "1";
         };
-      }
-    ))
-    // {
-      overlays.default = final: prev:
-        let
-          pkgsLinux = import nixpkgs { system = "x86_64-linux"; };
-        in
-        {
-          mr-valinskys-adequate-bridge = mkLinuxBridgePackage pkgsLinux;
-        };
+      };
 
-      nixosModules = {
-        mr-valinskys-adequate-bridge = import ./nix/modules/mr-valinskys-adequate-bridge.nix;
-        default = self.nixosModules.mr-valinskys-adequate-bridge;
+      nixConfig = {
+        extra-substituters = [
+          "https://nix-community.cachix.org"
+          "https://crane.cachix.org"
+        ];
+        extra-trusted-public-keys = [
+          "nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs="
+          "crane.cachix.org-1:8Scfpmn9w+hGdXH/Q9tTLiYAE/2dnJYRJP7kl80GuRk="
+        ];
       };
     };
 }
