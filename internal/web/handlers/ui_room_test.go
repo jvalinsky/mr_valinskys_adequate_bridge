@@ -256,4 +256,8 @@ func (f *fakeRoomOpsProvider) JoinURL(token string) string {
 	return "/join?token=" + token
 }
 
+func (f *fakeRoomOpsProvider) GetRoomPeers(ctx context.Context) ([]PeerStatus, error) {
+	return nil, nil
+}
+
 func (f *fakeRoomOpsProvider) Close() error { return nil }
