@@ -46,35 +46,8 @@
               home-manager.users.atproto = import ./home.nix;
             }
 
-            # Mr Valinsky's Adequate Bridge
             mr-valinskys-adequate-bridge.nixosModules.mr-valinskys-adequate-bridge
-            {
-              nixpkgs.overlays = [ mr-valinskys-adequate-bridge.overlays.default ];
-
-              services.mr-valinskys-adequate-bridge = {
-                enable = true;
-                environmentFile = "/run/secrets/rendered/mr-valinskys-adequate-bridge-env";
-                firehoseEnable = true;
-                publishWorkers = 2;
-
-                room = {
-                  enable = true;
-                  listenAddr = ":8989";
-                  httpListenAddr = "127.0.0.1:8976";
-                  mode = "open";
-                  httpsDomain = "room.snek.cc";
-                };
-
-                ui.enable = true;
-                observability.enable = false;
-              };
-
-              services.caddy.virtualHosts."room.snek.cc" = {
-                extraConfig = ''
-                  reverse_proxy http://127.0.0.1:8976
-                '';
-              };
-            }
+            (import ./bridge-module.nix)
 
             ./configuration.nix
           ];
