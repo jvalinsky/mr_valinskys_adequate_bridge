@@ -133,32 +133,48 @@ func (p *SQLiteRoomOpsProvider) SetRoomServer(srv *roomhandlers.RoomServer) {
 }
 
 func (p *SQLiteRoomOpsProvider) GetRoomPeers(ctx context.Context) ([]PeerStatus, error) {
-	if p == nil || p.roomServer == nil {
+	if p == nil {
 		return nil, nil
 	}
-	registry := p.roomServer.PeerRegistry()
-	if registry == nil {
-		return nil, nil
-	}
-	registryMap := reflect.ValueOf(registry).Elem().FieldByName("peers")
-	if !registryMap.IsValid() {
-		return nil, nil
-	}
-	peersMap, ok := registryMap.Interface().(map[string]*muxrpc.Server)
-	if !ok {
-		return nil, nil
-	}
-	res := make([]PeerStatus, 0, len(peersMap))
-	for feed := range peersMap {
-		ref, err := refs.ParseFeedRef(feed)
-		if err != nil {
-			continue
+	if p.statusClient != nil {
+		status, err := p.statusClient.status(ctx)
+		if err == nil && status.LivePeers > 0 {
+			res := make([]PeerStatus, 0, status.LivePeers)
+			for i := 0; i < status.LivePeers; i++ {
+				res = append(res, PeerStatus{
+					Feed: "room-peer",
+					Addr: "room",
+				})
+			}
+			return res, nil
 		}
-		res = append(res, PeerStatus{
-			Feed: ref.String(),
-		})
 	}
-	return res, nil
+	if p.roomServer != nil {
+		registry := p.roomServer.PeerRegistry()
+		if registry == nil {
+			return nil, nil
+		}
+		registryMap := reflect.ValueOf(registry).Elem().FieldByName("peers")
+		if !registryMap.IsValid() {
+			return nil, nil
+		}
+		peersMap, ok := registryMap.Interface().(map[string]*muxrpc.Server)
+		if !ok {
+			return nil, nil
+		}
+		res := make([]PeerStatus, 0, len(peersMap))
+		for feed := range peersMap {
+			ref, err := refs.ParseFeedRef(feed)
+			if err != nil {
+				continue
+			}
+			res = append(res, PeerStatus{
+				Feed: ref.String(),
+			})
+		}
+		return res, nil
+	}
+	return nil, nil
 }
 
 func (p *SQLiteRoomOpsProvider) JoinURL(token string) string {
