@@ -118,6 +118,18 @@ let
       "--listen-addr"
       cfg.ui.listenAddr
     ]
+    ++ [
+      "--repo-path"
+      cfg.repoPath
+    ]
+    ++ optionals (cfg.ui.roomRepoPath != null) [
+      "--room-repo-path"
+      cfg.ui.roomRepoPath
+    ]
+    ++ optionals (cfg.ui.roomHTTPBaseURL != null) [
+      "--room-http-base-url"
+      cfg.ui.roomHTTPBaseURL
+    ]
     ++ optionals (cfg.ui.authUser != null) [
       "--ui-auth-user"
       cfg.ui.authUser
@@ -277,6 +289,18 @@ in
         type = types.str;
         default = "127.0.0.1:8080";
         description = "Admin UI listen address.";
+      };
+
+      roomRepoPath = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Path to SSB repo for room data in UI.";
+      };
+
+      roomHTTPBaseURL = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Base URL for room HTTP requests.";
       };
 
       authUser = mkOption {
