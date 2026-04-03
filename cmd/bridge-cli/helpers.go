@@ -275,15 +275,13 @@ func runRoomTunnelBootstrap(ctx context.Context, ssbRT *ssbruntime.Runtime, room
 				ticker.Stop()
 				return
 			case <-ticker.C:
-				if err := announceRoomPeer(ctx, rpc); err != nil {
-					logger.Printf("event=room_tunnel_reannounce_failed err=%v", err)
-					_ = peer.Conn.Close()
-					ticker.Stop()
-					if !waitForRetry(ctx, 2*time.Second) {
-						return
-					}
-					keepSession = false
+				ticker.Stop()
+				_ = peer.Conn.Close()
+				logger.Printf("event=room_tunnel_reconnecting")
+				if !waitForRetry(ctx, 1*time.Second) {
+					return
 				}
+				keepSession = false
 			}
 		}
 	}
@@ -291,7 +289,9 @@ func runRoomTunnelBootstrap(ctx context.Context, ssbRT *ssbruntime.Runtime, room
 
 func announceRoomPeer(ctx context.Context, endpoint muxrpc.Endpoint) error {
 	var announced bool
-	if err := endpoint.Sync(ctx, &announced, muxrpc.TypeJSON, muxrpc.Method{"tunnel", "announce"}); err != nil {
+	syncCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := endpoint.Sync(syncCtx, &announced, muxrpc.TypeJSON, muxrpc.Method{"tunnel", "announce"}); err != nil {
 		return err
 	}
 	if !announced {
