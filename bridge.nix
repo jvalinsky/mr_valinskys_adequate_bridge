@@ -1,6 +1,8 @@
-{ inputs, config, ... }:
+{ inputs, ... }:
 {
-  imports = [ inputs.mr-valinskys-adequate-bridge.nixosModules.default ];
+  imports = [
+    inputs.mr-valinskys-adequate-bridge.nixosModules.default
+  ];
 
   nixpkgs.overlays = [ inputs.mr-valinskys-adequate-bridge.overlays.default ];
 
