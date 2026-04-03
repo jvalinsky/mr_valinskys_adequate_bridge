@@ -17,6 +17,13 @@ func (h *UIHandler) handleConnections(w http.ResponseWriter, r *http.Request) {
 		ebtState = h.ssbStatus.GetEBTState()
 	}
 
+	if h.roomOps != nil {
+		roomPeers, err := h.roomOps.GetRoomPeers(r.Context())
+		if err == nil && len(roomPeers) > 0 {
+			peers = append(peers, roomPeers...)
+		}
+	}
+
 	knownPeers, err := h.db.GetKnownPeers(r.Context())
 	if err != nil {
 		h.writeInternalError(w, "handleConnections", "failed to load known peers", err)

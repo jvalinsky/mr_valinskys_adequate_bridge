@@ -9,12 +9,15 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc"
+	roomhandlers "github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc/handlers/room"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomdb"
 	roomsqlite "github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomdb/sqlite"
@@ -37,6 +40,7 @@ type RoomOpsProvider interface {
 	DeniedRemove(ctx context.Context, deniedID int64) error
 	AttendantsSnapshot(ctx context.Context) ([]templates.RoomAttendantRow, error)
 	TunnelEndpointsSnapshot(ctx context.Context) ([]templates.RoomTunnelEndpointRow, error)
+	GetRoomPeers(ctx context.Context) ([]PeerStatus, error)
 	JoinURL(token string) string
 	Close() error
 }
@@ -71,6 +75,7 @@ type SQLiteRoomOpsProvider struct {
 	roomHTTPBaseURL string
 	statusClient    *roomStatusClient
 	operatorRole    roomdb.Role
+	roomServer      *roomhandlers.RoomServer
 }
 
 // OpenSQLiteRoomOpsProvider opens room sqlite-backed operations provider.
@@ -118,6 +123,42 @@ func (p *SQLiteRoomOpsProvider) Close() error {
 		return nil
 	}
 	return p.db.Close()
+}
+
+func (p *SQLiteRoomOpsProvider) SetRoomServer(srv *roomhandlers.RoomServer) {
+	if p == nil {
+		return
+	}
+	p.roomServer = srv
+}
+
+func (p *SQLiteRoomOpsProvider) GetRoomPeers(ctx context.Context) ([]PeerStatus, error) {
+	if p == nil || p.roomServer == nil {
+		return nil, nil
+	}
+	registry := p.roomServer.PeerRegistry()
+	if registry == nil {
+		return nil, nil
+	}
+	registryMap := reflect.ValueOf(registry).Elem().FieldByName("peers")
+	if !registryMap.IsValid() {
+		return nil, nil
+	}
+	peersMap, ok := registryMap.Interface().(map[string]*muxrpc.Server)
+	if !ok {
+		return nil, nil
+	}
+	res := make([]PeerStatus, 0, len(peersMap))
+	for feed := range peersMap {
+		ref, err := refs.ParseFeedRef(feed)
+		if err != nil {
+			continue
+		}
+		res = append(res, PeerStatus{
+			Feed: ref.String(),
+		})
+	}
+	return res, nil
 }
 
 func (p *SQLiteRoomOpsProvider) JoinURL(token string) string {

@@ -55,6 +55,46 @@ func (r *PeerRegistry) Get(feed refs.FeedRef) *muxrpc.Server {
 	return r.peers[feed.String()]
 }
 
+type ListedPeer struct {
+	Feed refs.FeedRef
+	Addr string
+}
+
+func ListPeers(registry *PeerRegistry) []ListedPeer {
+	if registry == nil {
+		return nil
+	}
+	registry.mu.RLock()
+	defer registry.mu.RUnlock()
+	res := make([]ListedPeer, 0, len(registry.peers))
+	for feed := range registry.peers {
+		ref, err := refs.ParseFeedRef(feed)
+		if err != nil {
+			continue
+		}
+		res = append(res, ListedPeer{
+			Feed: *ref,
+		})
+	}
+	return res
+}
+
+func (r *PeerRegistry) List() []ListedPeer {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	res := make([]ListedPeer, 0, len(r.peers))
+	for feed := range r.peers {
+		ref, err := refs.ParseFeedRef(feed)
+		if err != nil {
+			continue
+		}
+		res = append(res, ListedPeer{
+			Feed: *ref,
+		})
+	}
+	return res
+}
+
 func NewRoomServer(
 	keyPair *refs.FeedRef,
 	members roomdb.MembersService,

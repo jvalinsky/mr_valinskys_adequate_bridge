@@ -260,6 +260,13 @@ func (r *Runtime) AddMember(ctx context.Context, feed refs.FeedRef, role roomdb.
 	return err
 }
 
+func (r *Runtime) RoomServer() *roomhandlers.RoomServer {
+	if r == nil {
+		return nil
+	}
+	return r.roomSrv
+}
+
 func (r *Runtime) Close() error {
 	if r == nil {
 		return nil
