@@ -138,3 +138,13 @@ CREATE TABLE IF NOT EXISTS known_peers (
     last_seen DATETIME,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS ssb_follower_sync (
+    bot_did TEXT NOT NULL,
+    follower_ssb_feed TEXT NOT NULL,
+    followed_back_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (bot_did, follower_ssb_feed)
+);
+
+CREATE INDEX IF NOT EXISTS idx_follower_sync_bot ON ssb_follower_sync(bot_did);
+CREATE INDEX IF NOT EXISTS idx_follower_sync_follower ON ssb_follower_sync(follower_ssb_feed);

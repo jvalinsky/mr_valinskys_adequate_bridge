@@ -15,6 +15,7 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc/handlers"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc/handlers/room"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/network"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/publisher"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/replication"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomdb/sqlite"
@@ -30,8 +31,9 @@ type Options struct {
 	EnableEBT  bool
 	Hops       int
 
-	EnableRoom bool
-	RoomMode   string
+	EnableRoom   bool
+	RoomMode     string
+	RoomHTTPAddr string
 
 	GossipDB gossip.Database
 }
@@ -175,6 +177,11 @@ func New(opts Options) (*Sbot, error) {
 		handlerMux.Register(muxrpc.Method{"tunnel", "endpoints"}, tunnelHandler)
 		handlerMux.Register(muxrpc.Method{"tunnel", "isRoom"}, tunnelHandler)
 		handlerMux.Register(muxrpc.Method{"tunnel", "ping"}, tunnelHandler)
+
+		if opts.RoomHTTPAddr != "" {
+			inviteUseHandler := handlers.NewInviteUseHandler(opts.RoomHTTPAddr)
+			handlerMux.Register(muxrpc.Method{"invite", "use"}, inviteUseHandler)
+		}
 	}
 
 	net := &SbotNetwork{
@@ -389,6 +396,14 @@ func (s *Sbot) Gossip() *gossip.Manager {
 
 func (s *Sbot) BlobStore() *blobs.Store {
 	return s.blobs
+}
+
+func (s *Sbot) Publisher() (*publisher.Publisher, error) {
+	return publisher.New(s.KeyPair, nil, s.store.Logs())
+}
+
+func (s *Sbot) SetMessageLogger(logger feedlog.MessageLogger) {
+	s.store.SetMessageLogger(logger)
 }
 
 type Endpoint interface {

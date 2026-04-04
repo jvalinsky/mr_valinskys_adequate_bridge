@@ -324,7 +324,7 @@ func TestRoomHTTPSmoke(t *testing.T) {
 	}
 
 	landing := fetch("/")
-	for _, want := range []string{"Create room invite", "Browse bridged bots"} {
+	for _, want := range []string{"Create invite", "Browse bridged bots"} {
 		if !strings.Contains(landing, want) {
 			t.Fatalf("landing page missing %q\nbody:\n%s", want, landing)
 		}

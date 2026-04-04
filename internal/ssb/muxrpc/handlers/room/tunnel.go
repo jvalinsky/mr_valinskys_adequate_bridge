@@ -35,6 +35,10 @@ func (h *TunnelHandler) SetRuntimeSnapshots(snapshots roomdb.RuntimeSnapshotsSer
 	h.snapshots = snapshots
 }
 
+func (h *TunnelHandler) SetAnnounceHook(hook func(refs.FeedRef) error) {
+	h.announceHook = hook
+}
+
 func (h *TunnelHandler) Handled(m muxrpc.Method) bool {
 	return len(m) >= 1 && m[0] == "tunnel"
 }
@@ -71,7 +75,7 @@ func (h *TunnelHandler) handleAnnounce(ctx context.Context, req *muxrpc.Request)
 		return
 	}
 
-	feedRef, err := authenticatedFeedFromAddr(req.RemoteAddr())
+	feedRef, err := AuthenticatedFeedFromAddr(req.RemoteAddr())
 	if err != nil {
 		req.CloseWithError(fmt.Errorf("tunnel.announce: get caller: %w", err))
 		return
@@ -108,7 +112,7 @@ func (h *TunnelHandler) handleLeave(ctx context.Context, req *muxrpc.Request) {
 		return
 	}
 
-	feedRef, err := authenticatedFeedFromAddr(req.RemoteAddr())
+	feedRef, err := AuthenticatedFeedFromAddr(req.RemoteAddr())
 	if err != nil {
 		req.CloseWithError(fmt.Errorf("tunnel.leave: get caller: %w", err))
 		return
@@ -151,7 +155,7 @@ func (h *TunnelHandler) handleConnect(ctx context.Context, req *muxrpc.Request) 
 		return
 	}
 
-	origin, err := authenticatedFeedFromAddr(req.RemoteAddr())
+	origin, err := AuthenticatedFeedFromAddr(req.RemoteAddr())
 	if err != nil {
 		req.CloseWithError(fmt.Errorf("tunnel.connect: get caller: %w", err))
 		return

@@ -201,6 +201,11 @@ func main() {
 						EnvVars: []string{"BRIDGE_ATPROTO_INSECURE"},
 						Usage:   "disable TLS verification for all ATProto/XRPC connections (local/test stacks only)",
 					},
+					&cli.StringFlag{
+						Name:  "mcp-listen-addr",
+						Value: "127.0.0.1:8081",
+						Usage: "Optional MCP SSE Server listen address (e.g. 127.0.0.1:8081). If empty, MCP server is disabled.",
+					},
 				},
 				Action: runStart,
 			},

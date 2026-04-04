@@ -80,7 +80,7 @@ func parseAliasRegisterArgs(raw json.RawMessage) (string, []byte, error) {
 	return alias, signature, nil
 }
 
-func authenticatedFeedFromAddr(addr net.Addr) (refs.FeedRef, error) {
+func AuthenticatedFeedFromAddr(addr net.Addr) (refs.FeedRef, error) {
 	switch tv := addr.(type) {
 	case secretstream.Addr:
 		ref, err := refs.NewFeedRef(tv.PubKey, refs.RefAlgoFeedSSB1)

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,7 +23,7 @@ type SecretFile struct {
 const SecretPerms = 0600
 
 func Load(path string) (*KeyPair, error) {
-	data, err := ioutil.ReadFile(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("keys: failed to read secret file: %w", err)
 	}
@@ -127,4 +126,13 @@ func EncodeSecret(kp *KeyPair, w io.Writer) error {
 	}
 
 	return json.NewEncoder(w).Encode(secret)
+}
+
+func EncodePrivateKey(kp *KeyPair) string {
+	return base64.StdEncoding.EncodeToString(kp.Private())
+}
+
+func EncodePublicKey(kp *KeyPair) string {
+	pub := kp.Public()
+	return base64.StdEncoding.EncodeToString(pub[:])
 }

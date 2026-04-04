@@ -146,6 +146,7 @@ type StoreImpl struct {
 	db       *sql.DB
 	blobPath string
 	mu       sync.RWMutex
+	rxLog    *receiveLog
 }
 
 type Config struct {
@@ -179,6 +180,7 @@ func NewStore(cfg Config) (*StoreImpl, error) {
 	s := &StoreImpl{
 		db:       db,
 		blobPath: blobPath,
+		rxLog:    &receiveLog{db: db},
 	}
 
 	if err := s.migrate(); err != nil {
@@ -261,7 +263,13 @@ func (s *StoreImpl) Logs() MultiLog {
 }
 
 func (s *StoreImpl) ReceiveLog() (Log, error) {
-	return &receiveLog{db: s.db}, nil
+	return s.rxLog, nil
+}
+
+func (s *StoreImpl) SetMessageLogger(logger MessageLogger) {
+	if s.rxLog != nil {
+		s.rxLog.SetLogger(logger)
+	}
 }
 
 func (s *StoreImpl) Blobs() BlobStore {
@@ -450,9 +458,18 @@ func (l *logAdapter) Close() error {
 	return nil
 }
 
+type MessageLogger func(author string, seq int64, msgType string, key string)
+
 type receiveLog struct {
-	db *sql.DB
-	mu sync.RWMutex
+	db     *sql.DB
+	mu     sync.RWMutex
+	logger MessageLogger
+}
+
+func (l *receiveLog) SetLogger(logger MessageLogger) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.logger = logger
 }
 
 func (l *receiveLog) Seq() (int64, error) {
@@ -501,6 +518,14 @@ func (l *receiveLog) Append(content []byte, metadata *Metadata) (int64, error) {
 	)
 	if err != nil {
 		return 0, err
+	}
+
+	if l.logger != nil && metadata != nil {
+		var msgType string
+		if wrapper, ok := parseMessageType(content); ok {
+			msgType = wrapper.Type
+		}
+		go l.logger(metadata.Author, nextSeq, msgType, key)
 	}
 
 	return nextSeq, nil
@@ -655,4 +680,16 @@ type MessageVerifier func(msg *legacy.SignedMessage, author *refs.FeedRef) error
 
 func DefaultVerify(msg *legacy.SignedMessage, author *refs.FeedRef) error {
 	return msg.Verify()
+}
+
+type loggedMessage struct {
+	Type string `json:"type"`
+}
+
+func parseMessageType(content []byte) (loggedMessage, bool) {
+	var msg loggedMessage
+	if err := json.Unmarshal(content, &msg); err != nil {
+		return msg, false
+	}
+	return msg, msg.Type != ""
 }

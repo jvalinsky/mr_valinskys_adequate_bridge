@@ -20,19 +20,25 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/firehose"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/publishqueue"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/room"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomdb"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssbruntime"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/web/handlers"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/xrpc"
+	"github.com/mark3labs/mcp-go/server"
 )
 
 type BridgeApp struct {
-	db         *db.DB
-	ssbRuntime *ssbruntime.Runtime
-	publisher  *publishqueue.WorkerPublisher
-	processor  *bridge.Processor
-	indexer    *atindex.Service
-	firehose   *firehose.Client
-	room       *room.Runtime
-	logger     *log.Logger
+	db              *db.DB
+	ssbRuntime      *ssbruntime.Runtime
+	publisher       *publishqueue.WorkerPublisher
+	processor       *bridge.Processor
+	indexer         *atindex.Service
+	firehose        *firehose.Client
+	room            *room.Runtime
+	logger          *log.Logger
+	mcpServer       *server.MCPServer
+	followerTracker *bridge.FollowerTracker
 
 	cfg AppConfig
 }
@@ -55,6 +61,11 @@ type AppConfig struct {
 	RoomDomain      string
 	PLCURL          string
 	AtprotoInsecure bool
+	MCPListenAddr   string
+}
+
+func (a *BridgeApp) MCPServer() *server.MCPServer {
+	return a.mcpServer
 }
 
 func NewBridgeApp(cfg AppConfig, logger *log.Logger) *BridgeApp {
@@ -70,6 +81,13 @@ func (a *BridgeApp) Init(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("open db: %w", err)
 	}
+
+	a.mcpServer = server.NewMCPServer(
+		"bridge-live",
+		"1.0.0",
+		server.WithToolCapabilities(false),
+		server.WithRecovery(),
+	)
 
 	a.ssbRuntime, err = ssbruntime.Open(ctx, ssbruntime.Config{
 		RepoPath:   a.cfg.RepoPath,
@@ -159,9 +177,79 @@ func (a *BridgeApp) Init(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("start room runtime: %w", err)
 		}
+
+		a.initFollowerTracker(ctx)
 	}
 
+	// Register all MCP tools against the live application instances.
+	registerBridgeOpsTools(a.mcpServer, a.db, a.cfg.BotSeed)
+
+	atprotoDeps := atprotoMCPDeps{
+		database:   a.db,
+		httpClient: httpClient,
+		appviewURL: strings.TrimRight(xrpcHost, "/"),
+		plcURL:     strings.TrimRight(a.cfg.PLCURL, "/"),
+	}
+	registerATProtoTools(a.mcpServer, atprotoDeps)
+
+	ssbDeps := ssbMCPDeps{
+		ssbRT:   a.ssbRuntime,
+		roomOps: nil,
+	}
+	if a.cfg.RoomEnable {
+		roomProvider, err := handlers.OpenSQLiteRoomOpsProvider(filepath.Join(a.cfg.RepoPath, "room"), "", roomdb.RoleAdmin, nil)
+		if err == nil {
+			ssbDeps.roomOps = roomProvider
+		} else {
+			a.logger.Printf("mcp: failed to open room ops provider: %v", err)
+		}
+	}
+	registerSSBTools(a.mcpServer, ssbDeps)
+
 	return nil
+}
+
+func (a *BridgeApp) initFollowerTracker(ctx context.Context) {
+	if a.room == nil || a.ssbRuntime == nil {
+		return
+	}
+
+	bridgeBotDID := ""
+	bridgeBotSSBFeed := ""
+
+	accounts, err := a.db.GetAllBridgedAccounts(ctx)
+	if err == nil && len(accounts) > 0 {
+		bridgeBotDID = accounts[0].ATDID
+		bridgeBotSSBFeed = accounts[0].SSBFeedID
+	}
+
+	if bridgeBotDID == "" {
+		a.logger.Printf("follower-tracker: no bridged accounts found, skipping")
+		return
+	}
+
+	xrpcClient := &xrpc.Client{
+		Host: strings.TrimRight(a.cfg.XRPCReadHost, "/"),
+	}
+
+	tracker := bridge.NewFollowerTracker(bridge.FollowerTrackerConfig{
+		DB:            a.db,
+		XRPCClient:    xrpcClient,
+		BotDID:        bridgeBotDID,
+		BotSSBFeed:    bridgeBotSSBFeed,
+		DebounceDelay: 5 * time.Second,
+		RateLimitDur:  60 * time.Second,
+		MaxFollowsPer: 10,
+	})
+
+	a.room.SetAnnounceHook(func(feed refs.FeedRef) error {
+		tracker.Announce(feed)
+		return nil
+	})
+	tracker.Start(ctx, a.logger)
+	a.followerTracker = tracker
+
+	a.logger.Printf("follower-tracker: started for bot %s", bridgeBotDID)
 }
 
 func (a *BridgeApp) Start(ctx context.Context) error {
@@ -194,7 +282,40 @@ func (a *BridgeApp) Start(ctx context.Context) error {
 	setBridgeStateBestEffort(ctx, a.db, bridgeRuntimeStatusKey, "live", a.logger)
 	setBridgeStateBestEffort(ctx, a.db, bridgeRuntimeStartedAtKey, time.Now().UTC().Format(time.RFC3339), a.logger)
 
+	if a.cfg.MCPListenAddr != "" && a.mcpServer != nil {
+		go func() {
+			err := a.startMCPServer(ctx)
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
+				a.logger.Printf("mcp server error: %v", err)
+			}
+		}()
+	}
+
 	return nil
+}
+
+func (a *BridgeApp) startMCPServer(ctx context.Context) error {
+	mcpSSEServer := server.NewSSEServer(a.mcpServer, server.WithStaticBasePath("/api/mcp"))
+
+	mux := http.NewServeMux()
+	mux.Handle("/api/mcp/sse", mcpSSEServer.SSEHandler())
+	mux.Handle("/api/mcp/message", mcpSSEServer.MessageHandler())
+
+	srv := &http.Server{
+		Addr:    a.cfg.MCPListenAddr,
+		Handler: mux,
+	}
+
+	a.logger.Printf("event=mcp_server_start addr=%s", a.cfg.MCPListenAddr)
+
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		srv.Shutdown(shutdownCtx)
+	}()
+
+	return srv.ListenAndServe()
 }
 
 func (a *BridgeApp) StartIndexerPipeline(ctx context.Context) error {

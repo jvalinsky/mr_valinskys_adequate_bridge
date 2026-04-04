@@ -72,6 +72,8 @@ type Runtime struct {
 
 	handler  muxrpc.Handler
 	manifest *muxrpc.Manifest
+
+	tunnelHandler *roomhandlers.TunnelHandler
 }
 
 func Start(parentCtx context.Context, cfg Config, logger *log.Logger) (*Runtime, error) {
@@ -183,7 +185,8 @@ func (r *Runtime) initHandlers() {
 	if handlerMux == nil {
 		handlerMux = &muxrpc.HandlerMux{}
 	}
-	registerRoomHandlers(handlerMux, roomSrv, r.snapshots, r.keyPair, r.cfg.AppKey)
+	tunnelH := registerRoomHandlers(handlerMux, roomSrv, r.snapshots, r.keyPair, r.cfg.AppKey)
+	r.tunnelHandler = tunnelH
 
 	r.handler = handlerMux
 	r.manifest = &muxrpc.Manifest{}
@@ -265,6 +268,12 @@ func (r *Runtime) RoomServer() *roomhandlers.RoomServer {
 		return nil
 	}
 	return r.roomSrv
+}
+
+func (r *Runtime) SetAnnounceHook(hook func(refs.FeedRef) error) {
+	if r != nil && r.tunnelHandler != nil {
+		r.tunnelHandler.SetAnnounceHook(hook)
+	}
 }
 
 func (r *Runtime) Close() error {
@@ -567,7 +576,7 @@ func newServeMux(ctx context.Context, db RoomDB, state *roomstate.Manager, keyPa
 	return mux
 }
 
-func registerRoomHandlers(mux *muxrpc.HandlerMux, srv *roomhandlers.RoomServer, snapshots roomdb.RuntimeSnapshotsService, keyPair *keys.KeyPair, appKey string) {
+func registerRoomHandlers(mux *muxrpc.HandlerMux, srv *roomhandlers.RoomServer, snapshots roomdb.RuntimeSnapshotsService, keyPair *keys.KeyPair, appKey string) *roomhandlers.TunnelHandler {
 	mux.Register(muxrpc.Method{"whoami"}, &whoamiHandler{srv})
 	mux.Register(muxrpc.Method{"room"}, roomhandlers.NewAliasHandler(srv))
 
@@ -579,6 +588,8 @@ func registerRoomHandlers(mux *muxrpc.HandlerMux, srv *roomhandlers.RoomServer, 
 	mux.Register(muxrpc.Method{"tunnel", "endpoints"}, tunnelHandler)
 	mux.Register(muxrpc.Method{"tunnel", "isRoom"}, tunnelHandler)
 	mux.Register(muxrpc.Method{"tunnel", "ping"}, tunnelHandler)
+
+	return tunnelHandler
 }
 
 type whoamiHandler struct {

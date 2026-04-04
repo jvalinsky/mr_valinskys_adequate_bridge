@@ -228,6 +228,7 @@ func runStart(c *cli.Context) error {
 		RoomDomain:      c.String("room-https-domain"),
 		PLCURL:          c.String("plc-url"),
 		AtprotoInsecure: c.Bool("atproto-insecure"),
+		MCPListenAddr:   c.String("mcp-listen-addr"),
 	}
 
 	app := NewBridgeApp(cfg, logRuntime.Logger("bridge"))

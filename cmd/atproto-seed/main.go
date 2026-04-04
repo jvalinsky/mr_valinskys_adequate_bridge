@@ -45,6 +45,14 @@ func main() {
 				Value: 1,
 				Usage: "number of posts to publish",
 			},
+			&cli.BoolFlag{
+				Name:  "repost",
+				Usage: "publish a repost of the first post",
+			},
+			&cli.BoolFlag{
+				Name:  "profile",
+				Usage: "publish a profile update",
+			},
 			&cli.StringFlag{
 				Name:  "db",
 				Value: "bridge.sqlite",
@@ -64,6 +72,8 @@ func main() {
 			postCount := c.Int("post-count")
 			dbPath := c.String("db")
 			botSeed := c.String("bot-seed")
+			doRepost := c.Bool("repost")
+			doProfile := c.Bool("profile")
 
 			client := &xrpc.Client{Host: host}
 			ctx := context.Background()
@@ -180,6 +190,51 @@ func main() {
 					log.Printf("create follow error: %v", err)
 				} else {
 					log.Printf("published follow for %s", targetDID)
+				}
+			}
+
+			// Publish Repost
+			if doRepost && postURI != "" {
+				_, err := atproto.RepoCreateRecord(ctx, client, &atproto.RepoCreateRecord_Input{
+					Collection: "app.bsky.feed.repost",
+					Repo:       sess.Did,
+					Record: &lexutil.LexiconTypeDecoder{
+						Val: &appbsky.FeedRepost{
+							Subject: &appbsky.RepoStrongRef{
+								Uri: postURI,
+								Cid: postCID,
+							},
+							CreatedAt: time.Now().UTC().Format(time.RFC3339),
+						},
+					},
+				})
+				if err != nil {
+					log.Printf("create repost error: %v", err)
+				} else {
+					log.Printf("published repost of %s", postURI)
+				}
+			}
+
+			// Publish Profile Update
+			if doProfile {
+				displayName := "E2E Test Bot"
+				description := "Automated test account for e2e bridging validation"
+				rkey := "self"
+				_, err := atproto.RepoCreateRecord(ctx, client, &atproto.RepoCreateRecord_Input{
+					Collection: "app.bsky.actor.profile",
+					Repo:       sess.Did,
+					Rkey:       &rkey,
+					Record: &lexutil.LexiconTypeDecoder{
+						Val: &appbsky.ActorProfile{
+							DisplayName: &displayName,
+							Description: &description,
+						},
+					},
+				})
+				if err != nil {
+					log.Printf("create profile error: %v", err)
+				} else {
+					log.Printf("published profile update")
 				}
 			}
 

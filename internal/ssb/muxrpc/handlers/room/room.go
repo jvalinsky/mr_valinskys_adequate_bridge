@@ -434,7 +434,7 @@ func (h *AliasHandler) getCallerFeed(req *muxrpc.Request) (refs.FeedRef, error) 
 	if req.RemoteAddr() == nil {
 		return refs.FeedRef{}, fmt.Errorf("no remote addr")
 	}
-	return authenticatedFeedFromAddr(req.RemoteAddr())
+	return AuthenticatedFeedFromAddr(req.RemoteAddr())
 }
 
 func (h *AliasHandler) aliasURL(alias string) string {

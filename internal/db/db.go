@@ -1382,3 +1382,49 @@ func scanBridgeStateRow(rows *sql.Rows) (BridgeState, error) {
 	}
 	return state, nil
 }
+
+type FollowerSync struct {
+	BotDID          string
+	FollowerSSBFeed string
+	FollowedBackAt  time.Time
+}
+
+func (db *DB) AddFollowerSync(ctx context.Context, botDID, followerSSBFeed string) error {
+	_, err := db.conn.ExecContext(ctx, `
+		INSERT OR IGNORE INTO ssb_follower_sync (bot_did, follower_ssb_feed)
+		VALUES (?, ?)
+	`, botDID, followerSSBFeed)
+	return err
+}
+
+func (db *DB) HasFollowerSync(ctx context.Context, botDID, followerSSBFeed string) (bool, error) {
+	var count int
+	err := db.conn.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM ssb_follower_sync
+		WHERE bot_did = ? AND follower_ssb_feed = ?
+	`, botDID, followerSSBFeed).Scan(&count)
+	return count > 0, err
+}
+
+func (db *DB) ListFollowerSyncs(ctx context.Context, botDID string) ([]FollowerSync, error) {
+	rows, err := db.conn.QueryContext(ctx, `
+		SELECT bot_did, follower_ssb_feed, followed_back_at
+		FROM ssb_follower_sync
+		WHERE bot_did = ?
+		ORDER BY followed_back_at DESC
+	`, botDID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var syncs []FollowerSync
+	for rows.Next() {
+		var sync FollowerSync
+		if err := rows.Scan(&sync.BotDID, &sync.FollowerSSBFeed, &sync.FollowedBackAt); err != nil {
+			return nil, err
+		}
+		syncs = append(syncs, sync)
+	}
+	return syncs, rows.Err()
+}
