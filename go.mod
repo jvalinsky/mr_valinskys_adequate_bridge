@@ -1,12 +1,13 @@
 module github.com/jvalinsky/mr_valinskys_adequate_bridge
 
-go 1.25.5
+go 1.26.1
 
 require (
 	github.com/go-chi/chi/v5 v5.2.5
 	github.com/gorilla/websocket v1.5.3
 	github.com/ipfs/go-cid v0.4.1
 	github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb v0.0.0-00010101000000-000000000000
+	github.com/mark3labs/mcp-go v0.47.0
 	github.com/mattn/go-sqlite3 v1.14.37
 	github.com/ssbc/go-muxrpc/v2 v2.0.14-0.20221111190521-10382533750c
 	github.com/ssbc/go-netwrap v0.1.5-0.20221019160355-cd323bb2e29d
@@ -23,12 +24,15 @@ require (
 
 require (
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
+	github.com/google/jsonschema-go v0.4.2 // indirect
 	github.com/gopherjs/gopherjs v0.0.0-20190910122728-9d188e94fb99 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.28.0 // indirect
 	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51 // indirect
 	github.com/oxtoacart/bpool v0.0.0-20190530202638-03653db5a59c // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
+	github.com/spf13/cast v1.7.1 // indirect
 	github.com/ssbc/go-luigi v0.3.7-0.20221019204020-324065b9a7c6 // indirect
+	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	golang.org/x/mod v0.33.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect

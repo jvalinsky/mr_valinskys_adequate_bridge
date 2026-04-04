@@ -6,6 +6,7 @@ package main
 import (
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/urfave/cli/v2"
@@ -336,11 +337,71 @@ func main() {
 					},
 					&cli.BoolFlag{
 						Name:    "atproto-insecure",
-						EnvVars: []string{"BRIDGE_ATPROTO_INSECURE"},
-						Usage:   "disable TLS verification for ATProto/XRPC connections (local/test stacks only)",
+						Usage: "disable TLS verification for ATProto/XRPC connections (local/test stacks only)",
 					},
 				},
 				Action: runServeUI,
+			},
+			{
+				Name:  "mcp",
+				Usage: "Run MCP (Model Context Protocol) servers for AI assistant integration",
+				Subcommands: []*cli.Command{
+					{
+						Name:  "bridge-ops",
+						Usage: "Run the bridge operations MCP server (status, accounts, messages, failures, retry)",
+						Action: func(c *cli.Context) error {
+							return runMCPBridgeOps(dbPath, botSeed)
+						},
+					},
+					{
+						Name:  "ssb",
+						Usage: "Run the SSB node MCP server (feeds, blobs, peers, replication, room management)",
+						Flags: []cli.Flag{
+							&cli.StringFlag{
+								Name:  "repo-path",
+								Value: ".ssb-bridge",
+								Usage: "SSB repo path",
+							},
+						},
+						Action: func(c *cli.Context) error {
+							repoPath := c.String("repo-path")
+							if strings.TrimSpace(repoPath) == "" {
+								repoPath = ".ssb-bridge"
+							}
+							return runMCPSSB(dbPath, repoPath, botSeed)
+						},
+					},
+					{
+						Name:  "atproto",
+						Usage: "Run the ATProto client MCP server (resolve, profiles, records, tracking)",
+						Flags: []cli.Flag{
+							&cli.StringFlag{
+								Name:    "plc-url",
+								Value:   "https://plc.directory",
+								EnvVars: []string{"BRIDGE_PLC_URL"},
+								Usage:   "ATProto PLC directory URL",
+							},
+							&cli.StringFlag{
+								Name:  "appview-url",
+								Value: "https://public.api.bsky.app",
+								Usage: "ATProto AppView URL for XRPC queries",
+							},
+							&cli.BoolFlag{
+								Name:    "atproto-insecure",
+								EnvVars: []string{"BRIDGE_ATPROTO_INSECURE"},
+								Usage:   "disable TLS verification for ATProto/XRPC connections",
+							},
+						},
+						Action: func(c *cli.Context) error {
+							return runMCPATProto(
+								dbPath,
+								c.String("plc-url"),
+								c.String("appview-url"),
+								c.Bool("atproto-insecure"),
+							)
+						},
+					},
+				},
 			},
 		},
 	}
