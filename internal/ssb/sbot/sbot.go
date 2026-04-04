@@ -97,6 +97,8 @@ func New(opts Options) (*Sbot, error) {
 		return nil, fmt.Errorf("sbot: failed to create store: %w", err)
 	}
 
+	feedStore.SetSignatureVerifier(&feedlog.DefaultSignatureVerifier{})
+
 	selfRef := opts.KeyPair.FeedRef()
 	stateMatrix, err := replication.NewStateMatrix(
 		opts.RepoPath+"/ebt-state",
@@ -470,5 +472,11 @@ func (s *Sbot) Replicate(feed interface{}) {
 func (s *Sbot) NotifyFeedSeq(feed *refs.FeedRef, seq int64) {
 	if s.state != nil {
 		s.state.SetFeedSeq(feed, seq)
+	}
+}
+
+func (s *Sbot) SetSignatureLogger(logger feedlog.SignatureLogger) {
+	if s.store != nil {
+		s.store.SetSignatureLogger(logger)
 	}
 }

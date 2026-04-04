@@ -2,6 +2,7 @@ package feedlog
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
@@ -272,6 +273,18 @@ func (s *StoreImpl) SetMessageLogger(logger MessageLogger) {
 	}
 }
 
+func (s *StoreImpl) SetSignatureLogger(logger SignatureLogger) {
+	if s.rxLog != nil {
+		s.rxLog.SetSignatureLogger(logger)
+	}
+}
+
+func (s *StoreImpl) SetSignatureVerifier(verifier SignatureVerifier) {
+	if s.rxLog != nil {
+		s.rxLog.SetSignatureVerifier(verifier)
+	}
+}
+
 func (s *StoreImpl) Blobs() BlobStore {
 	return &blobStore{db: s.db, blobPath: s.blobPath}
 }
@@ -460,10 +473,57 @@ func (l *logAdapter) Close() error {
 
 type MessageLogger func(author string, seq int64, msgType string, key string)
 
+type SignatureLogger func(author string, seq int64, key string, valid bool, err error)
+
 type receiveLog struct {
-	db     *sql.DB
-	mu     sync.RWMutex
-	logger MessageLogger
+	db          *sql.DB
+	mu          sync.RWMutex
+	logger      MessageLogger
+	sigLogger   SignatureLogger
+	sigVerifier SignatureVerifier
+}
+
+type SignatureVerifier interface {
+	Verify(content []byte, metadata *Metadata) error
+}
+
+type DefaultSignatureVerifier struct{}
+
+func (v *DefaultSignatureVerifier) Verify(content []byte, metadata *Metadata) error {
+	if len(metadata.Sig) == 0 {
+		return errors.New("missing signature")
+	}
+
+	if len(metadata.Sig) != ed25519.SignatureSize {
+		return fmt.Errorf("invalid signature length: %d (expected %d)", len(metadata.Sig), ed25519.SignatureSize)
+	}
+
+	var msg legacy.SignedMessage
+	if err := json.Unmarshal(content, &msg); err != nil {
+		return fmt.Errorf("parse signed message: %w", err)
+	}
+
+	if err := msg.Verify(); err != nil {
+		return fmt.Errorf("signature verification failed: %w", err)
+	}
+
+	return nil
+}
+
+func (l *receiveLog) SetSignatureLogger(logger SignatureLogger) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.sigLogger = logger
+}
+
+func (l *receiveLog) SetSignatureVerifier(verifier SignatureVerifier) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if verifier == nil {
+		l.sigVerifier = &DefaultSignatureVerifier{}
+	} else {
+		l.sigVerifier = verifier
+	}
 }
 
 func (l *receiveLog) SetLogger(logger MessageLogger) {
@@ -490,6 +550,18 @@ func (l *receiveLog) Seq() (int64, error) {
 func (l *receiveLog) Append(content []byte, metadata *Metadata) (int64, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+
+	if l.sigVerifier != nil && metadata != nil {
+		if err := l.sigVerifier.Verify(content, metadata); err != nil {
+			if l.sigLogger != nil {
+				go l.sigLogger(metadata.Author, metadata.Sequence, "", false, err)
+			}
+			return 0, fmt.Errorf("signature verification failed: %w", err)
+		}
+		if l.sigLogger != nil {
+			go l.sigLogger(metadata.Author, metadata.Sequence, metadata.Hash, true, nil)
+		}
+	}
 
 	wrapper := &storedMessageWrapper{
 		Content:  content,
