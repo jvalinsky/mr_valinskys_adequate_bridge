@@ -200,6 +200,10 @@ func runStart(c *cli.Context) error {
 	}
 	defer shutdownLogRuntime(logRuntime)
 
+	// Setup slog with runtime level control
+	level := parseSlogLevel(c.String("log-level"))
+	logRuntime.SetupDefaultSlogger(level)
+
 	hmacKey, err := parseHMACKey(c.String("hmac-key"))
 	if err != nil {
 		return err

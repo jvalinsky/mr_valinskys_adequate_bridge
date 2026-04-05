@@ -2,7 +2,7 @@ package sbot
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/feedlog"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
@@ -30,6 +30,6 @@ func (f *FeedReplicator) ListFeeds() ([]refs.FeedRef, error) {
 		}
 		feeds = append(feeds, *feedRef)
 	}
-	log.Printf("[EBT DEBUG] FeedReplicator.ListFeeds: total=%d feeds=%v", len(feeds), feeds)
+	slog.Debug("feed replicator list feeds", "total", len(feeds), "feeds", fmt.Sprintf("%v", feeds))
 	return feeds, nil
 }

@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -198,7 +198,7 @@ func (h *Handler) handleHas(ctx context.Context, req *muxrpc.Request) {
 		return
 	}
 
-	log.Printf("[BLOB DEBUG] blobs.has: ref=%s has=%v", args[0], has)
+	slog.Debug("blobs.has", "ref", args[0], "has", has)
 	req.Return(ctx, has)
 }
 
@@ -275,7 +275,7 @@ func (h *Handler) handleGet(ctx context.Context, req *muxrpc.Request) {
 	}
 
 	hashStr := args[0].Hash
-	log.Printf("[BLOB DEBUG] blobs.get: hash=%s", hashStr)
+	slog.Debug("blobs.get", "hash", hashStr)
 
 	ref, err := refs.ParseBlobRef(hashStr)
 	if err != nil {
@@ -285,13 +285,13 @@ func (h *Handler) handleGet(ctx context.Context, req *muxrpc.Request) {
 
 	rc, err := h.bs.Get(ref.Hash())
 	if err != nil {
-		log.Printf("[BLOB DEBUG] blobs.get: hash=%s not found", hashStr)
+		slog.Debug("blobs.get not found", "hash", hashStr)
 		req.CloseWithError(fmt.Errorf("blobs.get: not found"))
 		return
 	}
 	defer rc.Close()
 
-	log.Printf("[BLOB DEBUG] blobs.get: hash=%s found, streaming", hashStr)
+	slog.Debug("blobs.get found, streaming", "hash", hashStr)
 
 	sink, err := req.ResponseSink()
 	if err != nil {
@@ -314,7 +314,7 @@ func (h *Handler) handleGet(ctx context.Context, req *muxrpc.Request) {
 			return
 		}
 	}
-	log.Printf("[BLOB DEBUG] blobs.get: hash=%s done", hashStr)
+	slog.Debug("blobs.get done", "hash", hashStr)
 }
 
 func (h *Handler) handleAdd(ctx context.Context, req *muxrpc.Request) {
@@ -349,7 +349,7 @@ func (h *Handler) handleAdd(ctx context.Context, req *muxrpc.Request) {
 	}
 
 	blobRef, _ := refs.NewBlobRef(hash)
-	log.Printf("[BLOB DEBUG] blobs.add: size=%d hash=%s", len(allData), blobRef.String())
+	slog.Debug("blobs.add", "size", len(allData), "hash", blobRef.String())
 	req.Return(ctx, blobRef.String())
 }
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	stdlog "log"
+	"log/slog"
 	"os"
 	"runtime/debug"
 	"strconv"
@@ -146,6 +147,29 @@ func newOTLPExporter(cfg Config) (sdklog.Exporter, error) {
 		opts = append(opts, otlploggrpc.WithInsecure())
 	}
 	return otlploggrpc.New(ctx, opts...)
+}
+
+// SetupDefaultSlogger configures slog.Default() with a handler that writes
+// structured logs to local output. The returned *slog.LevelVar can be
+// used to update the minimum log level at runtime.
+func (r *Runtime) SetupDefaultSlogger(minLevel slog.Level) *slog.LevelVar {
+	lv := &slog.LevelVar{}
+	lv.Set(minLevel)
+
+	if r == nil || r.localWriter == nil {
+		// Fallback: use plain text handler on stdout
+		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+			Level: lv,
+		})))
+		return lv
+	}
+
+	h := &otlpSlogHandler{
+		level: lv,
+		local: r.localWriter,
+	}
+	slog.SetDefault(slog.New(h))
+	return lv
 }
 
 // Logger creates a component logger that preserves existing stdlib formatting.

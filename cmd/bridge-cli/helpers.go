@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -19,6 +20,7 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/backfill"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/blobbridge"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/bridge"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/config"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/room"
@@ -28,6 +30,19 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/web/handlers"
 	"github.com/urfave/cli/v2"
 )
+
+func parseSlogLevel(s string) slog.Level {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "debug":
+		return slog.LevelDebug
+	case "warn":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
+}
 
 func newBridgeLogRuntime(c *cli.Context, defaultService string) (*logutil.Runtime, error) {
 	serviceName := strings.TrimSpace(c.String("otel-service-name"))
@@ -407,6 +422,36 @@ func runDeferredResolverScheduler(ctx context.Context, processor *bridge.Process
 					result.Deferred,
 					result.Failed,
 				)
+			}
+		}
+	}
+}
+
+func runDeferredExpiryScheduler(ctx context.Context, processor *bridge.Processor, logger *log.Logger) {
+	if processor == nil {
+		return
+	}
+	if logger == nil {
+		logger = logutil.NewTextLogger("bridge")
+	}
+
+	maxAge := time.Duration(config.DeferredMaxAgeDays) * 24 * time.Hour
+	interval := time.Duration(config.DeferredExpiryIntervalHours) * time.Hour
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			result, err := processor.ExpireDeferredMessages(ctx, maxAge, 1000)
+			if err != nil {
+				logger.Printf("event=deferred_expiry_error err=%v", err)
+				continue
+			}
+			if result.Expired > 0 || result.Failed > 0 {
+				logger.Printf("event=deferred_expiry selected=%d expired=%d failed=%d", result.Selected, result.Expired, result.Failed)
 			}
 		}
 	}

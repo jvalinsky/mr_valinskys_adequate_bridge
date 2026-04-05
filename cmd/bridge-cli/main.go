@@ -85,6 +85,11 @@ func main() {
 				Usage:       "local log output mode: text|none",
 				Destination: &localLogOutput,
 			},
+			&cli.StringFlag{
+				Name:  "log-level",
+				Value: "info",
+				Usage: "minimum log level: debug|info|warn|error",
+			},
 		},
 		Commands: []*cli.Command{
 			{

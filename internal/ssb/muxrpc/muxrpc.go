@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"strings"
 	"sync"
@@ -347,14 +347,14 @@ func (r *rpc) sender() {
 }
 
 func (r *rpc) HandlePacket(p *codec.Packet) {
-	log.Printf("[MUXRPC DEBUG] HandlePacket: Req=%d, Flag=%v, BodyLen=%d", p.Req, p.Flag, len(p.Body))
+	slog.Debug("muxrpc handle packet", "req", p.Req, "flag", p.Flag, "body_len", len(p.Body))
 	if p.Req > 0 {
 		r.mu.Lock()
 		existingReq, hasExisting := r.streams[p.Req]
 		r.mu.Unlock()
 
 		if hasExisting {
-			log.Printf("[MUXRPC DEBUG] HandlePacket: follow-up packet detected on Req=%d, routing to existing stream", p.Req)
+			slog.Debug("muxrpc handle packet follow-up detected", "req", p.Req)
 			if len(p.Body) > 0 {
 				if err := existingReq.source.WritePacket(p); err != nil {
 				}

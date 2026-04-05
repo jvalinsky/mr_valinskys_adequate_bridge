@@ -5,7 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"strconv"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/feedlog"
@@ -22,18 +22,18 @@ func NewFeedManagerAdapter(store *feedlog.StoreImpl) *FeedManagerAdapter {
 }
 
 func (f *FeedManagerAdapter) GetFeedSeq(author *refs.FeedRef) (int64, error) {
-	log.Printf("[EBT DEBUG] FeedManagerAdapter.GetFeedSeq: author=%s", author.String())
+	slog.Debug("feed manager get feed seq", "author", author.String())
 	l, err := f.store.Logs().Get(author.Ref())
 	if err != nil {
 		return -1, fmt.Errorf("feed manager: get log: %w", err)
 	}
 	seq, err := l.Seq()
-	log.Printf("[EBT DEBUG] FeedManagerAdapter.GetFeedSeq: author=%s seq=%d", author.String(), seq)
+	slog.Debug("feed manager get feed seq result", "author", author.String(), "seq", seq)
 	return seq, nil
 }
 
 func (f *FeedManagerAdapter) GetMessage(author *refs.FeedRef, seq int64) ([]byte, error) {
-	log.Printf("[EBT DEBUG] FeedManagerAdapter.GetMessage: author=%s seq=%d", author.String(), seq)
+	slog.Debug("feed manager get message", "author", author.String(), "seq", seq)
 	l, err := f.store.Logs().Get(author.Ref())
 	if err != nil {
 		return nil, fmt.Errorf("feed manager: get log: %w", err)
@@ -95,8 +95,8 @@ func (f *FeedManagerAdapter) GetMessage(author *refs.FeedRef, seq int64) ([]byte
 	buf.WriteString("}")
 
 	msgBytes := buf.Bytes()
-	log.Printf("[EBT DEBUG] GetMessage full msg for seq=%d:\n%s", seq, string(msgBytes))
-	log.Printf("[EBT DEBUG] FeedManagerAdapter.GetMessage: author=%s seq=%d msg_bytes=%d", author.String(), seq, len(msgBytes))
+	slog.Debug("feed manager get message full msg", "seq", seq, "msg", string(msgBytes))
+	slog.Debug("feed manager get message bytes", "author", author.String(), "seq", seq, "bytes", len(msgBytes))
 	return msgBytes, nil
 }
 

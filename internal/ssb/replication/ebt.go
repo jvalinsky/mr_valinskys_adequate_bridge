@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -116,7 +116,7 @@ func (sm *StateMatrix) initializeFeed(feed *refs.FeedRef, seq int64) {
 
 	sm.frontiers[sm.self] = selfFrontier
 	sm.notify()
-	log.Printf("[EBT DEBUG] initializeFeed: feed=%s seq=%d, Receive=true", feed.String(), seq)
+	slog.Debug("ebt initialize feed", "feed", feed.String(), "seq", seq, "receive", true)
 }
 
 func (sm *StateMatrix) InitializeFromFeedlog() error {
@@ -202,7 +202,7 @@ func (sm *StateMatrix) SetFeedSeq(feed *refs.FeedRef, seq int64) {
 
 	sm.frontiers[sm.self] = selfFrontier
 	sm.notify()
-	log.Printf("[EBT DEBUG] SetFeedSeq: feed=%s seq=%d, self_frontier now has %d feeds", feed.String(), seq, len(selfFrontier))
+	slog.Debug("ebt set feed seq", "feed", feed.String(), "seq", seq, "frontier_count", len(selfFrontier))
 }
 
 func (sm *StateMatrix) Changed(self, peer *refs.FeedRef) (NetworkFrontier, error) {
@@ -217,7 +217,7 @@ func (sm *StateMatrix) Changed(self, peer *refs.FeedRef) (NetworkFrontier, error
 		selfNf = make(NetworkFrontier)
 	}
 
-	log.Printf("[EBT DEBUG] Changed: self=%s, selfNf_count=%d, selfNf=%+v", self.String(), len(selfNf), selfNf)
+	slog.Debug("ebt changed self", "self", self.String(), "frontier_count", len(selfNf), "frontier", fmt.Sprintf("%+v", selfNf))
 
 	var peerNf NetworkFrontier
 	if peer != nil {
@@ -228,10 +228,10 @@ func (sm *StateMatrix) Changed(self, peer *refs.FeedRef) (NetworkFrontier, error
 		if peerNf == nil {
 			peerNf = make(NetworkFrontier)
 		}
-		log.Printf("[EBT DEBUG] Changed: peer=%s, peerNf_count=%d", peer.String(), len(peerNf))
+		slog.Debug("ebt changed peer", "peer", peer.String(), "frontier_count", len(peerNf))
 	} else {
 		peerNf = make(NetworkFrontier)
-		log.Printf("[EBT DEBUG] Changed: peer=nil (initial state request)")
+		slog.Debug("ebt changed peer (initial state request)", "peer", nil)
 	}
 
 	relevant := make(NetworkFrontier)
@@ -242,7 +242,7 @@ func (sm *StateMatrix) Changed(self, peer *refs.FeedRef) (NetworkFrontier, error
 				relevant[feed] = note
 			}
 		}
-		log.Printf("[EBT DEBUG] Changed: initial state, advertising %d feeds", len(relevant))
+		slog.Debug("ebt changed initial state", "feeds_advertising", len(relevant))
 		return relevant, nil
 	}
 
@@ -422,17 +422,17 @@ func NewEBTHandler(self *refs.FeedRef, store FeedManager, matrix *StateMatrix, r
 }
 
 func (h *EBTHandler) HandleDuplex(ctx context.Context, tx Writer, rx ByteSourceReader, remoteAddr string, remoteFeed *refs.FeedRef) error {
-	log.Printf("[EBT DEBUG] HandleDuplex: START remote=%s remoteFeed=%v", remoteAddr, remoteFeed)
+	slog.Debug("ebt handle duplex start", "remote", remoteAddr, "remote_feed", remoteFeed)
 
 	session := h.sessions.Started(remoteAddr)
 	defer h.sessions.Ended(remoteAddr)
 
-	log.Printf("[EBT DEBUG] HandleDuplex: sending initial state to %s", remoteAddr)
+	slog.Debug("ebt handle duplex sending initial state", "remote", remoteAddr)
 	if err := h.sendState(ctx, tx, remoteAddr); err != nil {
-		log.Printf("[EBT DEBUG] HandleDuplex: sendState failed: %v", err)
+		slog.Debug("ebt handle duplex send state failed", "err", err)
 		return err
 	}
-	log.Printf("[EBT DEBUG] HandleDuplex: initial state sent, waiting for peer frontier...")
+	slog.Debug("ebt handle duplex initial state sent, waiting for peer frontier")
 
 	// Launch background loop to monitor for local state changes and notify peer
 	go func() {
@@ -455,28 +455,28 @@ func (h *EBTHandler) HandleDuplex(ctx context.Context, tx Writer, rx ByteSourceR
 	}()
 
 	for {
-		log.Printf("[EBT DEBUG] HandleDuplex: about to call rx.Next(ctx)...")
+		slog.Debug("ebt handle duplex calling rx.Next")
 		ok := rx.Next(ctx)
 		if !ok {
 			err := rx.Err()
-			log.Printf("[EBT DEBUG] HandleDuplex: rx.Next returned false, err=%v", err)
+			slog.Debug("ebt handle duplex rx.Next returned false", "err", err)
 			return err
 		}
 
 		data, err := rx.Bytes()
 		if err != nil {
-			log.Printf("[EBT DEBUG] HandleDuplex: rx.Bytes error: %v", err)
+			slog.Debug("ebt handle duplex rx.Bytes error", "err", err)
 			return err
 		}
-		log.Printf("[EBT DEBUG] HandleDuplex: received %d bytes from peer: %s", len(data), string(data))
+		slog.Debug("ebt handle duplex received bytes", "bytes", len(data), "data", string(data))
 
 		var frontierUpdate NetworkFrontier
 		if err := json.Unmarshal(data, &frontierUpdate); err != nil {
-			log.Printf("[EBT DEBUG] HandleDuplex: failed to unmarshal frontier: %v", err)
+			slog.Debug("ebt handle duplex failed to unmarshal frontier", "err", err)
 			continue
 		}
 
-		log.Printf("[EBT DEBUG] HandleDuplex: received frontier from %s: %+v", remoteAddr, frontierUpdate)
+		slog.Debug("ebt handle duplex received frontier", "remote", remoteAddr, "update", fmt.Sprintf("%+v", frontierUpdate))
 
 		// Store remote peer's frontier under their identity, not ours
 		_, err = h.stateMatrix.Update(remoteFeed, frontierUpdate)
@@ -490,7 +490,7 @@ func (h *EBTHandler) HandleDuplex(ctx context.Context, tx Writer, rx ByteSourceR
 			return err
 		}
 
-		log.Printf("[EBT DEBUG] HandleDuplex: feeds_wanted=%d: %+v", len(wants), wants)
+		slog.Debug("ebt handle duplex feeds wanted", "count", len(wants), "wants", fmt.Sprintf("%+v", wants))
 
 		for feedStr, note := range wants {
 			if !note.Replicate {
@@ -508,7 +508,7 @@ func (h *EBTHandler) HandleDuplex(ctx context.Context, tx Writer, rx ByteSourceR
 				continue
 			}
 
-			log.Printf("[EBT DEBUG] HandleDuplex: streaming history for feed=%s seq=%d", feedStr, note.Seq+1)
+			slog.Debug("ebt handle duplex streaming history", "feed", feedStr, "seq", note.Seq+1)
 
 			arg := CreateHistArgs{
 				ID:    feed,
@@ -523,7 +523,7 @@ func (h *EBTHandler) HandleDuplex(ctx context.Context, tx Writer, rx ByteSourceR
 			go func(fStr string, cxt context.Context, a CreateHistArgs) {
 				if err := h.createStreamHistory(cxt, tx, a); err != nil {
 					if !errors.Is(err, context.Canceled) {
-						log.Printf("[EBT DEBUG] createStreamHistory error for %s: %v", fStr, err)
+						slog.Debug("ebt create stream history error", "feed", fStr, "err", err)
 					}
 				}
 			}(feedStr, subCtx, arg)
@@ -542,7 +542,7 @@ func (h *EBTHandler) sendState(ctx context.Context, tx Writer, remote string) er
 		return err
 	}
 
-	log.Printf("[EBT DEBUG] sendState: remote=%s, state_bytes=%d, state=%s", remote, len(data), string(data))
+	slog.Debug("ebt send state", "remote", remote, "bytes", len(data), "state", string(data))
 
 	return tx.Write(ctx, data)
 }
@@ -556,7 +556,7 @@ type CreateHistArgs struct {
 
 func (h *EBTHandler) createStreamHistory(ctx context.Context, tx Writer, arg CreateHistArgs) error {
 	feed := arg.ID
-	log.Printf("[EBT DEBUG] createStreamHistory: starting for feed=%s seq=%d live=%v", feed.String(), arg.Seq, arg.Live)
+	slog.Debug("ebt create stream history starting", "feed", feed.String(), "seq", arg.Seq, "live", arg.Live)
 
 	retryDelay := 100 * time.Millisecond
 	maxRetries := 50
@@ -572,21 +572,21 @@ func (h *EBTHandler) createStreamHistory(ctx context.Context, tx Writer, arg Cre
 					return nil
 				}
 				if time.Since(startTime) > maxWaitTime {
-					log.Printf("[EBT DEBUG] createStreamHistory: feed=%s seq=%d not found after %v, returning current state", feed.String(), seq, time.Since(startTime))
+					slog.Debug("ebt create stream history not found after timeout", "feed", feed.String(), "seq", seq, "elapsed", time.Since(startTime))
 					return nil
 				}
 				retries++
 				if retries > maxRetries {
-					log.Printf("[EBT DEBUG] createStreamHistory: feed=%s seq=%d not found after %d retries, checking GetFeedSeq", feed.String(), seq, maxRetries)
+					slog.Debug("ebt create stream history not found after retries", "feed", feed.String(), "seq", seq, "max_retries", maxRetries)
 					currentSeq, seqErr := h.store.GetFeedSeq(feed)
 					if seqErr == nil && currentSeq >= seq {
-						log.Printf("[EBT DEBUG] createStreamHistory: feed=%s caught up to seq=%d", feed.String(), currentSeq)
+						slog.Debug("ebt create stream history caught up", "feed", feed.String(), "seq", currentSeq)
 						return nil
 					}
 					retries = 0
 					retryDelay = 100 * time.Millisecond
 				}
-				log.Printf("[EBT DEBUG] createStreamHistory: feed=%s seq=%d not found, retry %d/%d in %v", feed.String(), seq, retries, maxRetries, retryDelay)
+				slog.Debug("ebt create stream history not found, retrying", "feed", feed.String(), "seq", seq, "retry", retries, "max_retries", maxRetries, "delay", retryDelay)
 				select {
 				case <-ctx.Done():
 					return ctx.Err()
@@ -604,7 +604,7 @@ func (h *EBTHandler) createStreamHistory(ctx context.Context, tx Writer, arg Cre
 		retryDelay = 100 * time.Millisecond
 		startTime = time.Now()
 
-		log.Printf("[EBT DEBUG] createStreamHistory: sending msg for feed=%s seq=%d bytes=%d", feed.String(), seq, len(msg))
+		slog.Debug("ebt create stream history sending msg", "feed", feed.String(), "seq", seq, "bytes", len(msg))
 		if err := tx.Write(ctx, msg); err != nil {
 			return err
 		}
