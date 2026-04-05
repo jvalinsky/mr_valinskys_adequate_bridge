@@ -21,6 +21,11 @@ var (
 		Help: "Total number of messages deferred due to missing dependencies",
 	})
 
+	DeferredExpired = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "bridge_deferred_expired_total",
+		Help: "Total number of deferred messages expired (failed due to TTL)",
+	})
+
 	BlobsDownloaded = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "bridge_blobs_downloaded_total",
 		Help: "Total number of blobs downloaded from ATProto",
@@ -44,5 +49,10 @@ var (
 	FirehoseLag = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "bridge_firehose_lag",
 		Help: "Current firehose cursor lag (events behind)",
+	})
+
+	RateLimited = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "bridge_rate_limited_total",
+		Help: "Total number of messages rate-limited per-DID",
 	})
 )

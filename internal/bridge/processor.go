@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/config"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/firehose"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil"
@@ -18,14 +19,18 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto"
 	lexutil "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/lexutil"
 	atrepo "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/repo"
+	"golang.org/x/time/rate"
 )
 
 var supportedCollections = map[string]struct{}{
-	mapper.RecordTypePost:    {},
-	mapper.RecordTypeLike:    {},
-	mapper.RecordTypeFollow:  {},
-	mapper.RecordTypeBlock:   {},
-	mapper.RecordTypeProfile: {},
+	mapper.RecordTypePost:       {},
+	mapper.RecordTypeLike:       {},
+	mapper.RecordTypeFollow:     {},
+	mapper.RecordTypeBlock:      {},
+	mapper.RecordTypeProfile:    {},
+	mapper.RecordTypeList:       {},
+	mapper.RecordTypeListItem:   {},
+	mapper.RecordTypeThreadgate: {},
 }
 
 // Database defines the persistence surface required by the bridge processor.
@@ -36,6 +41,7 @@ type Database interface {
 	SetBridgeState(ctx context.Context, key, value string) error
 	GetDeferredCandidates(ctx context.Context, limit int) ([]db.Message, error)
 	GetRetryCandidates(ctx context.Context, limit int, atDID string, maxAttempts int) ([]db.Message, error)
+	GetExpiredDeferredMessages(ctx context.Context, maxAge time.Duration, limit int) ([]db.Message, error)
 }
 
 // Processor processes ATProto commits into persisted and optionally published SSB messages.
@@ -49,15 +55,23 @@ type Processor struct {
 
 	feedMu       sync.Mutex
 	feedInFlight map[string]*feedResolutionCall
+
+	rateLimiters         map[string]*rate.Limiter
+	rateLimitMu          sync.Mutex
+	maxMessagesPerMinute int
+	lastActivity         map[string]time.Time
 }
 
 // NewProcessor constructs a Processor with optional publisher/blob integrations.
 func NewProcessor(database Database, logger *log.Logger, opts ...Option) *Processor {
 	logger = logutil.Ensure(logger)
 	proc := &Processor{
-		db:           database,
-		logger:       logger,
-		feedInFlight: make(map[string]*feedResolutionCall),
+		db:                   database,
+		logger:               logger,
+		feedInFlight:         make(map[string]*feedResolutionCall),
+		rateLimiters:         make(map[string]*rate.Limiter),
+		lastActivity:         make(map[string]time.Time),
+		maxMessagesPerMinute: config.MaxMessagesPerDIDPerMinute,
 	}
 	for _, opt := range opts {
 		opt(proc)
@@ -89,6 +103,13 @@ type DeferredResolveResult struct {
 	Published int
 	Deferred  int
 	Failed    int
+}
+
+// ExpireResult summarizes one deferred-expiry run.
+type ExpireResult struct {
+	Selected int
+	Expired  int
+	Failed   int // DB errors during expiry
 }
 
 // Publisher publishes one mapped message for a DID.
@@ -138,6 +159,64 @@ func WithFeedResolver(resolver FeedResolver) Option {
 	}
 }
 
+// WithMaxMessagesPerMinute sets the per-DID message rate limit.
+func WithMaxMessagesPerMinute(n int) Option {
+	return func(proc *Processor) {
+		proc.maxMessagesPerMinute = n
+	}
+}
+
+func (p *Processor) getRateLimiter(did string) *rate.Limiter {
+	if p.maxMessagesPerMinute <= 0 {
+		return nil
+	}
+
+	p.rateLimitMu.Lock()
+	defer p.rateLimitMu.Unlock()
+
+	if lim, ok := p.rateLimiters[did]; ok {
+		p.lastActivity[did] = time.Now()
+		return lim
+	}
+
+	lim := rate.NewLimiter(rate.Limit(p.maxMessagesPerMinute), p.maxMessagesPerMinute)
+	p.rateLimiters[did] = lim
+	p.lastActivity[did] = time.Now()
+	return lim
+}
+
+func (p *Processor) StartRateLimiterCleanup(ctx context.Context, interval, idleTimeout time.Duration) {
+	if p.maxMessagesPerMinute <= 0 {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				p.cleanupStaleRateLimiters(idleTimeout)
+			}
+		}
+	}()
+}
+
+func (p *Processor) cleanupStaleRateLimiters(idleTimeout time.Duration) {
+	p.rateLimitMu.Lock()
+	defer p.rateLimitMu.Unlock()
+
+	now := time.Now()
+	for did, lastActive := range p.lastActivity {
+		if now.Sub(lastActive) > idleTimeout {
+			delete(p.rateLimiters, did)
+			delete(p.lastActivity, did)
+			p.logger.Printf("event=rate_limiter_cleanup did=%s", did)
+		}
+	}
+}
+
 // HandleCommit satisfies firehose.EventHandler and persists supported records.
 func (p *Processor) HandleCommit(ctx context.Context, evt *atproto.SyncSubscribeRepos_Commit) error {
 	if evt == nil || evt.Repo == "" {
@@ -150,6 +229,14 @@ func (p *Processor) HandleCommit(ctx context.Context, evt *atproto.SyncSubscribe
 	}
 	if acc == nil || !acc.Active {
 		return nil
+	}
+
+	if lim := p.getRateLimiter(evt.Repo); lim != nil {
+		if !lim.Allow() {
+			metrics.RateLimited.Inc()
+			p.logger.Printf("event=rate_limited did=%s seq=%d", evt.Repo, evt.Seq)
+			return nil
+		}
 	}
 
 	var rr *atrepo.Repo
@@ -526,6 +613,35 @@ func (p *Processor) ResolveDeferredMessages(ctx context.Context, limit int) (Def
 		resolveAt(i)
 	}
 
+	return res, nil
+}
+
+// ExpireDeferredMessages transitions expired deferred messages to failed state.
+func (p *Processor) ExpireDeferredMessages(ctx context.Context, maxAge time.Duration, limit int) (ExpireResult, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+
+	candidates, err := p.db.GetExpiredDeferredMessages(ctx, maxAge, limit)
+	if err != nil {
+		return ExpireResult{}, fmt.Errorf("query expired deferred: %w", err)
+	}
+
+	res := ExpireResult{Selected: len(candidates)}
+	for _, msg := range candidates {
+		update := msg
+		update.MessageState = db.MessageStateFailed
+		update.PublishError = "deferred_ttl_expired"
+		if err := p.db.AddMessage(ctx, update); err != nil {
+			p.logger.Printf("event=deferred_expiry_persist_error at_uri=%s err=%v", msg.ATURI, err)
+			res.Failed++
+			continue
+		}
+		metrics.DeferredExpired.Inc()
+		metrics.MessagesFailed.Inc()
+		p.logger.Printf("event=deferred_expired at_uri=%s did=%s age=%s", msg.ATURI, msg.ATDID, time.Since(msg.CreatedAt).Round(time.Minute))
+		res.Expired++
+	}
 	return res, nil
 }
 
