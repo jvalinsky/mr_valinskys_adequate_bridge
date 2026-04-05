@@ -1,10 +1,11 @@
 module github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb
 
-go 1.25.0
+go 1.26.1
 
 require (
 	filippo.io/edwards25519 v1.2.0
 	github.com/mattn/go-sqlite3 v1.14.16
+	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	golang.org/x/crypto v0.49.0
 	modernc.org/sqlite v1.23.0
 )

@@ -148,3 +148,22 @@ CREATE TABLE IF NOT EXISTS ssb_follower_sync (
 
 CREATE INDEX IF NOT EXISTS idx_follower_sync_bot ON ssb_follower_sync(bot_did);
 CREATE INDEX IF NOT EXISTS idx_follower_sync_follower ON ssb_follower_sync(follower_ssb_feed);
+
+CREATE TABLE IF NOT EXISTS direct_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ssb_msg_key TEXT UNIQUE NOT NULL,
+    ssb_msg_seq INTEGER,
+    sender_feed TEXT NOT NULL,
+    recipient_feed TEXT NOT NULL,
+    encrypted_content BLOB NOT NULL,
+    plaintext TEXT,
+    decrypted_at DATETIME,
+    created_at INTEGER NOT NULL,
+    received_at INTEGER NOT NULL,
+    is_outbound BOOLEAN NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_dm_sender ON direct_messages(sender_feed);
+CREATE INDEX IF NOT EXISTS idx_dm_recipient ON direct_messages(recipient_feed);
+CREATE INDEX IF NOT EXISTS idx_dm_conversation ON direct_messages(sender_feed, recipient_feed);
+CREATE INDEX IF NOT EXISTS idx_dm_msg_key ON direct_messages(ssb_msg_key);

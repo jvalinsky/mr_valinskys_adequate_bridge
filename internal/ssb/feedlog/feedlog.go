@@ -285,6 +285,12 @@ func (s *StoreImpl) SetSignatureVerifier(verifier SignatureVerifier) {
 	}
 }
 
+func (s *StoreImpl) SetDMHandler(handler DMHandler) {
+	if s.rxLog != nil {
+		s.rxLog.SetDMHandler(handler)
+	}
+}
+
 func (s *StoreImpl) Blobs() BlobStore {
 	return &blobStore{db: s.db, blobPath: s.blobPath}
 }
@@ -475,12 +481,15 @@ type MessageLogger func(author string, seq int64, msgType string, key string)
 
 type SignatureLogger func(author string, seq int64, key string, valid bool, err error)
 
+type DMHandler func(senderFeed, recipientFeed, ciphertext, plaintext string) error
+
 type receiveLog struct {
 	db          *sql.DB
 	mu          sync.RWMutex
 	logger      MessageLogger
 	sigLogger   SignatureLogger
 	sigVerifier SignatureVerifier
+	dmHandler   DMHandler
 }
 
 type SignatureVerifier interface {
@@ -530,6 +539,12 @@ func (l *receiveLog) SetLogger(logger MessageLogger) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.logger = logger
+}
+
+func (l *receiveLog) SetDMHandler(handler DMHandler) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.dmHandler = handler
 }
 
 func (l *receiveLog) Seq() (int64, error) {

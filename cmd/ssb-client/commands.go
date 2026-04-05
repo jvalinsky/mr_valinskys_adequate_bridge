@@ -229,6 +229,9 @@ func (h *clientUIHandler) Mount(r chi.Router) {
 	r.Get("/api/replication", h.handleAPIReplication)
 	r.Get("/api/whoami", h.handleAPIWhoami)
 	r.Get("/api/blob/{hash}", h.handleBlobsGet)
+	r.Get("/api/dm/conversations", h.handleAPIConversations)
+	r.Get("/api/dm/{feed}", h.handleAPIConversation)
+	r.Post("/api/dm", h.handleAPISendDM)
 }
 
 // ---------------------------------------------------------------------------
@@ -1070,7 +1073,7 @@ func (h *clientUIHandler) handleRoom(w http.ResponseWriter, r *http.Request) {
 </div>
 
 <div class="panel">
-  <h2>Connected Room Peers</h2>`,
+  <h2>Connected Room Peers (%d/%d)</h2>`,
 		len(peers), len(roomPeers))
 
 	if len(roomPeers) == 0 {
@@ -1198,31 +1201,73 @@ func (h *clientUIHandler) connectToPeer(ctx context.Context, address string) err
 }
 
 func (h *clientUIHandler) handleMessages(w http.ResponseWriter, r *http.Request) {
+	var statusMsg string
+	var statusClass string
+
 	if r.Method == "POST" {
 		r.ParseForm()
 		recipient := strings.TrimSpace(r.Form.Get("recipient"))
 		message := strings.TrimSpace(r.Form.Get("message"))
 		if recipient != "" && message != "" {
-			h.log.Printf("Would send DM to: %s (encrypted DM requires box2)", recipient)
+			pub, err := h.sbot.Publisher()
+			if err != nil {
+				h.log.Printf("Failed to get publisher: %v", err)
+				statusMsg = "Failed to send: could not access publisher"
+				statusClass = "error"
+			} else {
+				_, err := pub.PublishPrivate(message, recipient)
+				if err != nil {
+					h.log.Printf("Failed to send DM to %s: %v", recipient, err)
+					statusMsg = fmt.Sprintf("Failed to send: %v", err)
+					statusClass = "error"
+				} else {
+					h.log.Printf("Sent DM to: %s", recipient)
+					statusMsg = "Message sent successfully"
+					statusClass = "success"
+				}
+			}
+		} else {
+			statusMsg = "Recipient and message are required"
+			statusClass = "error"
 		}
-		http.Redirect(w, r, "/messages", http.StatusSeeOther)
+		http.Redirect(w, r, "/messages?status="+url.QueryEscape(statusMsg)+"&class="+statusClass, http.StatusSeeOther)
 		return
+	}
+
+	r.ParseForm()
+	if status := r.Form.Get("status"); status != "" {
+		statusMsg = status
+		statusClass = r.Form.Get("class")
+		if statusClass == "" {
+			statusClass = "info"
+		}
 	}
 
 	store := h.sbot.Store()
 	whoami, _ := h.sbot.Whoami()
 
 	var body strings.Builder
-	fmt.Fprintf(&body, `<h1>Messages</h1>
-<div class="section">
-  <h2>Send a Message</h2>
+	fmt.Fprintf(&body, `<h1>Messages</h1>`)
+
+	if statusMsg != "" {
+		cssClass := "info"
+		if statusClass == "success" {
+			cssClass = "success"
+		} else if statusClass == "error" {
+			cssClass = "error"
+		}
+		fmt.Fprintf(&body, `<div class="status %s">%s</div>`, cssClass, html.EscapeString(statusMsg))
+	}
+
+	fmt.Fprintf(&body, `<div class="section">
+  <h2>Send a Direct Message</h2>
   <form method="POST" action="/messages">
-    <div class="field"><label>Recipient</label><input type="text" name="recipient" placeholder="@feedid.ed25519"></div>
+    <div class="field"><label>Recipient</label><input type="text" name="recipient" placeholder="@feedid.ed25519" value="%s"></div>
     <div class="field"><label>Message</label><textarea name="message" rows="3" placeholder="Your message..."></textarea></div>
-    <button type="submit">Send</button>
+    <button type="submit">Send Encrypted DM</button>
   </form>
-  <p><em>Note: Encrypted DMs require box2 support. This is a placeholder UI.</em></p>
-</div>`)
+  <p><small>Messages are encrypted using box2 (curve25519 + nacl secretbox)</small></p>
+</div>`, html.EscapeString(r.FormValue("recipient")))
 
 	// Show recent messages from user's log
 	fmt.Fprintf(&body, `<div class="section"><h2>Recent Messages (own feed)</h2>`)
@@ -1924,6 +1969,56 @@ func (h *clientUIHandler) handleAPIReplication(w http.ResponseWriter, r *http.Re
 		"enabled": true,
 		"peers":   len(matrix),
 		"matrix":  matrix,
+	})
+}
+
+func (h *clientUIHandler) handleAPIConversations(w http.ResponseWriter, r *http.Request) {
+	whoami, _ := h.sbot.Whoami()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"feed":          whoami,
+		"conversations": []string{},
+		"note":          "DM storage requires database integration",
+	})
+}
+
+func (h *clientUIHandler) handleAPIConversation(w http.ResponseWriter, r *http.Request) {
+	feedID := chi.URLParam(r, "feed")
+	if feedID == "" {
+		http.Error(w, "feed required", http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"with":     feedID,
+		"messages": []interface{}{},
+		"note":     "DM storage requires database integration",
+	})
+}
+
+func (h *clientUIHandler) handleAPISendDM(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Recipient string          `json:"recipient"`
+		Content   json.RawMessage `json:"content"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+
+	if req.Recipient == "" || len(req.Content) == 0 {
+		http.Error(w, "recipient and content required", http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":    "placeholder",
+		"message":   "DM sending requires ssb-client with DM support compiled in",
+		"recipient": req.Recipient,
 	})
 }
 

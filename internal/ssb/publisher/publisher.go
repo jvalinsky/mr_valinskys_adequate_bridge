@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/crypto"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/feedlog"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/keys"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/message/legacy"
@@ -174,4 +175,36 @@ func FeedRefToPubKey(refStr string) ([]byte, error) {
 		return nil, err
 	}
 	return ref.PubKey(), nil
+}
+
+func (p *Publisher) PublishPrivate(content interface{}, recipientFeed string) (refs.MessageRef, error) {
+	contentJSON, err := json.Marshal(content)
+	if err != nil {
+		return refs.MessageRef{}, fmt.Errorf("marshal content: %w", err)
+	}
+
+	wrapped, err := crypto.WrapContentForDM(contentJSON, recipientFeed)
+	if err != nil {
+		return refs.MessageRef{}, fmt.Errorf("wrap DM content: %w", err)
+	}
+
+	recipientPubKey, err := FeedRefToPubKey(recipientFeed)
+	if err != nil {
+		return refs.MessageRef{}, fmt.Errorf("parse recipient: %w", err)
+	}
+
+	if len(recipientPubKey) != 32 {
+		return refs.MessageRef{}, fmt.Errorf("invalid recipient pubkey length")
+	}
+
+	senderPub, senderPriv := p.keyPair.ToCurve25519()
+	var recipientPub [32]byte
+	copy(recipientPub[:], recipientPubKey)
+
+	encrypted, err := crypto.EncryptDM(wrapped, senderPub, senderPriv, recipientPub)
+	if err != nil {
+		return refs.MessageRef{}, fmt.Errorf("encrypt DM: %w", err)
+	}
+
+	return p.Publish(encrypted)
 }

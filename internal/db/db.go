@@ -1428,3 +1428,174 @@ func (db *DB) ListFollowerSyncs(ctx context.Context, botDID string) ([]FollowerS
 	}
 	return syncs, rows.Err()
 }
+
+type DirectMessage struct {
+	ID               int64
+	SSBMsgKey        string
+	SSBMsgSeq        int64
+	SenderFeed       string
+	RecipientFeed    string
+	EncryptedContent []byte
+	Plaintext        string
+	DecryptedAt      time.Time
+	CreatedAt        int64
+	ReceivedAt       int64
+	IsOutbound       bool
+}
+
+func (db *DB) SaveDM(msg *DirectMessage) error {
+	_, err := db.conn.ExecContext(context.Background(), `
+		INSERT OR REPLACE INTO direct_messages (
+			ssb_msg_key, ssb_msg_seq, sender_feed, recipient_feed,
+			encrypted_content, plaintext, decrypted_at, created_at, received_at, is_outbound
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`,
+		msg.SSBMsgKey,
+		msg.SSBMsgSeq,
+		msg.SenderFeed,
+		msg.RecipientFeed,
+		msg.EncryptedContent,
+		nullString(msg.Plaintext),
+		nullTime(msg.DecryptedAt),
+		msg.CreatedAt,
+		msg.ReceivedAt,
+		msg.IsOutbound,
+	)
+	return err
+}
+
+func (db *DB) GetDMByKey(ctx context.Context, msgKey string) (*DirectMessage, error) {
+	var dm DirectMessage
+	var plaintext sql.NullString
+	var decryptedAt sql.NullTime
+	var ssbMsgSeq sql.NullInt64
+
+	err := db.conn.QueryRowContext(ctx, `
+		SELECT id, ssb_msg_key, ssb_msg_seq, sender_feed, recipient_feed,
+			   encrypted_content, plaintext, decrypted_at, created_at, received_at, is_outbound
+		FROM direct_messages
+		WHERE ssb_msg_key = ?
+	`, msgKey).Scan(
+		&dm.ID,
+		&dm.SSBMsgKey,
+		&ssbMsgSeq,
+		&dm.SenderFeed,
+		&dm.RecipientFeed,
+		&dm.EncryptedContent,
+		&plaintext,
+		&decryptedAt,
+		&dm.CreatedAt,
+		&dm.ReceivedAt,
+		&dm.IsOutbound,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	dm.Plaintext = plaintext.String
+	dm.DecryptedAt = decryptedAt.Time
+	dm.SSBMsgSeq = ssbMsgSeq.Int64
+
+	return &dm, nil
+}
+
+func (db *DB) ListDMsForFeed(ctx context.Context, feed string, limit int) ([]DirectMessage, error) {
+	rows, err := db.conn.QueryContext(ctx, `
+		SELECT id, ssb_msg_key, ssb_msg_seq, sender_feed, recipient_feed,
+			   encrypted_content, plaintext, decrypted_at, created_at, received_at, is_outbound
+		FROM direct_messages
+		WHERE sender_feed = ? OR recipient_feed = ?
+		ORDER BY created_at DESC
+		LIMIT ?
+	`, feed, feed, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var dms []DirectMessage
+	for rows.Next() {
+		var dm DirectMessage
+		var plaintext sql.NullString
+		var decryptedAt sql.NullTime
+		var ssbMsgSeq sql.NullInt64
+
+		if err := rows.Scan(
+			&dm.ID,
+			&dm.SSBMsgKey,
+			&ssbMsgSeq,
+			&dm.SenderFeed,
+			&dm.RecipientFeed,
+			&dm.EncryptedContent,
+			&plaintext,
+			&decryptedAt,
+			&dm.CreatedAt,
+			&dm.ReceivedAt,
+			&dm.IsOutbound,
+		); err != nil {
+			return nil, err
+		}
+
+		dm.Plaintext = plaintext.String
+		dm.DecryptedAt = decryptedAt.Time
+		dm.SSBMsgSeq = ssbMsgSeq.Int64
+
+		dms = append(dms, dm)
+	}
+
+	return dms, rows.Err()
+}
+
+func (db *DB) ListDMConversations(ctx context.Context, feed string) ([]string, error) {
+	rows, err := db.conn.QueryContext(ctx, `
+		SELECT DISTINCT 
+			CASE 
+				WHEN sender_feed = ? THEN recipient_feed 
+				ELSE sender_feed 
+			END as other_party
+		FROM direct_messages
+		WHERE sender_feed = ? OR recipient_feed = ?
+		ORDER BY MAX(created_at) DESC
+	`, feed, feed, feed)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var conversations []string
+	for rows.Next() {
+		var otherParty string
+		if err := rows.Scan(&otherParty); err != nil {
+			return nil, err
+		}
+		conversations = append(conversations, otherParty)
+	}
+
+	return conversations, rows.Err()
+}
+
+func (db *DB) UpdateDMDecrypted(ctx context.Context, msgKey, plaintext string) error {
+	_, err := db.conn.ExecContext(ctx, `
+		UPDATE direct_messages 
+		SET plaintext = ?, decrypted_at = ?
+		WHERE ssb_msg_key = ?
+	`, plaintext, time.Now(), msgKey)
+	return err
+}
+
+func nullString(s string) sql.NullString {
+	if s == "" {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: s, Valid: true}
+}
+
+func nullTime(t time.Time) sql.NullTime {
+	if t.IsZero() {
+		return sql.NullTime{}
+	}
+	return sql.NullTime{Time: t, Valid: true}
+}
