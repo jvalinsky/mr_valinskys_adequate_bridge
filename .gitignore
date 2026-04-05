@@ -45,3 +45,4 @@ bridge-live.sqlite
 # Temp / scratch files
 test_mcp.js
 flake-test.nix
+bridge.pid
