@@ -25,9 +25,10 @@ services:
       E2E_SEED_INCLUDE_BLOB_POST: "${E2E_TF_SEED_INCLUDE_BLOB_POST:-0}"
       BRIDGE_FIREHOSE_ENABLE: "${E2E_TF_BRIDGE_FIREHOSE_ENABLE:-0}"
       BRIDGE_RELAY_URL: "${E2E_TF_BRIDGE_RELAY_URL:-}"
+      BRIDGE_MODE: seeded
     volumes:
       - bridge-data:/data
-      - ./bridge_entrypoint.sh:/scripts/bridge_entrypoint.sh:ro
+      - ../shared/bridge_entrypoint.sh:/scripts/bridge_entrypoint.sh:ro
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://127.0.0.1:8976/healthz"]
       interval: 3s
