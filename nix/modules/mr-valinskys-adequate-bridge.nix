@@ -56,6 +56,8 @@ let
       cfg.logging.otelServiceNameRuntime
       "--local-log-output"
       cfg.logging.localLogOutput
+      "--log-level"
+      cfg.logging.logLevel
     ]
     ++ optionals (cfg.logging.otelLogsEndpoint != null) [
       "--otel-logs-endpoint"
@@ -92,6 +94,14 @@ let
       "--room-https-domain"
       cfg.room.httpsDomain
     ]
+    ++ [
+      "--max-msgs-per-did-per-min"
+      (toString cfg.maxMsgsPerDIDPerMin)
+    ]
+    ++ optionals (cfg.mcpListenAddr != null) [
+      "--mcp-listen-addr"
+      cfg.mcpListenAddr
+    ]
     ++ cfg.startExtraArgs;
 
   uiGlobalArgs =
@@ -104,6 +114,8 @@ let
       cfg.logging.otelServiceNameUI
       "--local-log-output"
       cfg.logging.localLogOutput
+      "--log-level"
+      cfg.logging.logLevel
     ]
     ++ optionals (cfg.logging.otelLogsEndpoint != null) [
       "--otel-logs-endpoint"
@@ -242,6 +254,19 @@ in
       description = "Additional CLI args appended to bridge-cli start.";
     };
 
+    maxMsgsPerDIDPerMin = mkOption {
+      type = types.int;
+      default = 300;
+      description = "Maximum messages per DID per minute passed to start via --max-msgs-per-did-per-min. Set to 0 to disable rate limiting.";
+    };
+
+    mcpListenAddr = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      example = "127.0.0.1:8081";
+      description = "MCP SSE server listen address passed via --mcp-listen-addr. Null disables the MCP server.";
+    };
+
     room = {
       enable = mkOption {
         type = types.bool;
@@ -364,6 +389,17 @@ in
         ];
         default = "text";
         description = "Local log output mode passed via --local-log-output.";
+      };
+
+      logLevel = mkOption {
+        type = types.enum [
+          "debug"
+          "info"
+          "warn"
+          "error"
+        ];
+        default = "info";
+        description = "Minimum log level passed via --log-level.";
       };
     };
 
