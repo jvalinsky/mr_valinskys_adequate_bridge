@@ -2,7 +2,7 @@
 
 ## Development
 
-Requires Go 1.25.5+.
+Requires Go 1.26.1+.
 
 ```bash
 # Run all tests

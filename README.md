@@ -172,7 +172,7 @@ The **firehose** package streams ATProto commits. The **bridge** processor coord
 
 ## Development
 
-Requires Go 1.25.5+.
+Requires Go 1.26.1+.
 Set `GOFLAGS=-mod=mod` for local Go tooling to avoid accidental local `vendor/` shadowing of nested modules.
 
 ```bash
@@ -187,6 +187,12 @@ GOFLAGS=-mod=mod go test ./...
 ./scripts/local_atproto_bootstrap.sh
 ./scripts/local_bridge_e2e.sh
 ./scripts/local_atproto_down.sh
+
+# Linux container test runner (non-privileged)
+docker compose -f infra/linux-test/docker-compose.yml run --rm go-test
+
+# Linux eBPF smoke test (privileged; Linux hosts/runners)
+docker compose -f infra/linux-test/docker-compose.yml --profile ebpf run --rm ebpf-smoke
 ```
 
 ## Scripts

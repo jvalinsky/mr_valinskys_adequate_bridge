@@ -1,7 +1,7 @@
 # Bridge Operator Runbook
 
 ## Prerequisites
-- Go 1.25+ (CGO_ENABLED=1 for SQLite)
+- Go 1.26.1+ (CGO_ENABLED=1 for SQLite)
 - Docker + Docker Compose for local ATProto and full E2E stacks
 - For live/production profile: network access to `bsky.network` (firehose), `public.api.bsky.app` (AppView), `plc.directory` (DID resolution)
 
@@ -22,6 +22,20 @@
 ```
 
 This brings up local PLC/PDS/relay dependencies, provisions local test accounts, and runs the live interop test.
+
+### Linux containerized test entrypoints
+
+```bash
+# Standard non-privileged Linux container test run
+docker compose -f infra/linux-test/docker-compose.yml run --rm go-test
+
+# Optional privileged Linux eBPF smoke run
+docker compose -f infra/linux-test/docker-compose.yml --profile ebpf run --rm ebpf-smoke
+```
+
+Notes:
+- `ebpf-smoke` is Linux-only and requires privileged container execution.
+- macOS hosts can still run the standard `go-test` service.
 
 ### Manual local loop (debug-friendly)
 
