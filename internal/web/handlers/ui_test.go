@@ -1936,6 +1936,9 @@ func (m *mockDatabase) GetKnownPeers(ctx context.Context) ([]db.KnownPeer, error
 func (m *mockDatabase) AddKnownPeer(ctx context.Context, p db.KnownPeer) error {
 	return m.err
 }
+func (m *mockDatabase) AddBridgedAccount(ctx context.Context, acc db.BridgedAccount) error {
+	return m.err
+}
 
 type mockPDSClient struct {
 	err            error
@@ -2420,6 +2423,9 @@ func (m *granularMockDatabase) GetKnownPeers(ctx context.Context) ([]db.KnownPee
 	return nil, m.err
 }
 func (m *granularMockDatabase) AddKnownPeer(ctx context.Context, p db.KnownPeer) error {
+	return m.err
+}
+func (m *granularMockDatabase) AddBridgedAccount(ctx context.Context, acc db.BridgedAccount) error {
 	return m.err
 }
 
