@@ -12,12 +12,15 @@ import (
 
 // RecordType* constants identify supported ATProto collections.
 const (
-	RecordTypePost    = "app.bsky.feed.post"
-	RecordTypeLike    = "app.bsky.feed.like"
-	RecordTypeRepost  = "app.bsky.feed.repost"
-	RecordTypeFollow  = "app.bsky.graph.follow"
-	RecordTypeBlock   = "app.bsky.graph.block"
-	RecordTypeProfile = "app.bsky.actor.profile"
+	RecordTypePost       = "app.bsky.feed.post"
+	RecordTypeLike       = "app.bsky.feed.like"
+	RecordTypeRepost     = "app.bsky.feed.repost"
+	RecordTypeFollow     = "app.bsky.graph.follow"
+	RecordTypeBlock      = "app.bsky.graph.block"
+	RecordTypeProfile    = "app.bsky.actor.profile"
+	RecordTypeList       = "app.bsky.graph.list"
+	RecordTypeListItem   = "app.bsky.graph.listitem"
+	RecordTypeThreadgate = "app.bsky.feed.threadgate"
 )
 
 // MapRecord maps one ATProto record payload into an SSB message map.
@@ -35,6 +38,12 @@ func MapRecord(recordType, atDID string, rawJSON []byte) (map[string]interface{}
 		return mapBlock(rawJSON)
 	case RecordTypeProfile:
 		return mapProfile(atDID, rawJSON)
+	case RecordTypeList:
+		return mapList(rawJSON)
+	case RecordTypeListItem:
+		return mapListItem(rawJSON)
+	case RecordTypeThreadgate:
+		return mapThreadgate(rawJSON)
 	default:
 		return nil, fmt.Errorf("unsupported record type: %s", recordType)
 	}
@@ -146,6 +155,60 @@ func mapProfile(atDID string, rawJSON []byte) (map[string]interface{}, error) {
 
 	return res, nil
 }
+
+type listRecord struct {
+	Name        string `json:"name"`
+	Purpose     string `json:"purpose"`
+	Description string `json:"description"`
+}
+
+func mapList(rawJSON []byte) (map[string]interface{}, error) {
+	var list listRecord
+	if err := json.Unmarshal(rawJSON, &list); err != nil {
+		return nil, err
+	}
+	return map[string]interface{}{
+		"type":        "list",
+		"name":        list.Name,
+		"purpose":     list.Purpose,
+		"description": list.Description,
+	}, nil
+}
+
+type listItemRecord struct {
+	List    string `json:"list"`
+	Subject string `json:"subject"`
+}
+
+func mapListItem(rawJSON []byte) (map[string]interface{}, error) {
+	var item listItemRecord
+	if err := json.Unmarshal(rawJSON, &item); err != nil {
+		return nil, err
+	}
+	return map[string]interface{}{
+		"type":             "listitem",
+		"_atproto_list":    item.List,
+		"_atproto_contact": item.Subject,
+	}, nil
+}
+
+type threadgateRecord struct {
+	Post  string        `json:"post"`
+	Allow []interface{} `json:"allow"`
+}
+
+func mapThreadgate(rawJSON []byte) (map[string]interface{}, error) {
+	var gate threadgateRecord
+	if err := json.Unmarshal(rawJSON, &gate); err != nil {
+		return nil, err
+	}
+	return map[string]interface{}{
+		"type":             "threadgate",
+		"_atproto_subject": gate.Post,
+		"allow":            gate.Allow,
+	}, nil
+}
+
 
 type textFacet struct {
 	start int
@@ -277,6 +340,13 @@ func ReplaceATProtoRefs(msg map[string]interface{}, lookupURI func(string) strin
 		}
 	}
 
+	if listURI, ok := msg["_atproto_list"].(string); ok {
+		if ssbRef := lookupURI(listURI); ssbRef != "" {
+			msg["list"] = ssbRef
+			delete(msg, "_atproto_list")
+		}
+	}
+
 	if parentURI, ok := msg["_atproto_reply_parent"].(string); ok {
 		if ssbRef := lookupURI(parentURI); ssbRef != "" {
 			msg["branch"] = ssbRef
@@ -381,6 +451,7 @@ func UnresolvedATProtoRefs(msg map[string]interface{}) []string {
 		"_atproto_subject",
 		"_atproto_quote_subject",
 		"_atproto_contact",
+		"_atproto_list",
 		"_atproto_about_did",
 	}
 

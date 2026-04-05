@@ -1726,12 +1726,13 @@ func TestIsSupportedCollection(t *testing.T) {
 type mockProcessorDatabase struct {
 	err error
 
-	getBridgedAccountErr     error
-	addMessageErr            error
-	getMessageErr            error
-	setBridgeStateErr        error
-	getDeferredCandidatesErr error
-	getRetryCandidatesErr    error
+	getBridgedAccountErr          error
+	addMessageErr                 error
+	getMessageErr                 error
+	setBridgeStateErr             error
+	getDeferredCandidatesErr      error
+	getRetryCandidatesErr         error
+	getExpiredDeferredMessagesErr error
 
 	// Data overrides
 	getBridgedAccountResp *db.BridgedAccount
@@ -1773,6 +1774,12 @@ func (m *mockProcessorDatabase) GetDeferredCandidates(ctx context.Context, limit
 func (m *mockProcessorDatabase) GetRetryCandidates(ctx context.Context, limit int, atDID string, maxAttempts int) ([]db.Message, error) {
 	if m.getRetryCandidatesErr != nil {
 		return nil, m.getRetryCandidatesErr
+	}
+	return nil, m.err
+}
+func (m *mockProcessorDatabase) GetExpiredDeferredMessages(ctx context.Context, maxAge time.Duration, limit int) ([]db.Message, error) {
+	if m.getExpiredDeferredMessagesErr != nil {
+		return nil, m.getExpiredDeferredMessagesErr
 	}
 	return nil, m.err
 }
