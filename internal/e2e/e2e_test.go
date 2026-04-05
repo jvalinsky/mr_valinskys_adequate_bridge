@@ -120,10 +120,10 @@ func repoRoot(t *testing.T) string {
 // E2E test.  It validates that the compose stack starts, the bridge becomes
 // healthy, and the test-runner exits successfully.
 //
-// Run with: go test -tags=e2e -run TestE2E_TildefriendsRoom ./internal/e2e
+// Run with: RUN_E2E=1 go test -run TestE2E_TildefriendsRoom ./internal/e2e
 func TestE2E_TildefriendsRoom(t *testing.T) {
-	if os.Getenv("RUN_E2E") == "" && testing.Short() {
-		t.Skip("skipping E2E test; set RUN_E2E=1 or omit -short")
+	if os.Getenv("RUN_E2E") == "" {
+		t.Skip("skipping E2E test; set RUN_E2E=1 to run")
 	}
 
 	stack := newStack(t, "mvab-e2e-tf", "infra/e2e-tildefriends/docker-compose.e2e-tildefriends.yml")
@@ -139,10 +139,10 @@ func TestE2E_TildefriendsRoom(t *testing.T) {
 // TestE2E_FullStack is a skeleton for the full ATProto → Bridge → SSB →
 // Tildefriends pipeline test.
 //
-// Run with: go test -tags=e2e -run TestE2E_FullStack ./internal/e2e
+// Run with: RUN_E2E=1 go test -run TestE2E_FullStack ./internal/e2e
 func TestE2E_FullStack(t *testing.T) {
-	if os.Getenv("RUN_E2E") == "" && testing.Short() {
-		t.Skip("skipping E2E test; set RUN_E2E=1 or omit -short")
+	if os.Getenv("RUN_E2E") == "" {
+		t.Skip("skipping E2E test; set RUN_E2E=1 to run")
 	}
 
 	stack := newStack(t, "mvab-e2e-full", "infra/e2e-full/docker-compose.yml")
