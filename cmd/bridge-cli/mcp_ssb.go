@@ -185,17 +185,12 @@ func registerSSBTools(s *server.MCPServer, deps ssbMCPDeps) {
 	// ---- ssb_publish ----
 	s.AddTool(
 		mcp.NewTool("ssb_publish",
-			mcp.WithDescription("Publish JSON content as a bridged DID's SSB feed"),
-			mcp.WithString("did", mcp.Required(), mcp.Description("ATProto DID whose SSB feed to publish to")),
+			mcp.WithDescription("Publish JSON content as the bridge's own SSB identity"),
 			mcp.WithString("content", mcp.Required(), mcp.Description("JSON content to publish (as string)")),
 		),
 		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			if deps.ssbRT == nil {
+			if deps.ssbRT == nil || deps.ssbRT.Node() == nil {
 				return mcpError("ssb runtime not available")
-			}
-			did, err := req.RequireString("did")
-			if err != nil {
-				return mcpError(err.Error())
 			}
 			contentStr, err := req.RequireString("content")
 			if err != nil {
@@ -205,14 +200,17 @@ func registerSSBTools(s *server.MCPServer, deps ssbMCPDeps) {
 			if jsonErr := jsonUnmarshalString(contentStr, &content); jsonErr != nil {
 				return mcpErrorf("invalid JSON content: %v", jsonErr)
 			}
-			msgRef, err := deps.ssbRT.Publish(ctx, strings.TrimSpace(did), content)
+			pub, err := deps.ssbRT.Node().Publisher()
+			if err != nil {
+				return mcpErrorf("get publisher: %v", err)
+			}
+			msgRef, err := pub.PublishJSON(content)
 			if err != nil {
 				return mcpErrorf("publish: %v", err)
 			}
 			return mcpToolResult(map[string]any{
-				"published":    true,
-				"message_ref":  msgRef,
-				"did":          strings.TrimSpace(did),
+				"published":   true,
+				"message_ref": msgRef.String(),
 			})
 		},
 	)
@@ -352,13 +350,16 @@ func registerSSBRoomTools(s *server.MCPServer, roomOps handlers.RoomOpsProvider)
 			if role == roomdb.RoleUnknown {
 				return mcpError("invalid role, must be: member, moderator, or admin")
 			}
-			// RoomOpsProvider doesn't expose Add directly, use the room SQLite
-			// provider's underlying DB. For now, return an error suggesting using
-			// the admin UI for member addition.
-			// However, we can work around this by using MemberRemove/MemberRoleSet
-			// pattern or by accessing the room DB directly if we had it.
-			// For v1, expose this through a member add that first checks existence.
-			return mcpErrorf("member add not yet supported via MCP — use admin UI or ssb_room_member_role to change existing member roles (feed=%s, role=%s)", feedRef.String(), role.String())
+			memberID, err := roomOps.MemberAdd(ctx, *feedRef, role)
+			if err != nil {
+				return mcpErrorf("add member: %v", err)
+			}
+			return mcpToolResult(map[string]any{
+				"added":     true,
+				"member_id": memberID,
+				"feed":      feedRef.String(),
+				"role":      role.String(),
+			})
 		},
 	)
 
@@ -512,6 +513,24 @@ func registerSSBRoomTools(s *server.MCPServer, roomOps handlers.RoomOpsProvider)
 				return mcpErrorf("deny feed: %v", err)
 			}
 			return mcpToolResult(map[string]any{"denied": true, "feed": feedRef.String()})
+		},
+	)
+
+	// ---- ssb_room_undeny ----
+	s.AddTool(
+		mcp.NewTool("ssb_room_undeny",
+			mcp.WithDescription("Remove a feed from the denied list by denied key ID"),
+			mcp.WithNumber("denied_id", mcp.Required(), mcp.Description("Denied key ID (from ssb_room_denied)")),
+		),
+		func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			id, err := req.RequireFloat("denied_id")
+			if err != nil {
+				return mcpError(err.Error())
+			}
+			if err := roomOps.DeniedRemove(ctx, int64(id)); err != nil {
+				return mcpErrorf("undeny: %v", err)
+			}
+			return mcpToolResult(map[string]any{"removed": true, "denied_id": int64(id)})
 		},
 	)
 }

@@ -37,6 +37,7 @@ type RoomOpsProvider interface {
 	AliasRevoke(ctx context.Context, alias string) error
 	DeniedList(ctx context.Context) ([]templates.RoomDeniedKeyRow, error)
 	DeniedAdd(ctx context.Context, feed refs.FeedRef, comment string) error
+	MemberAdd(ctx context.Context, feed refs.FeedRef, role roomdb.Role) (int64, error)
 	DeniedRemove(ctx context.Context, deniedID int64) error
 	AttendantsSnapshot(ctx context.Context) ([]templates.RoomAttendantRow, error)
 	TunnelEndpointsSnapshot(ctx context.Context) ([]templates.RoomTunnelEndpointRow, error)
@@ -439,6 +440,20 @@ func (p *SQLiteRoomOpsProvider) DeniedAdd(ctx context.Context, feed refs.FeedRef
 		return fmt.Errorf("denied-key updates are blocked by policy (%s)", policy.hint)
 	}
 	return p.db.DeniedKeys().Add(ctx, feed, strings.TrimSpace(comment))
+}
+
+func (p *SQLiteRoomOpsProvider) MemberAdd(ctx context.Context, feed refs.FeedRef, role roomdb.Role) (int64, error) {
+	policy, err := p.policy(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if !policy.canMutateMembers {
+		return 0, fmt.Errorf("member addition is blocked by policy (%s)", policy.hint)
+	}
+	if role != roomdb.RoleMember && role != roomdb.RoleModerator && role != roomdb.RoleAdmin {
+		return 0, fmt.Errorf("invalid role")
+	}
+	return p.db.Members().Add(ctx, feed, role)
 }
 
 func (p *SQLiteRoomOpsProvider) DeniedRemove(ctx context.Context, deniedID int64) error {

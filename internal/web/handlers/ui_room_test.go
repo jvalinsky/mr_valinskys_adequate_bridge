@@ -176,6 +176,10 @@ func (f *fakeRoomOpsProvider) Overview(ctx context.Context) (RoomOverview, error
 	return f.overview, nil
 }
 
+func (f *fakeRoomOpsProvider) MemberAdd(ctx context.Context, feed refs.FeedRef, role roomdb.Role) (int64, error) {
+	return 0, nil
+}
+
 func (f *fakeRoomOpsProvider) MembersList(ctx context.Context) ([]templates.RoomMemberRow, error) {
 	return f.members, nil
 }

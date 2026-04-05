@@ -309,6 +309,38 @@ func registerATProtoTools(s *server.MCPServer, deps atprotoMCPDeps) {
 			},
 		)
 
+		// ---- atproto_backfill ----
+		s.AddTool(
+			mcp.NewTool("atproto_backfill",
+				mcp.WithDescription("Trigger a backfill (resync) for a DID — sets it to pending state so the running bridge's background worker picks it up"),
+				mcp.WithString("did", mcp.Required(), mcp.Description("DID to backfill")),
+				mcp.WithString("reason", mcp.Description("Reason for backfill (default: mcp_backfill)")),
+			),
+			func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				did, err := req.RequireString("did")
+				if err != nil {
+					return mcpError(err.Error())
+				}
+				reason := getString(req.GetArguments(), "reason")
+				if reason == "" {
+					reason = "mcp_backfill"
+				}
+				indexer := buildATProtoIndexer(deps)
+				if indexer == nil {
+					return mcpError("indexer not available (missing database)")
+				}
+				if err := indexer.RequestResync(ctx, strings.TrimSpace(did), reason); err != nil {
+					return mcpErrorf("request backfill: %v", err)
+				}
+				repo, _ := indexer.GetRepoInfo(ctx, strings.TrimSpace(did))
+				return mcpToolResult(map[string]any{
+					"backfill_requested": true,
+					"did":               strings.TrimSpace(did),
+					"repo":              repo,
+				})
+			},
+		)
+
 		// ---- atproto_firehose_status ----
 		s.AddTool(
 			mcp.NewTool("atproto_firehose_status",
