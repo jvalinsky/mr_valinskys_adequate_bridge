@@ -20,6 +20,12 @@ on:
       - "cmd/bridge-cli/**"
       - "internal/room/**"
       - "internal/ssbruntime/**"
+      - "internal/ssb/**"
+      - "internal/bridge/**"
+      - "internal/db/**"
+      - "pkg/**"
+      - "go.mod"
+      - "go.sum"
       - ".github/workflows/docker-e2e-tildefriends.yml"
 
 jobs:
@@ -39,6 +45,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Run Docker E2E scenario (firehose off)
         env:
@@ -112,6 +121,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Run Docker E2E scenario (external firehose)
         env:

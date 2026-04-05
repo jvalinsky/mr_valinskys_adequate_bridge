@@ -1,0 +1,67 @@
+name: Docker E2E Full Stack
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * *"
+  push:
+    branches: [main]
+    paths:
+      - "scripts/e2e_full_up.sh"
+      - "infra/e2e-full/**"
+      - "infra/shared/**"
+      - "infra/e2e-tildefriends/Dockerfile.bridge"
+      - "infra/e2e-tildefriends/Dockerfile.tildefriends"
+      - "cmd/e2e-seed/**"
+      - "cmd/bridge-cli/**"
+      - "internal/ssb/**"
+      - "internal/bridge/**"
+      - "internal/db/**"
+      - "internal/ssbruntime/**"
+      - "internal/room/**"
+      - "pkg/**"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/docker-e2e-full.yml"
+
+jobs:
+  docker-e2e-full:
+    name: Full Stack E2E (PLC + Relay + PDS + Bridge + TF)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Run full-stack E2E test
+        env:
+          KEEP_E2E: "1"
+        run: ./scripts/e2e_full_up.sh
+
+      - name: Capture compose logs on failure
+        if: failure()
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/e2e-full-logs
+          docker compose -p mvab-e2e-full -f infra/e2e-full/docker-compose.yml logs --no-color bridge > /tmp/e2e-full-logs/bridge.log || true
+          docker compose -p mvab-e2e-full -f infra/e2e-full/docker-compose.yml logs --no-color seeder > /tmp/e2e-full-logs/seeder.log || true
+          docker compose -p mvab-e2e-full -f infra/e2e-full/docker-compose.yml logs --no-color test-runner > /tmp/e2e-full-logs/test-runner.log || true
+          docker compose -p mvab-e2e-full -f infra/e2e-full/docker-compose.yml logs --no-color relay > /tmp/e2e-full-logs/relay.log || true
+          docker compose -p mvab-e2e-full -f infra/e2e-full/docker-compose.yml logs --no-color pds > /tmp/e2e-full-logs/pds.log || true
+
+      - name: Upload failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-full-logs
+          path: /tmp/e2e-full-logs/*.log
+          if-no-files-found: warn
+
+      - name: Cleanup stack
+        if: always()
+        run: |
+          docker compose -p mvab-e2e-full -f infra/e2e-full/docker-compose.yml down -v --remove-orphans || true
