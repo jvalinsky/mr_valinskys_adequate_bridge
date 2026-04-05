@@ -23,6 +23,20 @@ This project uses a structured documentation system with:
 
 ---
 
+## Writing Style & Tone
+
+When writing or updating documentation (whether you are a human or an AI agent), strictly adhere to the following stylistic guidelines:
+
+1. **Avoid LLM-isms & Fluff:** Avoid words commonly overused by AI generators (e.g., *delve, leverage, harness, unleash, embark, paradigm, seamless, robust, tapestry*). Avoid repetitive filler transitions like *it is important to note that, furthermore, consequently, in conclusion*.
+2. **No Marketing Language:** Do not oversell what the bridge does. Avoid adjectives like *groundbreaking, revolutionary, powerful, unprecedented*. Be detailed, thorough, and factual. For example, say "This tool bridges ATProto to SSB" rather than "This tool unleashes the power of decentralized social media."
+3. **Tone Calibration:**
+   - Use an **academic tone** where it makes sense (e.g., deep-dive protocol specifications, architecture decisions, and cryptographic proofs).
+   - Use a **dry, conversational tone** where it makes sense (e.g., quick starts, beginner introductions, and runbook procedures).
+4. **Be Concise When Possible:** Ensure the documentation is detailed where precision is required, but concise in other places. Get straight to the point without verbose introductions.
+5. **Audience Consideration:** Documentation should clearly map to its intended audience. Introductory docs should allow someone with zero prior knowledge to use the tool. Advanced docs should provide deep technical references for senior engineers.
+
+---
+
 ## When to Update Docs
 
 Update docs when you:

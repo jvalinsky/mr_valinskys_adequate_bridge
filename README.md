@@ -2,14 +2,22 @@
 
 An ATProto-to-SSB bridge with an embedded Room2 server.
 
+## Introduction
+
+This software connects two different decentralized social networks: **ATProto** (used by Bluesky) and **Secure Scuttlebutt (SSB)**. 
+
+Because these networks use entirely different formats for accounts, posts, and media, they cannot naturally communicate. This bridge solves that problem by reading public data from ATProto (like posts and profiles) and automatically translating it into SSB-compatible formats. It then publishes that translated data so that SSB users can see and interact with it.
+
+If you are new to the project, this document provides a high-level overview. For deep technical details on how the translation works, see the [Documentation Index](docs/README.md).
+
 ## What It Does
 
-- Ingests ATProto repository events from the Bluesky firehose (`subscribeRepos`)
-- Maps supported record types to SSB message formats and publishes to SSB feeds
-- Deterministically derives SSB bot identities from ATProto DIDs using a master seed
-- Runs an integrated SSB Room2 server for peer discovery and message distribution
-- Mirrors ATProto blobs (images, media) into the SSB blob store
-- Provides an admin web UI for monitoring, triage, and operations
+- Ingests ATProto repository events from the Bluesky firehose (`subscribeRepos`).
+- Maps supported record types to SSB message formats and publishes to SSB feeds.
+- Deterministically derives SSB bot identities from ATProto DIDs using a master seed.
+- Runs an integrated SSB Room2 server for peer discovery and message distribution.
+- Mirrors ATProto blobs (images, media) into the SSB blob store.
+- Provides an admin web UI for monitoring, triage, and operations.
 
 ## Supported Record Types
 

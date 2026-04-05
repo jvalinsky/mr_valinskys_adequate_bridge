@@ -276,3 +276,15 @@ Use these docs instead of inventing setup commands in-session:
 - `infra/e2e-full/README.md` for full Docker interoperability stack details.
 
 Default to local Docker workflows for development/testing work. Treat NixOS instructions as production/staging-only unless the user explicitly requests host deployment changes.
+
+## Documentation Writing Style
+
+When writing, updating, or generating documentation for this project, you **MUST** adhere to the following style rules:
+1. **No LLM-isms:** Do not use formulaic AI vocabulary or filler transitions (e.g., *delve, leverage, harness, unleash, embark, paradigm, seamless, robust, tapestry, furthermore, consequently, in conclusion, it is important to note that*).
+2. **No Marketing Fluff:** Do not use qualitative, hyperbolic adjectives to oversell features (e.g., *revolutionary, groundbreaking, powerful*). Be exceptionally factual and direct.
+3. **Tone:** 
+   - Use an **academic tone** for deep technical specs (architecture, cryptography, protocol fundamentals).
+   - Use a **dry, conversational tone** for beginner guides, quick starts, and procedural runbooks.
+4. **Be Concise:** Provide thorough details without padding. Cut verbose introductions.
+
+If you generate a commit message, pull request description, or structural documentation, ensure it follows these anti-fluff rules.
