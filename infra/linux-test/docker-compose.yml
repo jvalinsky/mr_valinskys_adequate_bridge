@@ -1,0 +1,40 @@
+services:
+  go-test:
+    build:
+      context: ../..
+      dockerfile: infra/linux-test/Dockerfile.ebpf
+    working_dir: /workspace
+    command: ["bash", "-c", "GOFLAGS=-mod=mod go test ./..."]
+    volumes:
+      - ../..:/workspace
+      - go-build-cache:/tmp/go-build
+      - go-mod-cache:/go/pkg/mod
+    environment:
+      GOCACHE: /tmp/go-build
+      GOMODCACHE: /go/pkg/mod
+
+  ebpf-smoke:
+    profiles: ["ebpf"]
+    build:
+      context: ../..
+      dockerfile: infra/linux-test/Dockerfile.ebpf
+    working_dir: /workspace
+    command: ["bash", "-c", "./scripts/linux_ebpf_smoke.sh"]
+    privileged: true
+    security_opt:
+      - seccomp=unconfined
+      - apparmor=unconfined
+    volumes:
+      - ../..:/workspace
+      - /sys/kernel/debug:/sys/kernel/debug
+      - /sys/kernel/tracing:/sys/kernel/tracing
+      - /sys/fs/bpf:/sys/fs/bpf
+      - go-build-cache:/tmp/go-build
+      - go-mod-cache:/go/pkg/mod
+    environment:
+      GOCACHE: /tmp/go-build
+      GOMODCACHE: /go/pkg/mod
+
+volumes:
+  go-build-cache:
+  go-mod-cache:
