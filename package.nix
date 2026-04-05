@@ -17,6 +17,6 @@ pkgs.buildGoModule {
   doCheck = false;
 
   proxyVendor = true;
-  vendorHash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+  vendorHash = "sha256-8yFyMg9y7lPQJ33h8O/4Op/eE0L3yMI94ib2kufb9uE=";
   inherit go;
 }
