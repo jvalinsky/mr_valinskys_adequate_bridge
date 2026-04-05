@@ -1,13 +1,17 @@
 package db
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/config"
+)
 
 func normalizeMessageLimit(limit int) int {
 	switch {
 	case limit <= 0:
-		return 100
-	case limit > 500:
-		return 500
+		return config.DefaultPageLimit
+	case limit > config.MaxPageLimit:
+		return config.MaxPageLimit
 	default:
 		return limit
 	}

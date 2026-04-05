@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"time"
+
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/config"
 )
 
 type ATProtoSource struct {
@@ -393,7 +395,7 @@ func (db *DB) GetATProtoRecord(ctx context.Context, atURI string) (*ATProtoRecor
 
 func (db *DB) ListATProtoRecords(ctx context.Context, did, collection, cursor string, limit int) ([]ATProtoRecord, error) {
 	if limit <= 0 {
-		limit = 100
+		limit = config.DefaultPageLimit
 	}
 	rows, err := db.conn.QueryContext(ctx, `
 		SELECT did, collection, rkey, at_uri, at_cid, record_json, last_rev, last_seq, deleted, deleted_at, created_at, updated_at
@@ -455,7 +457,7 @@ func (db *DB) AppendATProtoEvent(ctx context.Context, event ATProtoRecordEvent) 
 
 func (db *DB) ListATProtoEventsAfter(ctx context.Context, cursor int64, limit int) ([]ATProtoRecordEvent, error) {
 	if limit <= 0 {
-		limit = 100
+		limit = config.DefaultPageLimit
 	}
 	rows, err := db.conn.QueryContext(ctx, `
 		SELECT cursor, did, collection, rkey, at_uri, at_cid, action, live, rev, seq, record_json, created_at
