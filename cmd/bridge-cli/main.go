@@ -211,6 +211,11 @@ func main() {
 						Value: "127.0.0.1:8081",
 						Usage: "Optional MCP SSE Server listen address (e.g. 127.0.0.1:8081). If empty, MCP server is disabled.",
 					},
+					&cli.IntFlag{
+						Name:  "max-msgs-per-did-per-min",
+						Value: 300,
+						Usage: "Maximum messages per DID per minute (0 disables rate limiting)",
+					},
 				},
 				Action: runStart,
 			},
@@ -346,7 +351,7 @@ func main() {
 						Usage: "optional room HTTP base URL for health/status verification (for example http://127.0.0.1:8976)",
 					},
 					&cli.BoolFlag{
-						Name:    "atproto-insecure",
+						Name:  "atproto-insecure",
 						Usage: "disable TLS verification for ATProto/XRPC connections (local/test stacks only)",
 					},
 				},

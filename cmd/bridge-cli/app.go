@@ -44,24 +44,25 @@ type BridgeApp struct {
 }
 
 type AppConfig struct {
-	DBPath          string
-	RepoPath        string
-	BotSeed         string
-	HMACKey         *[32]byte
-	AppKey          string
-	SSBListenAddr   string
-	PublishWorkers  int
-	FirehoseEnable  bool
-	RelayURL        string
-	XRPCReadHost    string
-	RoomEnable      bool
-	RoomListenAddr  string
-	RoomHTTPAddr    string
-	RoomMode        string
-	RoomDomain      string
-	PLCURL          string
-	AtprotoInsecure bool
-	MCPListenAddr   string
+	DBPath              string
+	RepoPath            string
+	BotSeed             string
+	HMACKey             *[32]byte
+	AppKey              string
+	SSBListenAddr       string
+	PublishWorkers      int
+	FirehoseEnable      bool
+	RelayURL            string
+	XRPCReadHost        string
+	RoomEnable          bool
+	RoomListenAddr      string
+	RoomHTTPAddr        string
+	RoomMode            string
+	RoomDomain          string
+	PLCURL              string
+	AtprotoInsecure     bool
+	MCPListenAddr       string
+	MaxMsgsPerDIDPerMin int
 }
 
 func (a *BridgeApp) MCPServer() *server.MCPServer {
@@ -149,6 +150,7 @@ func (a *BridgeApp) Init(ctx context.Context) error {
 		bridge.WithBlobBridge(blobBridge),
 		bridge.WithDependencyResolver(dependencyResolver),
 		bridge.WithFeedResolver(a.ssbRuntime),
+		bridge.WithMaxMessagesPerMinute(a.cfg.MaxMsgsPerDIDPerMin),
 	)
 
 	if a.cfg.FirehoseEnable {
@@ -276,8 +278,10 @@ func (a *BridgeApp) Start(ctx context.Context) error {
 
 	go runRetryScheduler(ctx, a.processor, a.logger)
 	go runDeferredResolverScheduler(ctx, a.processor, a.logger)
+	go runDeferredExpiryScheduler(ctx, a.processor, a.logger)
 	go runATProtoTrackScheduler(ctx, a.db, a.indexer, a.logger)
 	go runRuntimeHeartbeatScheduler(ctx, a.db, a.logger, 10*time.Second)
+	a.processor.StartRateLimiterCleanup(ctx, 5*time.Minute, 10*time.Minute)
 
 	setBridgeStateBestEffort(ctx, a.db, bridgeRuntimeStatusKey, "live", a.logger)
 	setBridgeStateBestEffort(ctx, a.db, bridgeRuntimeStartedAtKey, time.Now().UTC().Format(time.RFC3339), a.logger)
