@@ -14,7 +14,7 @@ echo "[seeder] Waiting for bridge to connect to firehose..."
 MAX_WAIT=60
 WAIT_COUNT=0
 while [ $WAIT_COUNT -lt $MAX_WAIT ]; do
-    FIREHOSE_CONNECTED=$(sqlite3 "$DB_PATH" "SELECT value FROM bridge_state WHERE key = 'firehose_connected';" 2>/dev/null || echo "")
+    FIREHOSE_CONNECTED=$(sqlite3 "$DB_PATH" "PRAGMA busy_timeout=5000; SELECT value FROM bridge_state WHERE key = 'firehose_connected';" 2>/dev/null || echo "")
     if [ "$FIREHOSE_CONNECTED" = "1" ]; then
         echo "[seeder] Bridge connected to firehose"
         break
@@ -62,5 +62,5 @@ echo "[seeder] Seeding complete!"
 # Write completion marker for both phases
 echo "complete" > /data/seeder-complete
 
-# Keep container alive for inspection
-tail -f /dev/null
+exit 0
+

@@ -22,6 +22,13 @@ POLL_INTERVAL="${POLL_INTERVAL:-3}"
 
 log() { echo "[e2e-tf] $(date +%H:%M:%S) $*"; }
 
+gh_warn() {
+  if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+    echo "::warning file=infra/e2e-tildefriends/test_runner.sh,line=${BASH_LINENO[0]}::$*"
+  fi
+  log "WARN: $*"
+}
+
 # shellcheck disable=SC2329
 cleanup() {
   log "killing background tildefriends process..."
@@ -31,7 +38,13 @@ cleanup() {
 }
 trap cleanup EXIT
 
-die() { log "FAIL: $*" >&2; exit 1; }
+die() {
+  if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+    echo "::error file=infra/e2e-tildefriends/test_runner.sh,line=${BASH_LINENO[0]}::$*"
+  fi
+  log "FAIL: $*" >&2
+  exit 1
+}
 
 sql_escape() {
   local escaped="${1//\'/\'\'}"
@@ -42,7 +55,7 @@ sql_count() {
   local db_path="$1"
   local query="$2"
   local count
-  count="$(sqlite3 "${db_path}" "${query}" 2>/dev/null || echo "0")"
+  count="$(sqlite3 "${db_path}" "PRAGMA busy_timeout=5000; ${query}" 2>/dev/null || echo "0")"
   count="$(echo "${count}" | tr -d '[:space:]')"
   if [[ -z "${count}" ]]; then
     count="0"
@@ -90,7 +103,7 @@ assert_invite_endpoint_matches_expected() {
 
 dump_tf_connections() {
   log "current TF connections rows:"
-  sqlite3 "${TF_DB_PATH}" "SELECT host, port, key FROM connections ORDER BY host, port;" || true
+  sqlite3 "${TF_DB_PATH}" "PRAGMA busy_timeout=5000; SELECT host, port, key FROM connections ORDER BY host, port;" || true
 }
 
 dump_tf_log_tail() {
@@ -176,7 +189,7 @@ queue_retry_trigger_message() {
   at_json="$(jq -cn --arg text "${trigger_text}" --arg createdAt "${now_iso}" '{"$type":"app.bsky.feed.post","text":$text,"createdAt":$createdAt}')"
   ssb_json="$(jq -cn --arg text "${trigger_text}" --arg createdAt "${now_iso}" '{type:"post",text:$text,createdAt:$createdAt}')"
 
-  sqlite3 "${BRIDGE_DB_PATH}" "INSERT INTO messages (at_uri, at_cid, at_did, type, message_state, raw_at_json, raw_ssb_json, publish_error, publish_attempts, last_publish_attempt_at) VALUES ('$(sql_escape "${at_uri}")', '$(sql_escape "${at_cid}")', '$(sql_escape "${BOT_DID}")', 'app.bsky.feed.post', 'failed', '$(sql_escape "${at_json}")', '$(sql_escape "${ssb_json}")', '$(sql_escape "e2e room retry trigger")', 0, NULL);"
+  sqlite3 "${BRIDGE_DB_PATH}" "PRAGMA busy_timeout=5000; INSERT INTO messages (at_uri, at_cid, at_did, type, message_state, raw_at_json, raw_ssb_json, publish_error, publish_attempts, last_publish_attempt_at) VALUES ('$(sql_escape "${at_uri}")', '$(sql_escape "${at_cid}")', '$(sql_escape "${BOT_DID}")', 'app.bsky.feed.post', 'failed', '$(sql_escape "${at_json}")', '$(sql_escape "${ssb_json}")', '$(sql_escape "e2e room retry trigger")', 0, NULL);"
   RETRY_TRIGGER_AT_URI="${at_uri}"
   log "queued retry-trigger bridge message: ${RETRY_TRIGGER_AT_URI}"
 }
@@ -369,11 +382,11 @@ log "follow messages published"
 # 9. Setup strict invite-derived connection in TF
 # ------------------------------------------------------------------
 log "configuring TF connection table in strict invite-derived mode ..."
-sqlite3 "${TF_DB_PATH}" "DELETE FROM connections;"
+sqlite3 "${TF_DB_PATH}" "PRAGMA busy_timeout=5000; DELETE FROM connections;"
 
 room_host_escaped="$(sql_escape "${ROOM_HOST}")"
 room_key_escaped="$(sql_escape "${ROOM_KEY}")"
-sqlite3 "${TF_DB_PATH}" "INSERT INTO connections (host, port, key) VALUES ('${room_host_escaped}', ${ROOM_PORT}, '${room_key_escaped}');"
+sqlite3 "${TF_DB_PATH}" "PRAGMA busy_timeout=5000; INSERT INTO connections (host, port, key) VALUES ('${room_host_escaped}', ${ROOM_PORT}, '${room_key_escaped}');"
 assert_room_only_connections
 
 # ------------------------------------------------------------------
@@ -383,7 +396,25 @@ log "starting tildefriends natively in background (invite-derived room path) ...
 "${TF_BIN}" run --db-path "${TF_DB_PATH}" --verbose --one-proc > /tmp/tf.log 2>&1 &
 TF_PID=$!
 log "tildefriends started with PID ${TF_PID}"
-sleep 2
+
+log "waiting for tildefriends to initialize ..."
+tf_start_deadline=$((SECONDS + 30))
+while true; do
+  if ! kill -0 "${TF_PID}" 2>/dev/null; then
+    log "tildefriends died during startup. Log tail:"
+    tail -n 100 /tmp/tf.log || true
+    die "tildefriends process died during startup"
+  fi
+  if [[ -s /tmp/tf.log ]]; then
+    log "tildefriends initialized (log file has output)"
+    break
+  fi
+  if ((SECONDS >= tf_start_deadline)); then
+    log "warning: tildefriends startup wait timed out, proceeding"
+    break
+  fi
+  sleep 1
+done
 
 # ------------------------------------------------------------------
 # 11. Verify that tildefriends recognizes the contact
