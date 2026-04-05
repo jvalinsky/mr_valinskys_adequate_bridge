@@ -208,6 +208,7 @@ Key runtime flags:
 - `--otel-logs-insecure` - disable OTLP transport security when needed for local collectors
 - `--otel-service-name` - override `service.name` resource attribute
 - `--local-log-output` (`text|none`, default `text`) - keep or suppress local stdout logs while OTLP export runs
+- `--max-msgs-per-did-per-min` (default: 300) - per-DID message rate limit; set to 0 to disable. See [Rate Limiting](./rate-limiting.md) for details.
 
 ## Health Monitoring
 
@@ -524,3 +525,11 @@ The testnet profile is additive operator tooling only. It does not change the cu
   - https://go.dev/doc/effective_go#commentary
   - https://go.dev/wiki/CodeReviewComments
   - https://google.github.io/styleguide/go/decisions.html#doc-comments
+
+---
+
+## See Also
+
+- [Documentation Index](./README.md)
+- [Per-DID Rate Limiting](./rate-limiting.md)
+- [Agent Setup Profiles](./agents.md)

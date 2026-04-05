@@ -1,6 +1,6 @@
 # Documentation Index
 
-This repo contains four documentation areas:
+This repo contains four documentation areas. For AI agent instructions, see [CLAUDE.md](../CLAUDE.md).
 
 ## ATProto to SSB Bridge
 
@@ -14,6 +14,7 @@ The detailed docs for that flow live here:
 - [ATProto to SSB Translation Overview](./atproto-ssb-translation-overview.md)
 - [ATProto to SSB Identity Mapping](./atproto-ssb-identity-mapping.md)
 - [ATProto to SSB Record Translation](./atproto-ssb-record-translation.md)
+- [Per-DID Rate Limiting](./rate-limiting.md)
 - [Bridge Operator Runbook](./runbook.md)
 - [Agent Setup Profiles](./agents.md)
 
@@ -23,6 +24,7 @@ Use these docs based on environment:
 
 - [Bridge Operator Runbook](./runbook.md) - local Docker workflow plus production operations.
 - [Agent Setup Profiles](./agents.md) - fast local-vs-production setup matrix for contributors.
+- [Documentation Guide](./documentation-guide.md) - how to update docs (for AI assistants).
 
 ## SSB Protocol
 
@@ -48,6 +50,7 @@ Development notes and debugging sessions are indexed in [scratchpad/README.md](s
 - [`internal/bridge/processor.go`](../internal/bridge/processor.go)
 - [`internal/bridge/dependencies.go`](../internal/bridge/dependencies.go)
 - [`internal/mapper/mapper.go`](../internal/mapper/mapper.go)
+- [`internal/config/constants.go`](../internal/config/constants.go) - Rate limiting defaults
 - [`internal/db/schema.sql`](../internal/db/schema.sql)
 
 ### SSB Protocol Implementation

@@ -43,3 +43,11 @@ The codebase consistently keys on DIDs:
 - the database schema stores `at_did` in [`internal/db/schema.sql`](../internal/db/schema.sql)
 
 Handles do not participate in bridge identity resolution. The only handle-oriented text in this repo is operator-facing live-test/runbook material such as [`docs/runbook.md`](./runbook.md), not the core translation path.
+
+---
+
+## See Also
+
+- [Documentation Index](./README.md)
+- [ATProto to SSB Identity Mapping](./atproto-ssb-identity-mapping.md)
+- [Bridge Operator Runbook](./runbook.md)
