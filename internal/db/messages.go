@@ -143,19 +143,13 @@ func (db *DB) GetMessage(ctx context.Context, atURI string) (*Message, error) {
 }
 
 func (db *DB) CountMessages(ctx context.Context) (int, error) {
-	var count int
-	if err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages`).Scan(&count); err != nil {
-		return 0, fmt.Errorf("count messages: %w", err)
-	}
-	return count, nil
+	count, err := db.Queries().CountMessages(ctx)
+	return int(count), err
 }
 
 func (db *DB) CountMessagesByDID(ctx context.Context, atDID string) (int, error) {
-	var count int
-	if err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE at_did = ?`, atDID).Scan(&count); err != nil {
-		return 0, fmt.Errorf("count messages for did %s: %w", atDID, err)
-	}
-	return count, nil
+	count, err := db.Queries().CountMessagesByDID(ctx, atDID)
+	return int(count), err
 }
 
 func (db *DB) GetRecentMessages(ctx context.Context, limit int) ([]Message, error) {
@@ -595,6 +589,34 @@ func (db *DB) GetDeferredCandidates(ctx context.Context, limit int) ([]Message, 
 		return nil, fmt.Errorf("scan deferred candidates: %w", err)
 	}
 	return messages, nil
+}
+
+// GetExpiredDeferredMessages returns deferred messages older than maxAge, ordered by age.
+func (db *DB) GetExpiredDeferredMessages(ctx context.Context, maxAge time.Duration, limit int) ([]Message, error) {
+	if limit <= 0 {
+		limit = config.DefaultMessageLimit
+	}
+
+	cutoff := time.Now().UTC().Add(-maxAge)
+
+	rows, err := db.conn.QueryContext(
+		ctx,
+		messageSelectColumns+`
+		 FROM messages
+		 WHERE message_state = ?
+		   AND COALESCE(last_defer_attempt_at, created_at) < ?
+		 ORDER BY COALESCE(last_defer_attempt_at, created_at) ASC
+		 LIMIT ?`,
+		MessageStateDeferred,
+		cutoff,
+		limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query expired deferred messages: %w", err)
+	}
+	defer rows.Close()
+
+	return scanMessagesRows(rows)
 }
 
 func (db *DB) GetLatestDeferredReason(ctx context.Context) (string, bool, error) {

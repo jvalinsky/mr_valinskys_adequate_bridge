@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	sqlc "github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db/sqlc"
 )
 
 const bridgedAccountStatsQuery = `
@@ -95,12 +97,15 @@ func botDirectoryOrderClause(sort string) string {
 }
 
 func (db *DB) AddBridgedAccount(ctx context.Context, acc BridgedAccount) error {
-	_, err := db.conn.ExecContext(
-		ctx,
-		`INSERT INTO bridged_accounts (at_did, ssb_feed_id, active) VALUES (?, ?, ?)
-		 ON CONFLICT(at_did) DO UPDATE SET ssb_feed_id=excluded.ssb_feed_id, active=excluded.active`,
-		acc.ATDID, acc.SSBFeedID, acc.Active,
-	)
+	var active sql.NullBool
+	if acc.Active {
+		active = sql.NullBool{Bool: true, Valid: true}
+	}
+	err := db.Queries().AddBridgedAccount(ctx, sqlc.AddBridgedAccountParams{
+		AtDid:     acc.ATDID,
+		SsbFeedID: acc.SSBFeedID,
+		Active:    active,
+	})
 	if err != nil {
 		return fmt.Errorf("add bridged account %s: %w", acc.ATDID, err)
 	}
@@ -108,52 +113,63 @@ func (db *DB) AddBridgedAccount(ctx context.Context, acc BridgedAccount) error {
 }
 
 func (db *DB) GetBridgedAccount(ctx context.Context, atDID string) (*BridgedAccount, error) {
-	var acc BridgedAccount
-	err := db.conn.QueryRowContext(
-		ctx,
-		`SELECT at_did, ssb_feed_id, created_at, active FROM bridged_accounts WHERE at_did = ?`,
-		atDID,
-	).Scan(&acc.ATDID, &acc.SSBFeedID, &acc.CreatedAt, &acc.Active)
-
+	row, err := db.Queries().GetBridgedAccount(ctx, atDID)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, nil
-		}
 		return nil, fmt.Errorf("get bridged account %s: %w", atDID, err)
 	}
-	return &acc, nil
+	return &BridgedAccount{
+		ATDID:     row.AtDid,
+		SSBFeedID: row.SsbFeedID,
+		CreatedAt: row.CreatedAt.Time,
+		Active:    row.Active.Bool,
+	}, nil
 }
 
 func (db *DB) GetAllBridgedAccounts(ctx context.Context) ([]BridgedAccount, error) {
-	return querySlice(ctx, db.conn,
-		"list bridged accounts",
-		`SELECT at_did, ssb_feed_id, created_at, active FROM bridged_accounts ORDER BY created_at DESC`,
-		nil, scanBridgedAccount,
-	)
+	rows, err := db.Queries().GetAllBridgedAccounts(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get all bridged accounts: %w", err)
+	}
+	result := make([]BridgedAccount, len(rows))
+	for i, r := range rows {
+		result[i] = BridgedAccount{
+			ATDID:     r.AtDid,
+			SSBFeedID: r.SsbFeedID,
+			CreatedAt: r.CreatedAt.Time,
+			Active:    r.Active.Bool,
+		}
+	}
+	return result, nil
 }
 
 func (db *DB) ListActiveBridgedAccounts(ctx context.Context) ([]BridgedAccount, error) {
-	return querySlice(ctx, db.conn,
-		"list active bridged accounts",
-		`SELECT at_did, ssb_feed_id, created_at, active FROM bridged_accounts WHERE active = 1 ORDER BY created_at DESC`,
-		nil, scanBridgedAccount,
-	)
+	rows, err := db.Queries().ListActiveBridgedAccounts(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list active bridged accounts: %w", err)
+	}
+	result := make([]BridgedAccount, len(rows))
+	for i, r := range rows {
+		result[i] = BridgedAccount{
+			ATDID:     r.AtDid,
+			SSBFeedID: r.SsbFeedID,
+			CreatedAt: r.CreatedAt.Time,
+			Active:    r.Active.Bool,
+		}
+	}
+	return result, nil
 }
 
 func (db *DB) CountBridgedAccounts(ctx context.Context) (int, error) {
-	var count int
-	if err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM bridged_accounts`).Scan(&count); err != nil {
-		return 0, fmt.Errorf("count bridged accounts: %w", err)
-	}
-	return count, nil
+	count, err := db.Queries().CountBridgedAccounts(ctx)
+	return int(count), err
 }
 
 func (db *DB) CountActiveBridgedAccounts(ctx context.Context) (int, error) {
-	var count int
-	if err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM bridged_accounts WHERE active = 1`).Scan(&count); err != nil {
-		return 0, fmt.Errorf("count active bridged accounts: %w", err)
-	}
-	return count, nil
+	count, err := db.Queries().CountActiveBridgedAccounts(ctx)
+	return int(count), err
 }
 
 func (db *DB) ListActiveBridgedAccountsWithStats(ctx context.Context) ([]BridgedAccountStats, error) {

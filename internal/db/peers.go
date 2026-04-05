@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"time"
+
+	sqlc "github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db/sqlc"
 )
 
 type KnownPeer struct {
@@ -36,11 +38,24 @@ func (db *DB) AddKnownPeerAddr(ctx context.Context, addr string, pubKey []byte) 
 }
 
 func (db *DB) GetKnownPeers(ctx context.Context) ([]KnownPeer, error) {
-	return querySlice(ctx, db.conn,
-		"list known peers",
-		`SELECT addr, pubkey, last_seen, created_at FROM known_peers ORDER BY created_at DESC`,
-		nil, scanKnownPeerRow,
-	)
+	rows, err := db.Queries().GetKnownPeers(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get known peers: %w", err)
+	}
+	result := make([]KnownPeer, len(rows))
+	for i, r := range rows {
+		result[i] = convertKnownPeer(r)
+	}
+	return result, nil
+}
+
+func convertKnownPeer(r sqlc.KnownPeer) KnownPeer {
+	return KnownPeer{
+		Addr:      r.Addr,
+		PubKey:    r.Pubkey,
+		LastSeen:  nilOrTime(r.LastSeen),
+		CreatedAt: r.CreatedAt.Time,
+	}
 }
 
 func scanKnownPeerRow(rows *sql.Rows) (KnownPeer, error) {

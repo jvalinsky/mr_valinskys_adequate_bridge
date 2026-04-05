@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/config"
+	sqlc "github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db/sqlc"
 )
 
 type ATProtoSource struct {
@@ -97,22 +98,15 @@ func (db *DB) UpsertATProtoSource(ctx context.Context, source ATProtoSource) err
 }
 
 func (db *DB) GetATProtoSource(ctx context.Context, sourceKey string) (*ATProtoSource, error) {
-	row := db.conn.QueryRowContext(ctx, `
-		SELECT source_key, relay_url, last_seq, connected_at, updated_at
-		FROM atproto_sources
-		WHERE source_key = ?
-	`, sourceKey)
-
-	var source ATProtoSource
-	var connectedAt sql.NullTime
-	if err := row.Scan(&source.SourceKey, &source.RelayURL, &source.LastSeq, &connectedAt, &source.UpdatedAt); err != nil {
-		if err == sql.ErrNoRows {
-			return nil, nil
-		}
+	row, err := db.Queries().GetATProtoSource(ctx, sourceKey)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
 		return nil, fmt.Errorf("get atproto source %s: %w", sourceKey, err)
 	}
-	source.ConnectedAt = nullTimePtr(connectedAt)
-	return &source, nil
+	src := convertATProtoSource(row)
+	return &src, nil
 }
 
 func (db *DB) UpsertATProtoRepo(ctx context.Context, repo ATProtoRepo) error {
@@ -169,121 +163,36 @@ func (db *DB) UpsertATProtoRepo(ctx context.Context, repo ATProtoRepo) error {
 }
 
 func (db *DB) GetATProtoRepo(ctx context.Context, did string) (*ATProtoRepo, error) {
-	row := db.conn.QueryRowContext(ctx, `
-		SELECT did, tracking, reason, sync_state, generation, current_rev, current_commit_cid, current_data_cid,
-		       last_firehose_seq, last_backfill_at, last_event_cursor, handle, pds_url, account_active,
-		       account_status, last_identity_at, last_account_at, last_error, created_at, updated_at
-		FROM atproto_repos
-		WHERE did = ?
-	`, did)
-
-	var repo ATProtoRepo
-	var lastFirehoseSeq sql.NullInt64
-	var lastBackfillAt sql.NullTime
-	var lastEventCursor sql.NullInt64
-	var accountActive sql.NullBool
-	var lastIdentityAt sql.NullTime
-	var lastAccountAt sql.NullTime
-	if err := row.Scan(
-		&repo.DID,
-		&repo.Tracking,
-		&repo.Reason,
-		&repo.SyncState,
-		&repo.Generation,
-		&repo.CurrentRev,
-		&repo.CurrentCommitCID,
-		&repo.CurrentDataCID,
-		&lastFirehoseSeq,
-		&lastBackfillAt,
-		&lastEventCursor,
-		&repo.Handle,
-		&repo.PDSURL,
-		&accountActive,
-		&repo.AccountStatus,
-		&lastIdentityAt,
-		&lastAccountAt,
-		&repo.LastError,
-		&repo.CreatedAt,
-		&repo.UpdatedAt,
-	); err != nil {
-		if err == sql.ErrNoRows {
-			return nil, nil
-		}
+	row, err := db.Queries().GetATProtoRepo(ctx, did)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
 		return nil, fmt.Errorf("get atproto repo %s: %w", did, err)
 	}
-	repo.LastFirehoseSeq = nullInt64Ptr(lastFirehoseSeq)
-	repo.LastBackfillAt = nullTimePtr(lastBackfillAt)
-	repo.LastEventCursor = nullInt64Ptr(lastEventCursor)
-	repo.AccountActive = nullBoolPtr(accountActive)
-	repo.LastIdentityAt = nullTimePtr(lastIdentityAt)
-	repo.LastAccountAt = nullTimePtr(lastAccountAt)
-	return &repo, nil
+	r := convertATProtoRepo(row)
+	return &r, nil
 }
 
 func (db *DB) ListTrackedATProtoRepos(ctx context.Context, state string) ([]ATProtoRepo, error) {
-	query := `
-		SELECT did, tracking, reason, sync_state, generation, current_rev, current_commit_cid, current_data_cid,
-		       last_firehose_seq, last_backfill_at, last_event_cursor, handle, pds_url, account_active,
-		       account_status, last_identity_at, last_account_at, last_error, created_at, updated_at
-		FROM atproto_repos
-		WHERE tracking = 1
-	`
-	args := []any{}
-	if state != "" {
-		query += ` AND sync_state = ?`
-		args = append(args, state)
-	}
-	query += ` ORDER BY did`
-
-	rows, err := db.conn.QueryContext(ctx, query, args...)
+	rows, err := db.Queries().ListTrackedATProtoRepos(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list atproto repos: %w", err)
 	}
-	defer rows.Close()
-
-	var repos []ATProtoRepo
-	for rows.Next() {
-		var repo ATProtoRepo
-		var lastFirehoseSeq sql.NullInt64
-		var lastBackfillAt sql.NullTime
-		var lastEventCursor sql.NullInt64
-		var accountActive sql.NullBool
-		var lastIdentityAt sql.NullTime
-		var lastAccountAt sql.NullTime
-		if err := rows.Scan(
-			&repo.DID,
-			&repo.Tracking,
-			&repo.Reason,
-			&repo.SyncState,
-			&repo.Generation,
-			&repo.CurrentRev,
-			&repo.CurrentCommitCID,
-			&repo.CurrentDataCID,
-			&lastFirehoseSeq,
-			&lastBackfillAt,
-			&lastEventCursor,
-			&repo.Handle,
-			&repo.PDSURL,
-			&accountActive,
-			&repo.AccountStatus,
-			&lastIdentityAt,
-			&lastAccountAt,
-			&repo.LastError,
-			&repo.CreatedAt,
-			&repo.UpdatedAt,
-		); err != nil {
-			return nil, fmt.Errorf("scan atproto repo: %w", err)
-		}
-		repo.LastFirehoseSeq = nullInt64Ptr(lastFirehoseSeq)
-		repo.LastBackfillAt = nullTimePtr(lastBackfillAt)
-		repo.LastEventCursor = nullInt64Ptr(lastEventCursor)
-		repo.AccountActive = nullBoolPtr(accountActive)
-		repo.LastIdentityAt = nullTimePtr(lastIdentityAt)
-		repo.LastAccountAt = nullTimePtr(lastAccountAt)
-		repos = append(repos, repo)
+	repos := make([]ATProtoRepo, len(rows))
+	for i, r := range rows {
+		repos[i] = convertATProtoRepo(r)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list atproto repos: %w", err)
+
+	// Filter by state if provided
+	if state != "" {
+		filtered := make([]ATProtoRepo, 0)
+		for _, repo := range repos {
+			if repo.SyncState == state {
+				filtered = append(filtered, repo)
+			}
+		}
+		return filtered, nil
 	}
 	return repos, nil
 }
@@ -360,82 +269,32 @@ func (db *DB) UpsertATProtoRecord(ctx context.Context, record ATProtoRecord) err
 }
 
 func (db *DB) GetATProtoRecord(ctx context.Context, atURI string) (*ATProtoRecord, error) {
-	row := db.conn.QueryRowContext(ctx, `
-		SELECT did, collection, rkey, at_uri, at_cid, record_json, last_rev, last_seq, deleted, deleted_at, created_at, updated_at
-		FROM atproto_records
-		WHERE at_uri = ?
-	`, atURI)
-
-	var record ATProtoRecord
-	var lastSeq sql.NullInt64
-	var deletedAt sql.NullTime
-	if err := row.Scan(
-		&record.DID,
-		&record.Collection,
-		&record.RKey,
-		&record.ATURI,
-		&record.ATCID,
-		&record.RecordJSON,
-		&record.LastRev,
-		&lastSeq,
-		&record.Deleted,
-		&deletedAt,
-		&record.CreatedAt,
-		&record.UpdatedAt,
-	); err != nil {
-		if err == sql.ErrNoRows {
-			return nil, nil
-		}
+	row, err := db.Queries().GetATProtoRecord(ctx, atURI)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
 		return nil, fmt.Errorf("get atproto record %s: %w", atURI, err)
 	}
-	record.LastSeq = nullInt64Ptr(lastSeq)
-	record.DeletedAt = nullTimePtr(deletedAt)
-	return &record, nil
+	r := convertATProtoRecord(row)
+	return &r, nil
 }
 
 func (db *DB) ListATProtoRecords(ctx context.Context, did, collection, cursor string, limit int) ([]ATProtoRecord, error) {
 	if limit <= 0 {
 		limit = config.DefaultPageLimit
 	}
-	rows, err := db.conn.QueryContext(ctx, `
-		SELECT did, collection, rkey, at_uri, at_cid, record_json, last_rev, last_seq, deleted, deleted_at, created_at, updated_at
-		FROM atproto_records
-		WHERE did = ? AND collection = ? AND at_uri > ?
-		ORDER BY at_uri
-		LIMIT ?
-	`, did, collection, cursor, limit)
+	rows, err := db.Queries().ListATProtoRecords(ctx, sqlc.ListATProtoRecordsParams{
+		Did:        did,
+		Collection: collection,
+		Limit:      int64(limit),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("list atproto records %s/%s: %w", did, collection, err)
 	}
-	defer rows.Close()
-
-	var records []ATProtoRecord
-	for rows.Next() {
-		var record ATProtoRecord
-		var lastSeq sql.NullInt64
-		var deletedAt sql.NullTime
-		if err := rows.Scan(
-			&record.DID,
-			&record.Collection,
-			&record.RKey,
-			&record.ATURI,
-			&record.ATCID,
-			&record.RecordJSON,
-			&record.LastRev,
-			&lastSeq,
-			&record.Deleted,
-			&deletedAt,
-			&record.CreatedAt,
-			&record.UpdatedAt,
-		); err != nil {
-			return nil, fmt.Errorf("scan atproto record: %w", err)
-		}
-		record.LastSeq = nullInt64Ptr(lastSeq)
-		record.DeletedAt = nullTimePtr(deletedAt)
-		records = append(records, record)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("list atproto records %s/%s: %w", did, collection, err)
+	records := make([]ATProtoRecord, len(rows))
+	for i, r := range rows {
+		records[i] = convertATProtoRecord(r)
 	}
 	return records, nil
 }
@@ -540,4 +399,93 @@ func nullBoolPtr(value sql.NullBool) *bool {
 	}
 	v := value.Bool
 	return &v
+}
+
+func nullStringPtr(value sql.NullString) *string {
+	if !value.Valid {
+		return nil
+	}
+	v := value.String
+	return &v
+}
+
+func convertATProtoSource(r sqlc.AtprotoSource) ATProtoSource {
+	return ATProtoSource{
+		SourceKey:   r.SourceKey,
+		RelayURL:    r.RelayUrl,
+		LastSeq:     r.LastSeq,
+		ConnectedAt: nullTimePtr(r.ConnectedAt),
+		UpdatedAt:   r.UpdatedAt.Time,
+	}
+}
+
+func convertATProtoRepo(r sqlc.AtprotoRepo) ATProtoRepo {
+	return ATProtoRepo{
+		DID:              r.Did,
+		Tracking:         r.Tracking,
+		Reason:           r.Reason.String,
+		SyncState:        r.SyncState,
+		Generation:       r.Generation,
+		CurrentRev:       r.CurrentRev.String,
+		CurrentCommitCID: r.CurrentCommitCid.String,
+		CurrentDataCID:   r.CurrentDataCid.String,
+		LastFirehoseSeq:  nullInt64Ptr(r.LastFirehoseSeq),
+		LastBackfillAt:   nullTimePtr(r.LastBackfillAt),
+		LastEventCursor:  nullInt64Ptr(r.LastEventCursor),
+		Handle:           r.Handle.String,
+		PDSURL:           r.PdsUrl.String,
+		AccountActive:    nullBoolPtr(r.AccountActive),
+		AccountStatus:    r.AccountStatus.String,
+		LastIdentityAt:   nullTimePtr(r.LastIdentityAt),
+		LastAccountAt:    nullTimePtr(r.LastAccountAt),
+		LastError:        r.LastError.String,
+		CreatedAt:        r.CreatedAt.Time,
+		UpdatedAt:        r.UpdatedAt.Time,
+	}
+}
+
+func convertATProtoRecord(r sqlc.AtprotoRecord) ATProtoRecord {
+	return ATProtoRecord{
+		DID:        r.Did,
+		Collection: r.Collection,
+		RKey:       r.Rkey,
+		ATURI:      r.AtUri,
+		ATCID:      r.AtCid,
+		RecordJSON: r.RecordJson,
+		LastRev:    r.LastRev.String,
+		LastSeq:    nullInt64Ptr(r.LastSeq),
+		Deleted:    r.Deleted,
+		DeletedAt:  nullTimePtr(r.DeletedAt),
+		CreatedAt:  r.CreatedAt.Time,
+		UpdatedAt:  r.UpdatedAt.Time,
+	}
+}
+
+func convertATProtoCommitBufferItem(r sqlc.AtprotoCommitBuffer) ATProtoCommitBufferItem {
+	return ATProtoCommitBufferItem{
+		ID:           r.ID,
+		DID:          r.Did,
+		Generation:   r.Generation,
+		Rev:          r.Rev,
+		Seq:          r.Seq,
+		RawEventJSON: r.RawEventJson,
+		CreatedAt:    r.CreatedAt.Time,
+	}
+}
+
+func convertATProtoRecordEvent(r sqlc.AtprotoEventLog) ATProtoRecordEvent {
+	return ATProtoRecordEvent{
+		Cursor:     r.Cursor,
+		DID:        r.Did,
+		Collection: r.Collection,
+		RKey:       r.Rkey,
+		ATURI:      r.AtUri,
+		ATCID:      r.AtCid.String,
+		Action:     r.Action,
+		Live:       r.Live,
+		Rev:        r.Rev.String,
+		Seq:        nullInt64Ptr(r.Seq),
+		RecordJSON: r.RecordJson.String,
+		CreatedAt:  r.CreatedAt.Time,
+	}
 }

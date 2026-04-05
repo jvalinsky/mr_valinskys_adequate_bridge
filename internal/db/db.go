@@ -9,12 +9,18 @@ import (
 	"time"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/config"
+	sqlc "github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db/sqlc"
 	_ "github.com/mattn/go-sqlite3"
 )
 
 // DB wraps a SQLite connection used by bridge components.
 type DB struct {
 	conn *sql.DB
+}
+
+// Queries returns a sqlc Queries instance for type-safe database operations.
+func (db *DB) Queries() *sqlc.Queries {
+	return sqlc.New(db.conn)
 }
 
 // BridgedAccount stores the DID-to-SSB identity mapping and activation status.
@@ -270,53 +276,32 @@ func (db *DB) AddBlob(ctx context.Context, blob Blob) error {
 
 // GetBlob returns the blob row for atCID, or nil when absent.
 func (db *DB) GetBlob(ctx context.Context, atCID string) (*Blob, error) {
-	var blob Blob
-	var mimeType sql.NullString
-	err := db.conn.QueryRowContext(
-		ctx,
-		`SELECT at_cid, ssb_blob_ref, COALESCE(size, 0), mime_type, downloaded_at
-		 FROM blobs
-		 WHERE at_cid = ?`,
-		atCID,
-	).Scan(&blob.ATCID, &blob.SSBBlobRef, &blob.Size, &mimeType, &blob.DownloadedAt)
+	row, err := db.Queries().GetBlob(ctx, atCID)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, nil
-		}
 		return nil, fmt.Errorf("get blob %s: %w", atCID, err)
 	}
-	blob.MimeType = mimeType.String
-	return &blob, nil
+	return convertBlob(row), nil
 }
 
 // GetBlobBySSBRef returns the blob row for ssbBlobRef, or nil when absent.
 func (db *DB) GetBlobBySSBRef(ctx context.Context, ssbBlobRef string) (*Blob, error) {
-	var blob Blob
-	var mimeType sql.NullString
-	err := db.conn.QueryRowContext(
-		ctx,
-		`SELECT at_cid, ssb_blob_ref, COALESCE(size, 0), mime_type, downloaded_at
-		 FROM blobs
-		 WHERE ssb_blob_ref = ?`,
-		ssbBlobRef,
-	).Scan(&blob.ATCID, &blob.SSBBlobRef, &blob.Size, &mimeType, &blob.DownloadedAt)
+	row, err := db.Queries().GetBlobBySSBRef(ctx, ssbBlobRef)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, nil
-		}
 		return nil, fmt.Errorf("get blob by ssb ref %s: %w", ssbBlobRef, err)
 	}
-	blob.MimeType = mimeType.String
-	return &blob, nil
+	return convertBlob(row), nil
 }
 
 // CountBlobs returns the total number of bridged blobs.
 func (db *DB) CountBlobs(ctx context.Context) (int, error) {
-	var count int
-	if err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM blobs`).Scan(&count); err != nil {
-		return 0, fmt.Errorf("count blobs: %w", err)
-	}
-	return count, nil
+	count, err := db.Queries().CountBlobs(ctx)
+	return int(count), err
 }
 
 // GetRecentBlobs returns the most recently downloaded blobs up to limit.
@@ -325,15 +310,25 @@ func (db *DB) GetRecentBlobs(ctx context.Context, limit int) ([]Blob, error) {
 		limit = config.DefaultBlobLimit
 	}
 
-	return querySlice(ctx, db.conn,
-		"list recent blobs",
-		`SELECT at_cid, ssb_blob_ref, COALESCE(size, 0), mime_type, downloaded_at
-		 FROM blobs
-		 ORDER BY downloaded_at DESC
-		 LIMIT ?`,
-		[]any{limit},
-		scanBlobRow,
-	)
+	rows, err := db.Queries().GetRecentBlobs(ctx, int64(limit))
+	if err != nil {
+		return nil, fmt.Errorf("get recent blobs: %w", err)
+	}
+	result := make([]Blob, len(rows))
+	for i, r := range rows {
+		result[i] = *convertBlob(r)
+	}
+	return result, nil
+}
+
+func convertBlob(r sqlc.Blob) *Blob {
+	return &Blob{
+		ATCID:        r.AtCid,
+		SSBBlobRef:   r.SsbBlobRef,
+		Size:         r.Size.Int64,
+		MimeType:     r.MimeType.String,
+		DownloadedAt: r.DownloadedAt.Time,
+	}
 }
 
 // GetBlobsOlderThan returns blob mappings older than the specified days.
@@ -390,15 +385,14 @@ func (db *DB) SetBridgeState(ctx context.Context, key, value string) error {
 
 // GetBridgeState returns the value for key and whether it exists.
 func (db *DB) GetBridgeState(ctx context.Context, key string) (string, bool, error) {
-	var value string
-	err := db.conn.QueryRowContext(ctx, `SELECT value FROM bridge_state WHERE key = ?`, key).Scan(&value)
+	row, err := db.Queries().GetBridgeState(ctx, key)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return "", false, nil
-		}
 		return "", false, fmt.Errorf("get bridge state %s: %w", key, err)
 	}
-	return value, true, nil
+	return row.Value, true, nil
 }
 
 // BridgeHealthStatus holds the result of a health check query.
@@ -444,14 +438,19 @@ func (db *DB) CheckBridgeHealth(ctx context.Context, maxStale time.Duration) (*B
 
 // GetAllBridgeState returns all runtime state entries sorted by key.
 func (db *DB) GetAllBridgeState(ctx context.Context) ([]BridgeState, error) {
-	return querySlice(ctx, db.conn,
-		"list bridge state",
-		`SELECT key, value, updated_at
-		 FROM bridge_state
-		 ORDER BY key ASC`,
-		nil,
-		scanBridgeStateRow,
-	)
+	rows, err := db.Queries().GetAllBridgeState(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("get all bridge state: %w", err)
+	}
+	result := make([]BridgeState, len(rows))
+	for i, r := range rows {
+		result[i] = BridgeState{
+			Key:       r.Key,
+			Value:     r.Value,
+			UpdatedAt: r.UpdatedAt.Time,
+		}
+	}
+	return result, nil
 }
 
 func scanBlobRow(rows *sql.Rows) (Blob, error) {
@@ -554,116 +553,62 @@ func (db *DB) SaveDM(msg *DirectMessage) error {
 }
 
 func (db *DB) GetDMByKey(ctx context.Context, msgKey string) (*DirectMessage, error) {
-	var dm DirectMessage
-	var plaintext sql.NullString
-	var decryptedAt sql.NullTime
-	var ssbMsgSeq sql.NullInt64
-
-	err := db.conn.QueryRowContext(ctx, `
-		SELECT id, ssb_msg_key, ssb_msg_seq, sender_feed, recipient_feed,
-			   encrypted_content, plaintext, decrypted_at, created_at, received_at, is_outbound
-		FROM direct_messages
-		WHERE ssb_msg_key = ?
-	`, msgKey).Scan(
-		&dm.ID,
-		&dm.SSBMsgKey,
-		&ssbMsgSeq,
-		&dm.SenderFeed,
-		&dm.RecipientFeed,
-		&dm.EncryptedContent,
-		&plaintext,
-		&decryptedAt,
-		&dm.CreatedAt,
-		&dm.ReceivedAt,
-		&dm.IsOutbound,
-	)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, nil
-		}
-		return nil, err
+	row, err := db.Queries().GetDMByKey(ctx, msgKey)
+	if err == sql.ErrNoRows {
+		return nil, nil
 	}
-
-	dm.Plaintext = plaintext.String
-	dm.DecryptedAt = decryptedAt.Time
-	dm.SSBMsgSeq = ssbMsgSeq.Int64
-
+	if err != nil {
+		return nil, fmt.Errorf("get dm by key %s: %w", msgKey, err)
+	}
+	dm := convertDirectMessage(row)
 	return &dm, nil
 }
 
 func (db *DB) ListDMsForFeed(ctx context.Context, feed string, limit int) ([]DirectMessage, error) {
-	rows, err := db.conn.QueryContext(ctx, `
-		SELECT id, ssb_msg_key, ssb_msg_seq, sender_feed, recipient_feed,
-			   encrypted_content, plaintext, decrypted_at, created_at, received_at, is_outbound
-		FROM direct_messages
-		WHERE sender_feed = ? OR recipient_feed = ?
-		ORDER BY created_at DESC
-		LIMIT ?
-	`, feed, feed, limit)
+	rows, err := db.Queries().ListDMsForFeed(ctx, sqlc.ListDMsForFeedParams{
+		SenderFeed:    feed,
+		RecipientFeed: feed,
+		Limit:         int64(limit),
+	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list dms for feed: %w", err)
 	}
-	defer rows.Close()
-
-	var dms []DirectMessage
-	for rows.Next() {
-		var dm DirectMessage
-		var plaintext sql.NullString
-		var decryptedAt sql.NullTime
-		var ssbMsgSeq sql.NullInt64
-
-		if err := rows.Scan(
-			&dm.ID,
-			&dm.SSBMsgKey,
-			&ssbMsgSeq,
-			&dm.SenderFeed,
-			&dm.RecipientFeed,
-			&dm.EncryptedContent,
-			&plaintext,
-			&decryptedAt,
-			&dm.CreatedAt,
-			&dm.ReceivedAt,
-			&dm.IsOutbound,
-		); err != nil {
-			return nil, err
-		}
-
-		dm.Plaintext = plaintext.String
-		dm.DecryptedAt = decryptedAt.Time
-		dm.SSBMsgSeq = ssbMsgSeq.Int64
-
-		dms = append(dms, dm)
+	result := make([]DirectMessage, len(rows))
+	for i, r := range rows {
+		result[i] = convertDirectMessage(r)
 	}
-
-	return dms, rows.Err()
+	return result, nil
 }
 
 func (db *DB) ListDMConversations(ctx context.Context, feed string) ([]string, error) {
-	rows, err := db.conn.QueryContext(ctx, `
-		SELECT DISTINCT 
-			CASE 
-				WHEN sender_feed = ? THEN recipient_feed 
-				ELSE sender_feed 
-			END as other_party
-		FROM direct_messages
-		WHERE sender_feed = ? OR recipient_feed = ?
-		ORDER BY MAX(created_at) DESC
-	`, feed, feed, feed)
+	rows, err := db.Queries().ListDMConversations(ctx, sqlc.ListDMConversationsParams{
+		SenderFeed:    feed,
+		RecipientFeed: feed,
+	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("list dm conversations: %w", err)
 	}
-	defer rows.Close()
-
-	var conversations []string
-	for rows.Next() {
-		var otherParty string
-		if err := rows.Scan(&otherParty); err != nil {
-			return nil, err
-		}
-		conversations = append(conversations, otherParty)
+	result := make([]string, len(rows))
+	for i, r := range rows {
+		result[i] = fmt.Sprintf("%v", r)
 	}
+	return result, nil
+}
 
-	return conversations, rows.Err()
+func convertDirectMessage(r sqlc.DirectMessage) DirectMessage {
+	return DirectMessage{
+		ID:               r.ID,
+		SSBMsgKey:        r.SsbMsgKey,
+		SSBMsgSeq:        r.SsbMsgSeq.Int64,
+		SenderFeed:       r.SenderFeed,
+		RecipientFeed:    r.RecipientFeed,
+		EncryptedContent: r.EncryptedContent,
+		Plaintext:        r.Plaintext.String,
+		DecryptedAt:      r.DecryptedAt.Time,
+		CreatedAt:        r.CreatedAt,
+		ReceivedAt:       r.ReceivedAt,
+		IsOutbound:       r.IsOutbound,
+	}
 }
 
 func (db *DB) UpdateDMDecrypted(ctx context.Context, msgKey, plaintext string) error {
@@ -687,4 +632,18 @@ func nullTime(t time.Time) sql.NullTime {
 		return sql.NullTime{}
 	}
 	return sql.NullTime{Time: t, Valid: true}
+}
+
+func nilOrTime(nt sql.NullTime) *time.Time {
+	if nt.Valid {
+		return &nt.Time
+	}
+	return nil
+}
+
+func nilBool(nb sql.NullBool) *bool {
+	if nb.Valid {
+		return &nb.Bool
+	}
+	return nil
 }
