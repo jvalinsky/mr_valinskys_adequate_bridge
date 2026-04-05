@@ -12,9 +12,21 @@ bin/
 
 # Live SSB repo data (contains private keys)
 .ssb-bridge-live/
+.ssb-bridge/
+.ssb-bridge-mcp-test/
+.ssb-client-test/
 
 # Compiled binaries
 /e2e-seed
+/bridge-cli
+/bridge-cli-linux
+/ssb-client
+/ssb-client-test
+/atproto-seed
+
+# Logs
+*.log
+/bridge-demo.log
 
 # Reference dependency repos (clone locally as needed)
 # reference/
@@ -26,9 +38,10 @@ bridge-live.sqlite
 *.out
 *.test
 *.html
-/bridge-cli
-/bridge-cli-linux
-/bridge-demo.log
 /demo-repo/
 /vendor/
 .claude/settings.local.json
+
+# Temp / scratch files
+test_mcp.js
+flake-test.nix
