@@ -774,7 +774,7 @@ const dashboardContent = `
         {{range .Metrics}}
         <a class="metric-card {{statusToneClass .Tone}}" href="{{.Href}}">
             <span class="metric-label">{{.Label}}</span>
-            <span class="metric-value">{{.Value}}</span>
+            <span class="metric-value" id="metric-{{.ID}}">{{.Value}}</span>
             {{if .Note}}<span class="metric-note">{{.Note}}</span>{{end}}
         </a>
         {{end}}
@@ -844,6 +844,27 @@ const dashboardContent = `
     <div class="empty">No issue-heavy accounts yet.</div>
     {{end}}
 </section>
+</section>
+
+<script>
+    if (!!window.EventSource) {
+        var source = new EventSource('/events');
+        source.onmessage = function(e) {
+            try {
+                var stats = JSON.parse(e.data);
+                if (document.getElementById('metric-accountCount')) document.getElementById('metric-accountCount').innerText = stats.accountCount;
+                if (document.getElementById('metric-messageCount')) document.getElementById('metric-messageCount').innerText = stats.messageCount;
+                if (document.getElementById('metric-publishedCount')) document.getElementById('metric-publishedCount').innerText = stats.publishedCount;
+                if (document.getElementById('metric-publishFailureCount')) document.getElementById('metric-publishFailureCount').innerText = stats.publishFailureCount;
+                if (document.getElementById('metric-deferredCount')) document.getElementById('metric-deferredCount').innerText = stats.deferredCount;
+                if (document.getElementById('metric-deletedCount')) document.getElementById('metric-deletedCount').innerText = stats.deletedCount;
+                if (document.getElementById('metric-blobCount')) document.getElementById('metric-blobCount').innerText = stats.blobCount;
+            } catch (err) {
+                console.error("SSE parse error", err);
+            }
+        };
+    }
+</script>
 {{end}}
 `
 
@@ -1391,6 +1412,7 @@ type PageStatus struct {
 
 // DashboardMetric is one linked KPI tile on the dashboard.
 type DashboardMetric struct {
+	ID    string
 	Label string
 	Value int
 	Tone  string

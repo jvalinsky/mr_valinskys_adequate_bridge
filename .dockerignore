@@ -1,3 +1,25 @@
+# ── Large binaries / build artifacts at repo root ──
+bridge-cli
+atproto-seed
+e2e-seed
+ssb-client
+ssb-client-test
+bridge.log
+bridge_run.log
+ssb_client.log
+error.log
+bridge.pid
+
+# ── Data files ──
+*.sqlite
+*.db
+*.log
+*.out
+cover.out
+VARS
+mvab-local-atproto-live.env
+
+# ── Directories not needed in build ──
 reference
 !reference/go-ssb-room
 .git
@@ -5,18 +27,25 @@ node_modules
 tmp
 bin
 out
-*.sqlite
-*.db
-*.log
-*.out
+demo-repo
+.worktrees
+
+# ── SSB runtime data ──
 .ssb*
-cover.out
-bridge-cli
-atproto-seed
-e2e-seed
-VARS
-mvab-local-atproto-live.env
-knowledge
+
+# ── Editor / IDE / tooling ──
 .gemini
 .idea
 .vscode
+.opencode
+.claude
+.deciduous
+knowledge
+
+# ── Nix (not needed in Docker builds) ──
+flake.*
+*.nix
+nix
+
+# ── Documentation (not needed in builds) ──
+docs
