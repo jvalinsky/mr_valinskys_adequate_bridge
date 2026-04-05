@@ -9,6 +9,7 @@ out
 *.db
 *.log
 *.out
+.ssb*
 cover.out
 bridge-cli
 atproto-seed

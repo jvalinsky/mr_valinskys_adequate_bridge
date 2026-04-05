@@ -10,10 +10,6 @@
       url = "github:nix-community/home-manager";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    mr-valinskys-adequate-bridge = {
-      url = "github:jvalinsky/mr_valinskys_adequate_bridge";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
   };
 
   outputs =
@@ -23,13 +19,18 @@
       sops-nix,
       alejandra,
       home-manager,
-      mr-valinskys-adequate-bridge,
       ...
     }@inputs:
     let
       system = "x86_64-linux";
     in
     {
+      nixosModules.mr-valinskys-adequate-bridge = import ./nix/modules/mr-valinskys-adequate-bridge.nix;
+
+      overlays.default = final: prev: {
+        mr-valinskys-adequate-bridge = final.callPackage ./package.nix { };
+      };
+
       nixosConfigurations = {
         snek = nixpkgs.lib.nixosSystem {
           inherit system;
@@ -46,7 +47,7 @@
               home-manager.users.atproto = import ./home.nix;
             }
 
-            mr-valinskys-adequate-bridge.nixosModules.mr-valinskys-adequate-bridge
+            self.nixosModules.mr-valinskys-adequate-bridge
             (import ./bridge-module.nix)
 
             ./configuration.nix

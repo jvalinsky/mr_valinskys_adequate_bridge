@@ -1,6 +1,6 @@
 module github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/storage
 
-go 1.21
+go 1.26.1
 
 require modernc.org/sqlite v1.23.0
 
