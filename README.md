@@ -126,6 +126,10 @@ The `ui.extraArgs` `--repo-path` is required for blob browsing in `/blobs/view` 
 
 Global flags: `--db` (SQLite path), `--relay-url` (firehose endpoint), `--bot-seed` (DID→SSB derivation seed), `--otel-logs-endpoint`, `--otel-logs-protocol` (`grpc|http`), `--otel-logs-insecure`, `--otel-service-name`, `--local-log-output` (`text|none`). Run `bridge-cli --help` for full flag reference.
 
+**Notable `start` flags:**
+- `--max-msgs-per-did-per-min` (default: 300) - Per-DID rate limit; set to 0 to disable. See [Rate Limiting](./docs/rate-limiting.md).
+- `--publish-workers` - Parallel publish workers (default 1)
+
 ## Architecture
 
 ```

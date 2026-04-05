@@ -164,6 +164,7 @@ The test runner verifies:
 
 ## Related Documentation
 
+- [Bridge Operator Runbook](../../docs/runbook.md) — Operational procedures
 - [EBT Replication Debugging](../../docs/ebt-replication.md)
 - [Tildefriends Source](../../reference/tildefriends/)
 - [E2E Test Script](../../scripts/e2e_tildefriends.sh)

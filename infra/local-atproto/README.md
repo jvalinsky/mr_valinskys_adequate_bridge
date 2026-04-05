@@ -32,3 +32,8 @@ Container state defaults to `/tmp/mvab-local-atproto` and can be overridden:
 ```bash
 export LOCAL_ATPROTO_DATA_DIR=/tmp/my-atproto-stack
 ```
+
+## See Also
+
+- [Bridge Operator Runbook](../docs/runbook.md) — Operational procedures for bridge startup, retry, and incident triage
+- [Agent Setup Profiles](../docs/agents.md) — Local Docker vs NixOS production setup
