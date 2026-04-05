@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/config"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil"
 	comatproto "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto"
@@ -17,7 +18,6 @@ import (
 )
 
 const (
-	maxDependencyDepth   = 16
 	maxDependencyRecords = 256
 )
 
@@ -395,8 +395,8 @@ func beginDependencyRecord(ctx context.Context, atURI string) (context.Context, 
 	if frame == nil || frame.scope == nil {
 		return ctx, nil, false, fmt.Errorf("dependency resolution context is missing")
 	}
-	if frame.depth+1 > maxDependencyDepth {
-		return ctx, frame, false, fmt.Errorf("dependency depth exceeded for %s (max=%d)", atURI, maxDependencyDepth)
+	if frame.depth+1 > config.MaxDependencyDepth {
+		return ctx, frame, false, fmt.Errorf("dependency depth exceeded for %s (max=%d)", atURI, config.MaxDependencyDepth)
 	}
 
 	frame.scope.mu.Lock()

@@ -14,6 +14,7 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/firehose"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/mapper"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/metrics"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto"
 	lexutil "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/lexutil"
 	atrepo "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/repo"
@@ -753,6 +754,7 @@ func (p *Processor) markDeferred(msg *db.Message, reason string, attemptedAt tim
 	msg.DeferReason = reason
 	msg.DeferAttempts = 1
 	msg.LastDeferAttemptAt = &attemptedAt
+	metrics.MessagesDeferred.Inc()
 }
 
 func (p *Processor) markPublishAttempt(msg *db.Message, attemptedAt time.Time) {
@@ -762,6 +764,7 @@ func (p *Processor) markPublishAttempt(msg *db.Message, attemptedAt time.Time) {
 
 func (p *Processor) markPublishFailed(msg *db.Message, publishErr error) {
 	msg.MessageState = db.MessageStateFailed
+	metrics.MessagesFailed.Inc()
 	if publishErr != nil {
 		msg.PublishError = publishErr.Error()
 	}
@@ -771,6 +774,7 @@ func (p *Processor) markPublished(msg *db.Message, ssbMsgRef string, publishedAt
 	msg.MessageState = db.MessageStatePublished
 	msg.SSBMsgRef = ssbMsgRef
 	msg.PublishedAt = &publishedAt
+	metrics.MessagesPublished.Inc()
 }
 
 func annotateBlobFallback(current string, blobErr error) string {

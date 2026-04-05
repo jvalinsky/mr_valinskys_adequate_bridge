@@ -23,6 +23,7 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/presentation"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/web/templates"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // Database defines the persistence surface required by UI handlers.
@@ -55,6 +56,7 @@ type Database interface {
 	GetATProtoSource(ctx context.Context, sourceKey string) (*db.ATProtoSource, error)
 	GetBridgedAccount(ctx context.Context, atDID string) (*db.BridgedAccount, error)
 	ListPublishedMessagesGlobal(ctx context.Context, limit int) ([]db.Message, error)
+	AddBridgedAccount(ctx context.Context, acc db.BridgedAccount) error
 }
 
 // BlobStore defines the blob retrieval surface for the UI.
@@ -131,12 +133,15 @@ func (h *UIHandler) WithRoomOps(provider RoomOpsProvider) *UIHandler {
 
 // Mount registers admin UI routes on r.
 func (h *UIHandler) Mount(r chi.Router) {
+	r.Get("/metrics", promhttp.Handler().ServeHTTP)
 	r.Get("/healthz", h.handleHealthz)
 	r.Get("/", h.handleDashboard)
 	r.Get("/accounts", h.handleAccounts)
+	r.Post("/accounts", h.handleAccountsAdd)
 	r.Get("/messages", h.handleMessages)
 	r.Get("/messages/detail", h.handleMessageDetail)
 	r.Get("/failures", h.handleFailures)
+	r.Post("/failures/retry", h.handleFailuresRetry)
 	r.Get("/blobs", h.handleBlobs)
 	r.Get("/state", h.handleState)
 	r.Post("/messages/retry", h.handleMessageRetry)
@@ -457,6 +462,29 @@ func (h *UIHandler) handleAccounts(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (h *UIHandler) handleAccountsAdd(w http.ResponseWriter, r *http.Request) {
+	atDID := strings.TrimSpace(r.FormValue("at_did"))
+	ssbFeedID := strings.TrimSpace(r.FormValue("ssb_feed_id"))
+
+	if atDID == "" || ssbFeedID == "" {
+		http.Error(w, "Missing at_did or ssb_feed_id", http.StatusBadRequest)
+		return
+	}
+
+	acc := db.BridgedAccount{
+		ATDID:     atDID,
+		SSBFeedID: ssbFeedID,
+		Active:    true,
+	}
+
+	if err := h.db.AddBridgedAccount(r.Context(), acc); err != nil {
+		h.writeInternalError(w, "accounts_add", "Failed to add account", err)
+		return
+	}
+
+	http.Redirect(w, r, "/accounts", http.StatusSeeOther)
+}
+
 func (h *UIHandler) handleMessages(w http.ResponseWriter, r *http.Request) {
 	query := parseMessageListQuery(r)
 
@@ -739,6 +767,26 @@ func (h *UIHandler) handleMessageRetry(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, fmt.Sprintf("/messages/detail?at_uri=%s", url.QueryEscape(atURI)), http.StatusSeeOther)
+}
+
+func (h *UIHandler) handleFailuresRetry(w http.ResponseWriter, r *http.Request) {
+	messages, err := h.db.GetPublishFailures(r.Context(), 1000)
+	if err != nil {
+		h.writeInternalError(w, "failures_retry", "Failed to get failures", err)
+		return
+	}
+
+	count := 0
+	for _, msg := range messages {
+		if err := h.db.ResetMessageForRetry(r.Context(), msg.ATURI); err != nil {
+			h.logger.Printf("event=failures_retry_reset_error at_uri=%s err=%v", msg.ATURI, err)
+			continue
+		}
+		count++
+	}
+
+	h.logger.Printf("event=failures_retry_reset count=%d", count)
+	http.Redirect(w, r, "/failures", http.StatusSeeOther)
 }
 
 func formatMuxRPCHex(rawJSON string) string {

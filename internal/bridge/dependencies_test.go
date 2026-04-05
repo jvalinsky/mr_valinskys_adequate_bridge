@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/config"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/mapper"
 )
@@ -559,7 +560,7 @@ func TestBeginDependencyRecordDepthExceeded(t *testing.T) {
 	}
 	ctx := context.WithValue(context.Background(), dependencyFrameKey{}, &dependencyFrame{
 		scope: scope,
-		depth: maxDependencyDepth, // already at max
+		depth: config.MaxDependencyDepth, // already at max
 	})
 
 	_, _, _, err := beginDependencyRecord(ctx, "at://did:plc:alice/app.bsky.feed.post/deep")
