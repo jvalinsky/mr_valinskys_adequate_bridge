@@ -1,0 +1,28 @@
+name: Fuzz
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * 0'  # Weekly on Sunday at midnight UTC
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Run fuzz tests
+        run: |
+          go test -fuzz=Fuzz -fuzztime=10s ./internal/db/... 2>&1 | tee fuzz.txt
+
+      - name: Upload fuzz results
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-results
+          path: fuzz.txt
+          retention-days: 30
