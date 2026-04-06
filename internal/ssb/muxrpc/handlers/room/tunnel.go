@@ -249,11 +249,22 @@ func (h *TunnelHandler) streamEndpoints(ctx context.Context, req *muxrpc.Request
 	defer sink.Close()
 	defer cancel()
 
+	// Filter out the bridge's own feed from endpoints list
+	bridgeFeed := ""
+	if h.server.keyPair != nil {
+		bridgeFeed = h.server.keyPair.String()
+	}
+
 	for _, p := range peers {
 		select {
 		case <-ctx.Done():
 			return
 		default:
+		}
+
+		// Skip the bridge's own endpoint
+		if p.ID.String() == bridgeFeed {
+			continue
 		}
 
 		data, _ := json.Marshal(map[string]interface{}{
@@ -273,6 +284,10 @@ func (h *TunnelHandler) streamEndpoints(ctx context.Context, req *muxrpc.Request
 		case evt, ok := <-events:
 			if !ok {
 				return
+			}
+			// Filter out bridge's own endpoint events
+			if evt.Info.ID.String() == bridgeFeed {
+				continue
 			}
 			payload, _ := json.Marshal(map[string]interface{}{
 				"type": evt.Type,

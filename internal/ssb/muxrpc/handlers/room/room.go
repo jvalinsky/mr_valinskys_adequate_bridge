@@ -366,9 +366,17 @@ func (h *AliasHandler) streamAttendants(ctx context.Context, req *muxrpc.Request
 	defer sink.Close()
 	defer cancel()
 
+	// Filter out the bridge's own feed from attendants list
+	bridgeFeed := ""
+	if h.server.keyPair != nil {
+		bridgeFeed = h.server.keyPair.String()
+	}
+
 	state := make([]string, 0, len(peers))
 	for _, p := range peers {
-		state = append(state, p.ID.String())
+		if p.ID.String() != bridgeFeed {
+			state = append(state, p.ID.String())
+		}
 	}
 	data, _ := json.Marshal(map[string]interface{}{
 		"type": "state",
@@ -385,6 +393,10 @@ func (h *AliasHandler) streamAttendants(ctx context.Context, req *muxrpc.Request
 		case evt, ok := <-events:
 			if !ok {
 				return
+			}
+			// Filter out bridge's own join/leave events
+			if evt.ID.String() == bridgeFeed {
+				continue
 			}
 			payload, _ := json.Marshal(map[string]interface{}{
 				"type": evt.Type,
