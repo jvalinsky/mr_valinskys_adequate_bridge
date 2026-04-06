@@ -10,7 +10,7 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/config"
 )
 
-const messageSelectColumns = `SELECT at_uri, at_cid, ssb_msg_ref, at_did, type, message_state, raw_at_json, raw_ssb_json, published_at, publish_error, publish_attempts, last_publish_attempt_at, defer_reason, defer_attempts, last_defer_attempt_at, deleted_at, deleted_seq, deleted_reason, created_at`
+const messageSelectColumns = `SELECT at_uri, at_cid, ssb_msg_ref, at_did, type, message_state, raw_at_json, raw_ssb_json, published_at, publish_error, publish_attempts, last_publish_attempt_at, defer_reason, defer_attempts, last_defer_attempt_at, deleted_at, deleted_seq, deleted_reason, root_at_uri, parent_at_uri, created_at`
 
 func (db *DB) AddMessage(ctx context.Context, msg Message) error {
 	if strings.TrimSpace(msg.MessageState) == "" {
@@ -25,9 +25,9 @@ func (db *DB) AddMessage(ctx context.Context, msg Message) error {
 	_, err := db.conn.ExecContext(
 		ctx,
 		`INSERT INTO messages (
-			at_uri, at_cid, ssb_msg_ref, at_did, type, message_state, raw_at_json, raw_ssb_json, published_at, publish_error, publish_attempts, last_publish_attempt_at, defer_reason, defer_attempts, last_defer_attempt_at, deleted_at, deleted_seq, deleted_reason, created_at
+			at_uri, at_cid, ssb_msg_ref, at_did, type, message_state, raw_at_json, raw_ssb_json, published_at, publish_error, publish_attempts, last_publish_attempt_at, defer_reason, defer_attempts, last_defer_attempt_at, deleted_at, deleted_seq, deleted_reason, root_at_uri, parent_at_uri, created_at
 		)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(at_uri) DO UPDATE SET
 		 	at_cid=excluded.at_cid,
 		 	ssb_msg_ref=excluded.ssb_msg_ref,
@@ -45,7 +45,9 @@ func (db *DB) AddMessage(ctx context.Context, msg Message) error {
 		 	last_defer_attempt_at=excluded.last_defer_attempt_at,
 		 	deleted_at=excluded.deleted_at,
 		 	deleted_seq=excluded.deleted_seq,
-		 	deleted_reason=excluded.deleted_reason`,
+		 	deleted_reason=excluded.deleted_reason,
+		 	root_at_uri=excluded.root_at_uri,
+		 	parent_at_uri=excluded.parent_at_uri`,
 		msg.ATURI,
 		msg.ATCID,
 		msg.SSBMsgRef,
@@ -64,6 +66,8 @@ func (db *DB) AddMessage(ctx context.Context, msg Message) error {
 		msg.DeletedAt,
 		msg.DeletedSeq,
 		msg.DeletedReason,
+		msg.RootATURI,
+		msg.ParentATURI,
 		msg.CreatedAt,
 	)
 	if err != nil {
@@ -79,7 +83,7 @@ func (db *DB) GetMessage(ctx context.Context, atURI string) (*Message, error) {
 	var deletedSeq sql.NullInt64
 	err := db.conn.QueryRowContext(
 		ctx,
-		`SELECT at_uri, at_cid, ssb_msg_ref, at_did, type, message_state, raw_at_json, raw_ssb_json, published_at, publish_error, publish_attempts, last_publish_attempt_at, defer_reason, defer_attempts, last_defer_attempt_at, deleted_at, deleted_seq, deleted_reason, created_at
+		messageSelectColumns+`
 		 FROM messages
 		 WHERE at_uri = ?`,
 		atURI,
@@ -102,6 +106,8 @@ func (db *DB) GetMessage(ctx context.Context, atURI string) (*Message, error) {
 		&deletedAt,
 		&deletedSeq,
 		&deletedReason,
+		&msg.RootATURI,
+		&msg.ParentATURI,
 		&msg.CreatedAt,
 	)
 
@@ -159,7 +165,7 @@ func (db *DB) GetRecentMessages(ctx context.Context, limit int) ([]Message, erro
 
 	rows, err := db.conn.QueryContext(
 		ctx,
-		`SELECT at_uri, at_cid, ssb_msg_ref, at_did, type, message_state, raw_at_json, raw_ssb_json, published_at, publish_error, publish_attempts, last_publish_attempt_at, defer_reason, defer_attempts, last_defer_attempt_at, deleted_at, deleted_seq, deleted_reason, created_at
+		messageSelectColumns+`
 		 FROM messages
 		 ORDER BY created_at DESC
 		 LIMIT ?`,
@@ -503,7 +509,7 @@ func (db *DB) GetPublishFailures(ctx context.Context, limit int) ([]Message, err
 
 	rows, err := db.conn.QueryContext(
 		ctx,
-		`SELECT at_uri, at_cid, ssb_msg_ref, at_did, type, message_state, raw_at_json, raw_ssb_json, published_at, publish_error, publish_attempts, last_publish_attempt_at, defer_reason, defer_attempts, last_defer_attempt_at, deleted_at, deleted_seq, deleted_reason, created_at
+		messageSelectColumns+`
 		 FROM messages
 		 WHERE message_state IN (?, ?)
 		 ORDER BY COALESCE(last_publish_attempt_at, last_defer_attempt_at, created_at) DESC
@@ -533,9 +539,9 @@ func (db *DB) GetRetryCandidates(ctx context.Context, limit int, atDID string, m
 	}
 
 	var query strings.Builder
+	query.WriteString(messageSelectColumns)
 	query.WriteString(
-		`SELECT at_uri, at_cid, ssb_msg_ref, at_did, type, message_state, raw_at_json, raw_ssb_json, published_at, publish_error, publish_attempts, last_publish_attempt_at, defer_reason, defer_attempts, last_defer_attempt_at, deleted_at, deleted_seq, deleted_reason, created_at
-		 FROM messages
+		` FROM messages
 		 WHERE message_state = ?
 		   AND (ssb_msg_ref IS NULL OR ssb_msg_ref = '')
 		   AND publish_attempts < ?`,
@@ -569,7 +575,7 @@ func (db *DB) GetDeferredCandidates(ctx context.Context, limit int) ([]Message, 
 
 	rows, err := db.conn.QueryContext(
 		ctx,
-		`SELECT m.at_uri, m.at_cid, m.ssb_msg_ref, m.at_did, m.type, m.message_state, m.raw_at_json, m.raw_ssb_json, m.published_at, m.publish_error, m.publish_attempts, m.last_publish_attempt_at, m.defer_reason, m.defer_attempts, m.last_defer_attempt_at, m.deleted_at, m.deleted_seq, m.deleted_reason, m.created_at
+		`SELECT m.at_uri, m.at_cid, m.ssb_msg_ref, m.at_did, m.type, m.message_state, m.raw_at_json, m.raw_ssb_json, m.published_at, m.publish_error, m.publish_attempts, m.last_publish_attempt_at, m.defer_reason, m.defer_attempts, m.last_defer_attempt_at, m.deleted_at, m.deleted_seq, m.deleted_reason, m.root_at_uri, m.parent_at_uri, m.created_at
 		 FROM messages m
 		 LEFT JOIN messages dep ON dep.at_uri = SUBSTR(m.defer_reason, INSTR(m.defer_reason, 'at://'), CASE WHEN INSTR(SUBSTR(m.defer_reason, INSTR(m.defer_reason, 'at://')), ';') > 0 THEN INSTR(SUBSTR(m.defer_reason, INSTR(m.defer_reason, 'at://')), ';') - 1 ELSE LENGTH(m.defer_reason) END) AND dep.message_state = ?
 		 WHERE m.message_state = ?
@@ -641,6 +647,30 @@ func (db *DB) GetLatestDeferredReason(ctx context.Context) (string, bool, error)
 		return "", false, nil
 	}
 	return reason.String, true, nil
+}
+
+// ListThread returns all messages in a thread given the root AT URI.
+func (db *DB) ListThread(ctx context.Context, rootURI string) ([]Message, error) {
+	rootURI = strings.TrimSpace(rootURI)
+	if rootURI == "" {
+		return nil, nil
+	}
+
+	rows, err := db.conn.QueryContext(
+		ctx,
+		messageSelectColumns+`
+		 FROM messages
+		 WHERE root_at_uri = ? OR at_uri = ?
+		 ORDER BY created_at ASC`,
+		rootURI,
+		rootURI,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list thread %s: %w", rootURI, err)
+	}
+	defer rows.Close()
+
+	return scanMessagesRows(rows)
 }
 
 func scanMessageTypeRow(rows *sql.Rows) (string, error) {

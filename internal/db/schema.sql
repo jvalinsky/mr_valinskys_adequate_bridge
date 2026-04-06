@@ -26,9 +26,14 @@ CREATE TABLE IF NOT EXISTS messages (
     deleted_at DATETIME,
     deleted_seq INTEGER,
     deleted_reason TEXT,
+    root_at_uri TEXT,
+    parent_at_uri TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(at_did) REFERENCES bridged_accounts(at_did)
 );
+
+CREATE INDEX IF NOT EXISTS idx_messages_root ON messages(root_at_uri);
+CREATE INDEX IF NOT EXISTS idx_messages_parent ON messages(parent_at_uri);
 
 CREATE INDEX IF NOT EXISTS idx_messages_at_did ON messages(at_did);
 CREATE INDEX IF NOT EXISTS idx_messages_type ON messages(type);

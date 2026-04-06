@@ -18,7 +18,7 @@ func scanMessageRow(scanner interface {
 	Scan(dest ...interface{}) error
 }) (Message, error) {
 	var msg Message
-	var ssbMsgRef, messageState, rawATJSON, rawSSBJSON, publishError, deferReason, deletedReason sql.NullString
+	var ssbMsgRef, messageState, rawATJSON, rawSSBJSON, publishError, deferReason, deletedReason, rootATURI, parentATURI sql.NullString
 	var publishedAt, lastPublishAttemptAt, lastDeferAttemptAt, deletedAt sql.NullTime
 	var deletedSeq sql.NullInt64
 	if err := scanner.Scan(
@@ -40,6 +40,8 @@ func scanMessageRow(scanner interface {
 		&deletedAt,
 		&deletedSeq,
 		&deletedReason,
+		&rootATURI,
+		&parentATURI,
 		&msg.CreatedAt,
 	); err != nil {
 		return Message{}, err
@@ -52,6 +54,8 @@ func scanMessageRow(scanner interface {
 	msg.PublishError = publishError.String
 	msg.DeferReason = deferReason.String
 	msg.DeletedReason = deletedReason.String
+	msg.RootATURI = rootATURI.String
+	msg.ParentATURI = parentATURI.String
 	if publishedAt.Valid {
 		t := publishedAt.Time
 		msg.PublishedAt = &t

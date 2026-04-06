@@ -61,6 +61,8 @@ type Message struct {
 	DeletedAt            *time.Time
 	DeletedSeq           *int64
 	DeletedReason        string
+	RootATURI            string
+	ParentATURI          string
 	CreatedAt            time.Time
 }
 
@@ -206,6 +208,8 @@ func (db *DB) ensureLegacyColumns() error {
 			"deleted_at":              "DATETIME",
 			"deleted_seq":             "INTEGER",
 			"deleted_reason":          "TEXT",
+			"root_at_uri":             "TEXT",
+			"parent_at_uri":           "TEXT",
 		},
 	}
 
