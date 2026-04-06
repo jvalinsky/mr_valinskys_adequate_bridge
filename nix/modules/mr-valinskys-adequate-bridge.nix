@@ -665,6 +665,11 @@ in
             http_addr = "127.0.0.1";
             http_port = 3000;
           };
+          security = {
+            # nixos-unstable 26.05 removed the default secret_key.
+            # This is the old default — safe to hardcode when no DB-encrypted secrets exist.
+            secret_key = "SW2YcwTIb9zpOOhoPsMm";
+          };
           users = {
             allow_sign_up = false;
           };
