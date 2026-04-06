@@ -300,6 +300,7 @@ func runWithReconnectLoop(ctx context.Context, cfg ReconnectConfig, runOnce func
 			return err
 		}
 
+		metrics.FirehoseReconnects.Inc()
 		sleepFor := jitterDuration(backoff, cfg.Jitter)
 		slog.Warn("firehose: reconnect retry",
 			"backoff", sleepFor,

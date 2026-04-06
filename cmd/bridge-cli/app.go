@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -384,6 +385,28 @@ func (a *BridgeApp) updateMetrics(ctx context.Context) {
 	if a.indexer != nil {
 		metrics.IndexerQueueDepth.Set(float64(a.indexer.QueueDepth()))
 	}
+	if info, err := os.Stat(a.cfg.DBPath); err == nil {
+		metrics.DBSizeBytes.Set(float64(info.Size()))
+	}
+	if size, err := dirSize(filepath.Join(a.cfg.RepoPath, "blobs")); err == nil {
+		metrics.BlobStoreSizeBytes.Set(float64(size))
+	}
+}
+
+func dirSize(path string) (int64, error) {
+	var total int64
+	err := filepath.WalkDir(path, func(_ string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		total += info.Size()
+		return nil
+	})
+	return total, err
 }
 
 func (a *BridgeApp) StartIndexerPipeline(ctx context.Context) error {

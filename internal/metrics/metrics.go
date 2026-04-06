@@ -60,4 +60,25 @@ var (
 		Name: "bridge_indexer_queue_depth",
 		Help: "Current number of DIDs waiting in the indexer backfill/sync queue",
 	})
+
+	PublishDuration = promauto.NewHistogram(prometheus.HistogramOpts{
+		Name:    "bridge_publish_duration_seconds",
+		Help:    "Time spent in the SSB publish call",
+		Buckets: []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10},
+	})
+
+	FirehoseReconnects = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "bridge_firehose_reconnects_total",
+		Help: "Total number of firehose WebSocket reconnection attempts",
+	})
+
+	DBSizeBytes = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "bridge_db_size_bytes",
+		Help: "Size of the SQLite database file in bytes",
+	})
+
+	BlobStoreSizeBytes = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "bridge_blob_store_size_bytes",
+		Help: "Total size of the SSB blob store directory in bytes",
+	})
 )

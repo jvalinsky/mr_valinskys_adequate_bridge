@@ -6,10 +6,11 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log"
+	"sync"
+	"time"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/metrics"
-	"sync"
 )
 
 // Publisher publishes a mapped record for a single ATProto DID.
@@ -120,7 +121,9 @@ func (p *WorkerPublisher) laneIndex(atDID string) int {
 func (p *WorkerPublisher) runLane(idx int, lane <-chan publishRequest) {
 	defer p.wg.Done()
 	for req := range lane {
+		start := time.Now()
 		ref, err := p.delegate.Publish(req.ctx, req.atDID, req.content)
+		metrics.PublishDuration.Observe(time.Since(start).Seconds())
 		if err != nil {
 			metrics.MessagesFailed.Inc()
 		} else {
