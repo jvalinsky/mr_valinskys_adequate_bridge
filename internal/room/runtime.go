@@ -178,6 +178,7 @@ func (r *Runtime) initHandlers() {
 		r.roomDB.DeniedKeys(),
 		r.roomDB.RoomConfig(),
 		r.state,
+		r.cfg.HTTPSDomain,
 	)
 	r.roomSrv = roomSrv
 

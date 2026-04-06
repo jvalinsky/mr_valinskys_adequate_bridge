@@ -22,6 +22,7 @@ type RoomServer struct {
 	denied  roomdb.DeniedKeysService
 	config  roomdb.RoomConfig
 	state   *roomstate.Manager
+	Domain  string
 
 	peerRegistry *PeerRegistry
 }
@@ -103,6 +104,7 @@ func NewRoomServer(
 	denied roomdb.DeniedKeysService,
 	config roomdb.RoomConfig,
 	state *roomstate.Manager,
+	domain string,
 ) *RoomServer {
 	return &RoomServer{
 		keyPair:      keyPair,
@@ -112,6 +114,7 @@ func NewRoomServer(
 		denied:       denied,
 		config:       config,
 		state:        state,
+		Domain:       domain,
 		peerRegistry: NewPeerRegistry(),
 	}
 }
@@ -396,7 +399,7 @@ func (h *AliasHandler) streamAttendants(ctx context.Context, req *muxrpc.Request
 
 type MetadataResult struct {
 	Name       string   `json:"name"`
-	Membership bool     `json:"membership"`
+	Membership string   `json:"membership"`
 	Features   []string `json:"features"`
 }
 
@@ -417,10 +420,12 @@ func (h *AliasHandler) handleMetadata(ctx context.Context, req *muxrpc.Request) 
 		name = h.server.keyPair.String()
 	}
 
-	caller, err := h.getCallerFeed(req)
-	membership := false
-	if err == nil {
-		membership = isInternalMember(h.server, ctx, caller)
+	membership := "open"
+	switch mode {
+	case roomdb.ModeCommunity:
+		membership = "community"
+	case roomdb.ModeRestricted:
+		membership = "restricted"
 	}
 
 	req.Return(ctx, MetadataResult{
@@ -438,8 +443,8 @@ func (h *AliasHandler) getCallerFeed(req *muxrpc.Request) (refs.FeedRef, error) 
 }
 
 func (h *AliasHandler) aliasURL(alias string) string {
-	if h.server == nil || h.server.keyPair == nil {
-		return "/" + alias
+	if h.server == nil || h.server.Domain == "" {
+		return "/" + url.PathEscape(alias)
 	}
-	return "/" + url.PathEscape(alias)
+	return "https://" + h.server.Domain + "/" + url.PathEscape(alias)
 }

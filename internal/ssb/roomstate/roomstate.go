@@ -18,12 +18,18 @@ type AttendantEvent struct {
 	ID   refs.FeedRef
 }
 
+type TunnelEvent struct {
+	Type string
+	Info PeerInfo
+}
+
 type Manager struct {
 	mu          sync.RWMutex
 	peers       map[string]PeerInfo
 	attendants  map[string]PeerInfo
 	aliases     map[string][]refs.FeedRef
 	subscribers map[chan AttendantEvent]struct{}
+	tunnelSubs  map[chan TunnelEvent]struct{}
 }
 
 func NewManager() *Manager {
@@ -32,25 +38,34 @@ func NewManager() *Manager {
 		attendants:  make(map[string]PeerInfo),
 		aliases:     make(map[string][]refs.FeedRef),
 		subscribers: make(map[chan AttendantEvent]struct{}),
+		tunnelSubs:  make(map[chan TunnelEvent]struct{}),
 	}
 }
 
 func (m *Manager) AddPeer(id refs.FeedRef, addr string) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	m.peers[id.String()] = PeerInfo{
+	info := PeerInfo{
 		ID:        id,
 		Addr:      addr,
 		Connected: time.Now(),
 	}
+	m.peers[id.String()] = info
+	subscribers := m.snapshotTunnelSubscribersLocked()
+	m.mu.Unlock()
+
+	m.broadcastTunnel(subscribers, TunnelEvent{Type: "joined", Info: info})
 }
 
 func (m *Manager) RemovePeer(id refs.FeedRef) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
+	info, existed := m.peers[id.String()]
 	delete(m.peers, id.String())
+	subscribers := m.snapshotTunnelSubscribersLocked()
+	m.mu.Unlock()
+
+	if existed {
+		m.broadcastTunnel(subscribers, TunnelEvent{Type: "left", Info: info})
+	}
 }
 
 func (m *Manager) Peers() []PeerInfo {
@@ -139,6 +154,29 @@ func (m *Manager) SubscribeAttendants() ([]PeerInfo, <-chan AttendantEvent, func
 	return snapshot, ch, cancel
 }
 
+func (m *Manager) SubscribeEndpoints() ([]PeerInfo, <-chan TunnelEvent, func()) {
+	ch := make(chan TunnelEvent, 16)
+
+	m.mu.Lock()
+	m.tunnelSubs[ch] = struct{}{}
+	snapshot := make([]PeerInfo, 0, len(m.peers))
+	for _, p := range m.peers {
+		snapshot = append(snapshot, p)
+	}
+	m.mu.Unlock()
+
+	cancel := func() {
+		m.mu.Lock()
+		if _, ok := m.tunnelSubs[ch]; ok {
+			delete(m.tunnelSubs, ch)
+			close(ch)
+		}
+		m.mu.Unlock()
+	}
+
+	return snapshot, ch, cancel
+}
+
 func (m *Manager) RegisterAlias(alias string, owner refs.FeedRef) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -186,7 +224,24 @@ func (m *Manager) snapshotSubscribersLocked() []chan AttendantEvent {
 	return subscribers
 }
 
+func (m *Manager) snapshotTunnelSubscribersLocked() []chan TunnelEvent {
+	subscribers := make([]chan TunnelEvent, 0, len(m.tunnelSubs))
+	for ch := range m.tunnelSubs {
+		subscribers = append(subscribers, ch)
+	}
+	return subscribers
+}
+
 func (m *Manager) broadcast(subscribers []chan AttendantEvent, event AttendantEvent) {
+	for _, ch := range subscribers {
+		select {
+		case ch <- event:
+		default:
+		}
+	}
+}
+
+func (m *Manager) broadcastTunnel(subscribers []chan TunnelEvent, event TunnelEvent) {
 	for _, ch := range subscribers {
 		select {
 		case ch <- event:

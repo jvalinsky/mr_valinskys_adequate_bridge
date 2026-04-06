@@ -162,6 +162,7 @@ func New(opts Options) (*Sbot, error) {
 			roomDB.DeniedKeys(),
 			roomDB.RoomConfig(),
 			roomState,
+			"",
 		)
 
 		aliasHandler := room.NewAliasHandler(roomSrv)

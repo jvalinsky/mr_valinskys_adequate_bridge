@@ -236,18 +236,18 @@ func (h *TunnelHandler) handleEndpoints(ctx context.Context, req *muxrpc.Request
 		return
 	}
 
-	peers := h.server.state.Peers()
-
-	go h.streamEndpoints(ctx, req, peers)
+	peers, events, cancel := h.server.state.SubscribeEndpoints()
+	go h.streamEndpoints(ctx, req, peers, events, cancel)
 }
 
-func (h *TunnelHandler) streamEndpoints(ctx context.Context, req *muxrpc.Request, peers []roomstate.PeerInfo) {
+func (h *TunnelHandler) streamEndpoints(ctx context.Context, req *muxrpc.Request, peers []roomstate.PeerInfo, events <-chan roomstate.TunnelEvent, cancel func()) {
 	sink, err := req.ResponseSink()
 	if err != nil {
 		req.CloseWithError(fmt.Errorf("tunnel.endpoints: get sink: %w", err))
 		return
 	}
 	defer sink.Close()
+	defer cancel()
 
 	for _, p := range peers {
 		select {
@@ -257,11 +257,31 @@ func (h *TunnelHandler) streamEndpoints(ctx context.Context, req *muxrpc.Request
 		}
 
 		data, _ := json.Marshal(map[string]interface{}{
+			"type": "joined",
 			"id":   p.ID.String(),
 			"addr": p.Addr,
 		})
 		if _, err := sink.Write(data); err != nil {
 			return
+		}
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case evt, ok := <-events:
+			if !ok {
+				return
+			}
+			payload, _ := json.Marshal(map[string]interface{}{
+				"type": evt.Type,
+				"id":   evt.Info.ID.String(),
+				"addr": evt.Info.Addr,
+			})
+			if _, err := sink.Write(payload); err != nil {
+				return
+			}
 		}
 	}
 }
