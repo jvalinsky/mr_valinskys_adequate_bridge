@@ -445,6 +445,13 @@ func (p *Processor) ProcessRecord(ctx context.Context, atDID, atURI, atCID, coll
 		RawSSBJson:   string(rawSSBJSON),
 	}
 
+	if root, ok := mapped["_atproto_reply_root"].(string); ok {
+		msg.RootATURI = root
+	}
+	if parent, ok := mapped["_atproto_reply_parent"].(string); ok {
+		msg.ParentATURI = parent
+	}
+
 	unresolved := mapper.UnresolvedATProtoRefs(mapped)
 	if len(unresolved) > 0 {
 		now := time.Now().UTC()
