@@ -1543,14 +1543,14 @@ func TestRuntimeRoomMetadataReportsAuthenticatedMembership(t *testing.T) {
 
 	var memberMeta struct {
 		Name       string   `json:"name"`
-		Membership bool     `json:"membership"`
+		Membership string   `json:"membership"`
 		Features   []string `json:"features"`
 	}
 	if err := memberClient.endpoint.Async(ctx, &memberMeta, muxrpc.TypeJSON, muxrpc.Method{"room", "metadata"}); err != nil {
 		t.Fatalf("member metadata: %v", err)
 	}
-	if !memberMeta.Membership {
-		t.Fatalf("expected member metadata membership=true: %+v", memberMeta)
+	if memberMeta.Membership != "open" {
+		t.Fatalf("expected member metadata membership='open': %+v", memberMeta)
 	}
 	for _, want := range []string{"tunnel", "room2", "httpInvite", "alias"} {
 		if !containsString(memberMeta.Features, want) {
@@ -1560,14 +1560,14 @@ func TestRuntimeRoomMetadataReportsAuthenticatedMembership(t *testing.T) {
 
 	var externalMeta struct {
 		Name       string   `json:"name"`
-		Membership bool     `json:"membership"`
+		Membership string   `json:"membership"`
 		Features   []string `json:"features"`
 	}
 	if err := externalClient.endpoint.Async(ctx, &externalMeta, muxrpc.TypeJSON, muxrpc.Method{"room", "metadata"}); err != nil {
 		t.Fatalf("external metadata: %v", err)
 	}
-	if externalMeta.Membership {
-		t.Fatalf("expected external metadata membership=false: %+v", externalMeta)
+	if externalMeta.Membership != "open" {
+		t.Fatalf("expected external metadata membership='open': %+v", externalMeta)
 	}
 }
 
@@ -1593,7 +1593,7 @@ func TestRuntimeRoomAttendantsEmitStateJoinAndLeft(t *testing.T) {
 
 	clientOne := connectRuntimeRoomClient(t, ctx, rt, memberOne, nil)
 	var meta struct {
-		Membership bool `json:"membership"`
+		Membership string `json:"membership"`
 	}
 	if err := clientOne.endpoint.Async(ctx, &meta, muxrpc.TypeJSON, muxrpc.Method{"room", "metadata"}); err != nil {
 		t.Fatalf("prime member one connection: %v", err)
@@ -2703,7 +2703,7 @@ func TestWhoamiHandlerHandled(t *testing.T) {
 
 func TestWhoamiHandlerHandleCallNonAsync(t *testing.T) {
 	feedRef := mustRuntimeTestFeedRef(t, 5)
-	srv := roomhandlers.NewRoomServer(feedRef, nil, nil, nil, nil, nil, nil)
+	srv := roomhandlers.NewRoomServer(feedRef, nil, nil, nil, nil, nil, nil, "")
 	h := &whoamiHandler{srv: srv}
 
 	// Non-async request: should call CloseWithError.
