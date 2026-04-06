@@ -1058,6 +1058,9 @@ const messageDetailContent = `
         </div>
         <div>
             <span class="pill {{stateClass .State}}">{{.State}}</span>
+            {{if .ThreadURL}}
+            <a href="{{.ThreadURL}}" class="button-link" style="margin-left:8px;font-weight:700;color:var(--brand);">View Thread</a>
+            {{end}}
             {{if or (eq .State "failed") (eq .State "deferred")}}
             <form action="/messages/retry" method="POST" style="display:inline-block;margin-left:8px">
                 <input type="hidden" name="at_uri" value="{{.ATURI}}">
@@ -1202,7 +1205,15 @@ const feedContent = `
                 <div class="mono" title="{{.ATDID}}"><span class="truncate">{{.ATDID}}</span></div>
                 <div style="font-size:0.9rem;color:var(--muted);margin-bottom:4px;">{{.Type}}</div>
                 <div class="mono" style="font-size:1.1rem;line-height:1.4;">{{formatSSBText .Text}}</div>
-                <div style="font-size:0.8rem;color:var(--muted);margin-top:8px;">{{fmtTime .CreatedAt}}</div>
+                <div style="font-size:0.8rem;color:var(--muted);margin-top:8px;">
+                    {{fmtTime .CreatedAt}}
+                    {{if .ThreadURL}}
+                    <span style="margin-left:8px;">·</span>
+                    <a href="{{.ThreadURL}}" style="color:var(--brand);font-weight:700;text-decoration:none;">View Thread</a>
+                    {{end}}
+                    <span style="margin-left:8px;">·</span>
+                    <a href="/messages/detail?at_uri={{.ATURI | urlquery}}" style="color:inherit;text-decoration:none;">Details</a>
+                </div>
             </div>
         </div>
     </article>
@@ -1216,6 +1227,50 @@ const feedContent = `
     <a class="button-link" href="/feed?limit=25">Show 25</a>
     <a class="button-link" href="/feed?limit=50" style="margin-left:8px;">Show 50</a>
     <a class="button-link" href="/feed?limit=100" style="margin-left:8px;">Show 100</a>
+</div>
+{{end}}
+`
+
+const threadContent = `
+{{define "content"}}
+<section class="section section-pad">
+    <div class="toolbar">
+        <div>
+            <h1 class="page-title">Conversation Thread</h1>
+            <p class="subtitle mono" title="{{.RootURI}}"><span class="truncate">{{.RootURI}}</span></p>
+        </div>
+        <a class="button-link" href="/feed">Back to Feed</a>
+    </div>
+</section>
+
+<section class="section" style="background:transparent;border:none;box-shadow:none;">
+    {{range .Nodes}}
+        {{template "thread-node" .}}
+    {{end}}
+</section>
+{{end}}
+
+{{define "thread-node"}}
+<div class="thread-node" style="margin-left: {{multiply .Depth 24}}px; border-left: {{if gt .Depth 0}}2px solid var(--line){{else}}none{{end}}; padding-left: {{if gt .Depth 0}}16px{{else}}0{{end}}; margin-top: 12px; margin-bottom: 20px;">
+    <article style="background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; box-shadow: var(--shadow); position: relative;">
+        {{if gt .Depth 0}}
+        <div style="position: absolute; left: -16px; top: 30px; width: 16px; height: 2px; background: var(--line);"></div>
+        {{end}}
+        <div style="display:flex;gap:12px;align-items:flex-start;">
+            <div style="flex:1;">
+                <div class="mono" title="{{.ATDID}}" style="font-size:0.85rem;font-weight:700;color:var(--brand-strong);margin-bottom:2px;"><span class="truncate">{{.ATDID}}</span></div>
+                <div class="mono" style="font-size:1.05rem;line-height:1.5;">{{formatSSBText .Text}}</div>
+                <div style="font-size:0.75rem;color:var(--muted);margin-top:8px;display:flex;align-items:center;gap:8px;">
+                     <span>{{fmtTime .CreatedAt}}</span>
+                     <span>·</span>
+                     <a href="/messages/detail?at_uri={{.ATURI | urlquery}}" style="color:inherit;text-decoration:none;font-weight:600;">Details</a>
+                </div>
+            </div>
+        </div>
+    </article>
+    {{range .Replies}}
+        {{template "thread-node" .}}
+    {{end}}
 </div>
 {{end}}
 `
@@ -1495,6 +1550,7 @@ type MessageRow struct {
 	DeferAttempts   int
 	TotalAttempts   int
 	CreatedAt       time.Time
+	ThreadURL       string
 }
 
 // FilterOption is one string-valued select option in the UI.
@@ -1563,6 +1619,7 @@ type FeedRow struct {
 	Text      string
 	HasImage  bool
 	ImageRef  string
+	ThreadURL string
 }
 
 // FeedData is the template model for the global feed page.
@@ -1600,6 +1657,7 @@ type MessageDetailData struct {
 	FilterByDIDURL        string
 	FilterByStateURL      string
 	FilterByTypeURL       string
+	ThreadURL             string
 	AssociatedBlobs       []BlobRow
 }
 
@@ -1651,6 +1709,20 @@ type StateRow struct {
 	Key       string
 	Value     string
 	UpdatedAt time.Time
+}
+
+// ThreadNode is a single message in a recursive thread tree.
+type ThreadNode struct {
+	FeedRow
+	Depth   int
+	Replies []ThreadNode
+}
+
+// ThreadData is the template model for the conversation thread view.
+type ThreadData struct {
+	Chrome  PageChrome
+	RootURI string
+	Nodes   []ThreadNode
 }
 
 // StateData is the template model for the state page.
@@ -1795,6 +1867,11 @@ func RenderConnections(w io.Writer, data ConnectionsData) error {
 	return connectionsTemplate.Execute(w, data)
 }
 
+// RenderThread renders the conversation thread page.
+func RenderThread(w io.Writer, data ThreadData) error {
+	return threadTemplate.Execute(w, data)
+}
+
 var (
 	dashboardTemplate     = mustPageTemplate("dashboard", dashboardContent)
 	accountsTemplate      = mustPageTemplate("accounts", accountsContent)
@@ -1806,6 +1883,7 @@ var (
 	stateTemplate         = mustPageTemplate("state", stateContent)
 	postTemplate          = mustPageTemplate("post", postContent)
 	connectionsTemplate   = mustPageTemplate("connections", connectionsContent)
+	threadTemplate        = mustPageTemplate("thread", threadContent)
 )
 
 func mustPageTemplate(name, content string) *template.Template {
@@ -1817,6 +1895,9 @@ func mustPageTemplate(name, content string) *template.Template {
 			return t.Format("2006-01-02 15:04:05")
 		},
 		"hasPrefix": strings.HasPrefix,
+		"multiply": func(a, b int) int {
+			return a * b
+		},
 		"humanizeBytes": func(b int64) string {
 			const unit = 1024
 			if b < unit {

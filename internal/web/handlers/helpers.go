@@ -524,3 +524,46 @@ func formatOptionalSeq(seq *int64) string {
 	}
 	return strconv.FormatInt(*seq, 10)
 }
+
+func extractSSBText(rawJSON string) string {
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(rawJSON), &m); err != nil {
+		return ""
+	}
+	text, _ := m["text"].(string)
+	if text == "" {
+		// Check for legacy SSB content object
+		if content, ok := m["content"].(map[string]interface{}); ok {
+			text, _ = content["text"].(string)
+		}
+	}
+	return text
+}
+
+func hasSSBImage(rawJSON string) bool {
+	return getSSBImageRef(rawJSON) != ""
+}
+
+func getSSBImageRef(rawJSON string) string {
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(rawJSON), &m); err != nil {
+		return ""
+	}
+	content, _ := m["content"].(map[string]interface{})
+	if content == nil {
+		content = m // Flat format
+	}
+
+	mentions, _ := content["mentions"].([]interface{})
+	for _, item := range mentions {
+		mi, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		link, _ := mi["link"].(string)
+		if strings.HasPrefix(link, "&") {
+			return link
+		}
+	}
+	return ""
+}
