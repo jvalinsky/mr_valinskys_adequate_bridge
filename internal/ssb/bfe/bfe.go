@@ -1,7 +1,6 @@
 package bfe
 
 import (
-	"encoding/base64"
 	"errors"
 )
 
@@ -176,23 +175,18 @@ func EncodeNil() []byte {
 }
 
 func EncodeString(s string) []byte {
-	encoded := base64.StdEncoding.EncodeToString([]byte(s))
-	result := make([]byte, 0, 2+len(encoded))
+	result := make([]byte, 0, 2+len(s))
 	result = append(result, TypeGeneric, GenericFormatCodes["string-UTF8"])
-	result = append(result, encoded...)
+	result = append(result, s...)
 	return result
 }
 
 func DecodeString(b []byte) (string, error) {
-	if len(b) < 3 {
+	if len(b) < 2 {
 		return "", ErrInvalidBFE
 	}
 	if b[0] != TypeGeneric || b[1] != GenericFormatCodes["string-UTF8"] {
 		return "", ErrInvalidFormat
 	}
-	decoded, err := base64.StdEncoding.DecodeString(string(b[2:]))
-	if err != nil {
-		return "", err
-	}
-	return string(decoded), nil
+	return string(b[2:]), nil
 }
