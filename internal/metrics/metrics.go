@@ -55,7 +55,7 @@ var (
 		Name: "bridge_rate_limited_total",
 		Help: "Total number of messages rate-limited per-DID",
 	})
-	
+
 	IndexerQueueDepth = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "bridge_indexer_queue_depth",
 		Help: "Current number of DIDs waiting in the indexer backfill/sync queue",
@@ -118,5 +118,30 @@ var (
 	RetrySchedulerFailed = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "bridge_retry_scheduler_failed_total",
 		Help: "Total messages that failed during retry scheduler runs",
+	})
+
+	RoomMembers = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "bridge_room_members",
+		Help: "Number of members currently registered in the SSB room",
+	})
+
+	RoomAttendants = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "bridge_room_attendants",
+		Help: "Number of peers currently connected to the SSB room",
+	})
+
+	RoomInvitesConsumed = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "bridge_room_invites_consumed_total",
+		Help: "Total number of room invite tokens consumed, by outcome",
+	}, []string{"result"})
+
+	RoomTunnelConnects = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "bridge_room_tunnel_connects_total",
+		Help: "Total number of tunnel.connect attempts in the SSB room",
+	})
+
+	RoomTunnelAnnounceFailures = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "bridge_room_tunnel_announce_failures_total",
+		Help: "Total number of tunnel.announce failures in the SSB room",
 	})
 )

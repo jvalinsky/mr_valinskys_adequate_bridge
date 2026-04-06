@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/metrics"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomdb"
 )
@@ -562,9 +563,12 @@ func (h *inviteHandler) handleInviteConsume(w http.ResponseWriter, r *http.Reque
 		default:
 			msg = err.Error()
 		}
+		metrics.RoomInvitesConsumed.WithLabelValues("failed").Inc()
 		h.renderConsumeError(w, r, respondJSON, statusCode, errors.New(msg))
 		return
 	}
+
+	metrics.RoomInvitesConsumed.WithLabelValues("ok").Inc()
 
 	multiserverAddress := h.multiserverAddress()
 	if respondJSON {

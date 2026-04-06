@@ -23,11 +23,11 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/config"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/metrics"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/room"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomdb"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssbruntime"
-	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/metrics"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/web/handlers"
 	"github.com/urfave/cli/v2"
 )
@@ -249,8 +249,8 @@ func runRoomTunnelBootstrap(ctx context.Context, ssbRT *ssbruntime.Runtime, room
 	bridgeFeed := ssbRT.Node().KeyPair.FeedRef()
 
 	// Ensure bridge is a room admin so it can announce.
-	if err := roomRT.AddMember(ctx, bridgeFeed, roomdb.RoleAdmin); err != nil {
-		if !strings.Contains(err.Error(), "already exists") && !strings.Contains(err.Error(), "UNIQUE constraint") {
+	if _, err := roomRT.RoomDB().Members().GetByFeed(ctx, bridgeFeed); err != nil {
+		if err := roomRT.AddMember(ctx, bridgeFeed, roomdb.RoleAdmin); err != nil {
 			logger.Printf("event=room_add_member_failed err=%v", err)
 		}
 	}

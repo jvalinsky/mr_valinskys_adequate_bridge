@@ -15,12 +15,19 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomstate"
 )
 
+type RoomMetrics interface {
+	OnTunnelAnnounceFailure()
+	OnTunnelConnect()
+	OnTunnelAnnounce(feed string, memberCheckMs, snapshotWriteMs int64, hookFailed bool)
+}
+
 type TunnelHandler struct {
 	server       *RoomServer
 	announceHook func(refs.FeedRef) error
 	snapshots    roomdb.RuntimeSnapshotsService
 	keyPair      *keys.KeyPair
 	appKey       string
+	metrics      RoomMetrics
 }
 
 func NewTunnelHandler(s *RoomServer, keyPair *keys.KeyPair, appKey string) *TunnelHandler {
@@ -33,6 +40,10 @@ func NewTunnelHandler(s *RoomServer, keyPair *keys.KeyPair, appKey string) *Tunn
 
 func (h *TunnelHandler) SetRuntimeSnapshots(snapshots roomdb.RuntimeSnapshotsService) {
 	h.snapshots = snapshots
+}
+
+func (h *TunnelHandler) SetMetrics(m RoomMetrics) {
+	h.metrics = m
 }
 
 func (h *TunnelHandler) SetAnnounceHook(hook func(refs.FeedRef) error) {
@@ -80,7 +91,13 @@ func (h *TunnelHandler) handleAnnounce(ctx context.Context, req *muxrpc.Request)
 		req.CloseWithError(fmt.Errorf("tunnel.announce: get caller: %w", err))
 		return
 	}
-	if !isInternalMember(h.server, ctx, feedRef) {
+
+	var hookFailed bool
+
+	memberCheckStart := time.Now()
+	isMember := isInternalMember(h.server, ctx, feedRef)
+	memberCheckMs := time.Since(memberCheckStart).Milliseconds()
+	if !isMember {
 		req.CloseWithError(fmt.Errorf("tunnel.announce: membership required"))
 		return
 	}
@@ -92,15 +109,26 @@ func (h *TunnelHandler) handleAnnounce(ctx context.Context, req *muxrpc.Request)
 
 	addr := tunnelAddress(*h.server.keyPair, feedRef)
 	h.server.state.AddPeer(feedRef, addr)
+
+	snapshotWriteStart := time.Now()
 	if h.snapshots != nil {
 		_ = h.snapshots.UpsertTunnelEndpoint(context.Background(), feedRef, addr, time.Now().Unix())
 	}
+	snapshotWriteMs := time.Since(snapshotWriteStart).Milliseconds()
 
 	if h.announceHook != nil {
 		if err := h.announceHook(feedRef); err != nil {
+			hookFailed = true
+			if h.metrics != nil {
+				h.metrics.OnTunnelAnnounceFailure()
+			}
 			req.CloseWithError(fmt.Errorf("tunnel.announce: hook: %w", err))
 			return
 		}
+	}
+
+	if h.metrics != nil {
+		h.metrics.OnTunnelAnnounce(feedRef.String(), memberCheckMs, snapshotWriteMs, hookFailed)
 	}
 
 	req.Return(ctx, true)
@@ -188,6 +216,10 @@ func (h *TunnelHandler) handleConnect(ctx context.Context, req *muxrpc.Request) 
 		callerSource.Cancel(fmt.Errorf("tunnel: target unavailable"))
 		req.CloseWithError(fmt.Errorf("tunnel.connect: target unavailable"))
 		return
+	}
+
+	if h.metrics != nil {
+		h.metrics.OnTunnelConnect()
 	}
 
 	targetSource, targetSink, err := targetEndpoint.Duplex(ctx, muxrpc.TypeBinary, muxrpc.Method{"tunnel", "connect"}, map[string]interface{}{

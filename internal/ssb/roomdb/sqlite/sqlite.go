@@ -21,7 +21,7 @@ type DB struct {
 }
 
 func Open(path string) (*DB, error) {
-	conn, err := sql.Open("sqlite3", path)
+	conn, err := sql.Open("sqlite3", path+"?_journal_mode=WAL&_busy_timeout=5000")
 	if err != nil {
 		return nil, fmt.Errorf("roomdb: open db: %w", err)
 	}

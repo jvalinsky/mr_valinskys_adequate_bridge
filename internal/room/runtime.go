@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/metrics"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/keys"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc"
 	roomhandlers "github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc/handlers/room"
@@ -112,9 +113,10 @@ func Start(parentCtx context.Context, cfg Config, logger *log.Logger) (*Runtime,
 		return nil, err
 	}
 
-	rt.wg.Add(2)
+	rt.wg.Add(3)
 	go rt.serveHTTP()
 	go rt.serveMUXRPC(ctx, rt.shutdownCh, rt.muxrpcListener)
+	go rt.updateMetrics(ctx)
 
 	go func() {
 		<-ctx.Done()
@@ -187,6 +189,7 @@ func (r *Runtime) initHandlers() {
 		handlerMux = &muxrpc.HandlerMux{}
 	}
 	tunnelH := registerRoomHandlers(handlerMux, roomSrv, r.snapshots, r.keyPair, r.cfg.AppKey)
+	tunnelH.SetMetrics(r)
 	r.tunnelHandler = tunnelH
 
 	r.handler = handlerMux
@@ -271,9 +274,65 @@ func (r *Runtime) RoomServer() *roomhandlers.RoomServer {
 	return r.roomSrv
 }
 
+func (r *Runtime) RoomDB() RoomDB {
+	if r == nil {
+		return nil
+	}
+	return r.roomDB
+}
+
 func (r *Runtime) SetAnnounceHook(hook func(refs.FeedRef) error) {
 	if r != nil && r.tunnelHandler != nil {
 		r.tunnelHandler.SetAnnounceHook(hook)
+	}
+}
+
+func (r *Runtime) updateMetrics(parentCtx context.Context) {
+	defer r.wg.Done()
+
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-parentCtx.Done():
+			return
+		case <-ticker.C:
+			r.refreshMetrics()
+		}
+	}
+}
+
+func (r *Runtime) refreshMetrics() {
+	if r == nil || r.roomDB == nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if members, err := r.roomDB.Members().Count(ctx); err == nil {
+		metrics.RoomMembers.Set(float64(members))
+	}
+
+	if r.snapshots != nil {
+		if attendants, err := r.snapshots.ListAttendants(ctx, true); err == nil {
+			metrics.RoomAttendants.Set(float64(len(attendants)))
+		}
+	}
+}
+
+func (r *Runtime) OnTunnelAnnounceFailure() {
+	metrics.RoomTunnelAnnounceFailures.Inc()
+}
+
+func (r *Runtime) OnTunnelConnect() {
+	metrics.RoomTunnelConnects.Inc()
+}
+
+func (r *Runtime) OnTunnelAnnounce(feed string, memberCheckMs, snapshotWriteMs int64, hookFailed bool) {
+	if r.logger != nil {
+		r.logger.Printf("event=room_tunnel_announce feed=%s member_check_ms=%d snapshot_write_ms=%d hook_failed=%t", feed, memberCheckMs, snapshotWriteMs, hookFailed)
 	}
 }
 
