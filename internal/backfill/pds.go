@@ -64,7 +64,7 @@ type DIDPDSResolver struct {
 func (r DIDPDSResolver) ResolvePDSEndpoint(ctx context.Context, did string) (string, error) {
 	parsed, err := syntax.ParseDID(strings.TrimSpace(did))
 	if err != nil {
-		return "", fmt.Errorf("%w: %v", ErrUnsupportedDIDMethod, err)
+		return "", fmt.Errorf("%w: %w", ErrUnsupportedDIDMethod, err)
 	}
 	if parsed.Method() != "plc" {
 		return "", fmt.Errorf("%w: %s", ErrUnsupportedDIDMethod, parsed.Method())
@@ -130,7 +130,7 @@ func NormalizeServiceEndpoint(raw string) (string, error) {
 
 	u, err := url.Parse(trimmed)
 	if err != nil {
-		return "", fmt.Errorf("%w: %v", ErrInvalidPDSEndpoint, err)
+		return "", fmt.Errorf("%w: %w", ErrInvalidPDSEndpoint, err)
 	}
 	if u.Scheme != "https" && u.Scheme != "http" {
 		return "", fmt.Errorf("%w: unsupported scheme %q", ErrInvalidPDSEndpoint, u.Scheme)

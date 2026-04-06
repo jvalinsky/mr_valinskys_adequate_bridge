@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -85,7 +86,7 @@ func main() {
 	if err != nil {
 		fail(append(results, TestResult{Step: "Get MCP Session", Status: "FAIL", Error: err.Error()}))
 	}
-	log.Printf("MCP Session ID: %s", sessionID)
+	slog.Info("MCP session started", "session_id", sessionID)
 
 	botDID := fmt.Sprintf("did:plc:testbot_e2e_%d", time.Now().Unix())
 
@@ -120,7 +121,7 @@ func main() {
 		if !account.Added {
 			return fmt.Errorf("account not added")
 		}
-		log.Printf("Bot DID: %s, SSB Feed: %s", botDID, account.SSBFeed)
+		slog.Info("bot registered", "did", botDID, "ssb_feed", account.SSBFeed)
 		return nil
 	})
 	results = append(results, result)
@@ -164,7 +165,7 @@ func main() {
 			return fmt.Errorf("parse publish result: %w", err)
 		}
 		publishedMsgKey = publish.Key
-		log.Printf("Published message key: %s", publishedMsgKey)
+		slog.Info("published message", "key", publishedMsgKey)
 		return nil
 	})
 	results = append(results, result)
@@ -198,7 +199,7 @@ func main() {
 			return fmt.Errorf("parse invite result: %w", err)
 		}
 		inviteToken = invite.Token
-		log.Printf("Invite token: %s", inviteToken)
+		slog.Info("room invite created", "token", inviteToken)
 		return nil
 	})
 	results = append(results, result)
@@ -256,7 +257,7 @@ func main() {
 			if err := json.NewDecoder(resp.Body).Decode(&consumeResp); err != nil {
 				return fmt.Errorf("parse consume response: %w", err)
 			}
-			log.Printf("Got multiserver address: %s", consumeResp.MultiserverAddress)
+			slog.Info("got multiserver address", "address", consumeResp.MultiserverAddress)
 			return nil
 		})
 		results = append(results, result)
@@ -284,9 +285,9 @@ func main() {
 			return fmt.Errorf("parse feeds: %w", err)
 		}
 
-		log.Printf("Known feeds: %d", len(feeds.Feeds))
+		slog.Info("known feeds", "count", len(feeds.Feeds))
 		for _, f := range feeds.Feeds {
-			log.Printf("  - %s (seq: %d)", f.ID, f.Seq)
+			slog.Debug("feed", "id", f.ID, "seq", f.Seq)
 		}
 		return nil
 	})
@@ -317,7 +318,7 @@ func main() {
 			if err := msg.Verify(); err != nil {
 				return fmt.Errorf("signature invalid: %w", err)
 			}
-			log.Printf("Verified message from %s", msg.Author.String())
+			slog.Info("verified message signature", "author", msg.Author.String())
 		}
 		return nil
 	})
@@ -339,13 +340,13 @@ func main() {
 }
 
 func runStep(ctx context.Context, name string, fn func() error) TestResult {
-	log.Printf("Running: %s", name)
+	slog.Info("running step", "name", name)
 	err := fn()
 	if err != nil {
-		log.Printf("  FAILED: %v", err)
+		slog.Error("step failed", "name", name, "error", err)
 		return TestResult{Step: name, Status: "FAIL", Error: err.Error()}
 	}
-	log.Printf("  PASSED")
+	slog.Info("step passed", "name", name)
 	return TestResult{Step: name, Status: "PASS"}
 }
 

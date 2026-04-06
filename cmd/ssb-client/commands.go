@@ -11,6 +11,7 @@ import (
 	"html"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -47,6 +48,8 @@ func runServe(c *cli.Context) error {
 	}
 
 	logger := log.New(os.Stdout, "ssb-client: ", log.LstdFlags)
+
+	slogger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	secretPath := filepath.Join(repoPath, "secret")
 	var keyPair *keys.KeyPair
@@ -105,7 +108,7 @@ func runServe(c *cli.Context) error {
 	r.Use(websecurity.RequestLogMiddleware(logger))
 	r.Use(websecurity.SecurityHeadersMiddleware(true))
 
-	ui := newClientUIHandler(sbotInstance, logger)
+	ui := newClientUIHandler(sbotInstance, logger, slogger)
 	ui.Mount(r)
 
 	server := &http.Server{
@@ -113,9 +116,9 @@ func runServe(c *cli.Context) error {
 		Handler: r,
 	}
 
-	logger.Printf("Serving SSB client at http://%s", httpListenAddr)
-	logger.Printf("SSB identity: %s", keyPair.FeedRef().String())
-	logger.Printf("SSB muxrpc listening on %s", listenAddr)
+	slog.Info("SSB client serving", "http_addr", httpListenAddr)
+	slog.Info("SSB identity", "id", keyPair.FeedRef().String())
+	slog.Info("SSB muxrpc listening", "addr", listenAddr)
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -178,13 +181,15 @@ func loadInitialPeers(ctx context.Context, peersFile string, logger *log.Logger)
 type clientUIHandler struct {
 	sbot      *sbot.Sbot
 	log       *log.Logger
+	slog      *slog.Logger
 	startTime time.Time
 }
 
-func newClientUIHandler(sb *sbot.Sbot, logger *log.Logger) *clientUIHandler {
+func newClientUIHandler(sb *sbot.Sbot, logger *log.Logger, slogger *slog.Logger) *clientUIHandler {
 	return &clientUIHandler{
 		sbot:      sb,
 		log:       logger,
+		slog:      slogger,
 		startTime: time.Now(),
 	}
 }
@@ -642,7 +647,7 @@ func (h *clientUIHandler) handleProfileAction(w http.ResponseWriter, r *http.Req
 
 	pub, err := h.sbot.Publisher()
 	if err != nil {
-		h.log.Printf("Failed to get publisher: %v", err)
+		h.slog.Error("failed to get publisher", "error", err)
 		http.Redirect(w, r, "/profile", http.StatusSeeOther)
 		return
 	}
@@ -650,14 +655,14 @@ func (h *clientUIHandler) handleProfileAction(w http.ResponseWriter, r *http.Req
 	if name != "" {
 		content := map[string]interface{}{"type": "about", "name": name}
 		if _, err = pub.PublishJSON(content); err != nil {
-			h.log.Printf("Failed to publish about name: %v", err)
+			h.slog.Error("failed to publish about name", "error", err)
 		}
 	}
 
 	if description != "" {
 		content := map[string]interface{}{"type": "about", "description": description}
 		if _, err = pub.PublishJSON(content); err != nil {
-			h.log.Printf("Failed to publish about description: %v", err)
+			h.slog.Error("failed to publish about description", "error", err)
 		}
 	}
 
@@ -733,18 +738,18 @@ func (h *clientUIHandler) handleCompose(w http.ResponseWriter, r *http.Request) 
 		if text != "" {
 			pub, err := h.sbot.Publisher()
 			if err != nil {
-				h.log.Printf("Failed to get publisher: %v", err)
+				h.slog.Error("failed to get publisher", "error", err)
 				http.Error(w, "Failed to publish", http.StatusInternalServerError)
 				return
 			}
 			content := map[string]interface{}{"type": "post", "text": text}
 			msgRef, err := pub.PublishJSON(content)
 			if err != nil {
-				h.log.Printf("Failed to publish post: %v", err)
+				h.slog.Error("failed to publish post", "error", err)
 				http.Error(w, "Failed to publish: "+err.Error(), http.StatusInternalServerError)
 				return
 			}
-			h.log.Printf("Published post: %s", msgRef.String())
+			h.slog.Info("published post", "ref", msgRef.String())
 		}
 		http.Redirect(w, r, "/feed", http.StatusSeeOther)
 		return
@@ -847,7 +852,7 @@ func (h *clientUIHandler) handleFollowingAction(w http.ResponseWriter, r *http.R
 
 	pub, err := h.sbot.Publisher()
 	if err != nil {
-		h.log.Printf("Failed to get publisher: %v", err)
+		h.slog.Error("failed to get publisher", "error", err)
 		http.Error(w, "Failed to publish", http.StatusInternalServerError)
 		return
 	}
@@ -860,7 +865,7 @@ func (h *clientUIHandler) handleFollowingAction(w http.ResponseWriter, r *http.R
 		"blocking":  false,
 	}
 	if _, err = pub.PublishJSON(content); err != nil {
-		h.log.Printf("Failed to publish contact: %v", err)
+		h.slog.Error("failed to publish contact", "error", err)
 	}
 
 	http.Redirect(w, r, "/following", http.StatusSeeOther)
@@ -906,12 +911,12 @@ func (h *clientUIHandler) handleBlobsUpload(w http.ResponseWriter, r *http.Reque
 	blobStore := h.sbot.BlobStore().BlobStore()
 	hash, err := blobStore.Put(file)
 	if err != nil {
-		h.log.Printf("Failed to store blob: %v", err)
+		h.slog.Error("failed to store blob", "error", err)
 		http.Redirect(w, r, "/blobs", http.StatusSeeOther)
 		return
 	}
 
-	h.log.Printf("Uploaded blob: %x (size: %d)", hash, header.Size)
+	h.slog.Info("uploaded blob", "hash", fmt.Sprintf("%x", hash), "size", header.Size)
 	http.Redirect(w, r, "/blobs", http.StatusSeeOther)
 }
 
@@ -992,7 +997,7 @@ func (h *clientUIHandler) handlePeersAdd(w http.ResponseWriter, r *http.Request)
 
 	pubkeyDecoded, err := base64.StdEncoding.DecodeString(strings.TrimSuffix(pubkeyStr, ".ed25519"))
 	if err != nil || len(pubkeyDecoded) != 32 {
-		h.log.Printf("Invalid pubkey format")
+		h.slog.Warn("invalid pubkey format")
 		http.Redirect(w, r, "/peers", http.StatusSeeOther)
 		return
 	}
@@ -1001,7 +1006,7 @@ func (h *clientUIHandler) handlePeersAdd(w http.ResponseWriter, r *http.Request)
 	defer cancel()
 
 	if _, err = h.sbot.Connect(ctx, address, pubkeyDecoded); err != nil {
-		h.log.Printf("Failed to connect to peer %s: %v", address, err)
+		h.slog.Error("failed to connect to peer", "address", address, "error", err)
 	}
 
 	http.Redirect(w, r, "/peers", http.StatusSeeOther)
@@ -1013,15 +1018,15 @@ func (h *clientUIHandler) handleRoom(w http.ResponseWriter, r *http.Request) {
 		inviteCode := strings.TrimSpace(r.Form.Get("invite"))
 		if inviteCode != "" {
 			if err := h.consumeInvite(r.Context(), inviteCode); err != nil {
-				h.log.Printf("Failed to use invite code: %v", err)
+				h.slog.Error("failed to use invite code", "error", err)
 				http.Redirect(w, r, "/room?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
 				return
 			}
-			h.log.Printf("Successfully joined room using invite code")
+			h.slog.Info("successfully joined room using invite code")
 		}
 		roomAddr := strings.TrimSpace(r.Form.Get("room_address"))
 		if roomAddr != "" {
-			h.log.Printf("Would connect to room: %s", roomAddr)
+			h.slog.Info("would connect to room", "address", roomAddr)
 		}
 		http.Redirect(w, r, "/room", http.StatusSeeOther)
 		return
@@ -1211,17 +1216,17 @@ func (h *clientUIHandler) handleMessages(w http.ResponseWriter, r *http.Request)
 		if recipient != "" && message != "" {
 			pub, err := h.sbot.Publisher()
 			if err != nil {
-				h.log.Printf("Failed to get publisher: %v", err)
+				h.slog.Error("failed to get publisher", "error", err)
 				statusMsg = "Failed to send: could not access publisher"
 				statusClass = "error"
 			} else {
 				_, err := pub.PublishPrivate(message, recipient)
 				if err != nil {
-					h.log.Printf("Failed to send DM to %s: %v", recipient, err)
+					h.slog.Error("failed to send DM", "recipient", recipient, "error", err)
 					statusMsg = fmt.Sprintf("Failed to send: %v", err)
 					statusClass = "error"
 				} else {
-					h.log.Printf("Sent DM to: %s", recipient)
+					h.slog.Info("sent DM", "recipient", recipient)
 					statusMsg = "Message sent successfully"
 					statusClass = "success"
 				}

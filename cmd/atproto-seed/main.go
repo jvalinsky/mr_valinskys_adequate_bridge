@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"time"
 
@@ -86,9 +86,9 @@ func main() {
 				Password: &password,
 			})
 			if err != nil {
-				log.Printf("create account error (may already exist): %v", err)
+				slog.Error("create account failed (may already exist)", "error", err)
 			} else {
-				log.Printf("created account: %s (DID: %s)", handle, out.Did)
+				slog.Info("created account", "handle", handle, "did", out.Did)
 			}
 
 			// Create session
@@ -105,7 +105,7 @@ func main() {
 				Handle:     sess.Handle,
 				Did:        sess.Did,
 			}
-			log.Printf("session created for %s", sess.Did)
+			slog.Info("session created", "did", sess.Did)
 
 			if targetDID == "" {
 				database, err := db.Open(dbPath)
@@ -125,9 +125,9 @@ func main() {
 					SSBFeedID: feedRef.Ref(),
 					Active:    true,
 				}); err != nil {
-					log.Printf("warning: could not register bridged account (it may already exist): %v", err)
+					slog.Warn("could not register bridged account (may already exist)", "error", err)
 				} else {
-					log.Printf("registered bridged account: did=%s feed=%s", sess.Did, feedRef.Ref())
+					slog.Info("registered bridged account", "did", sess.Did, "feed", feedRef.Ref())
 				}
 			}
 
@@ -150,7 +150,7 @@ func main() {
 				if err != nil {
 					return fmt.Errorf("create post %d: %w", i, err)
 				}
-				log.Printf("published post %d: %s", i+1, resp.Uri)
+				slog.Info("published post", "index", i+1, "uri", resp.Uri)
 				postURI = resp.Uri
 				postCID = resp.Cid
 			}
@@ -171,9 +171,9 @@ func main() {
 					},
 				})
 				if err != nil {
-					log.Printf("create like error: %v", err)
+					slog.Error("create like failed", "error", err)
 				} else {
-					log.Printf("published like for %s", postURI)
+					slog.Info("published like", "post", postURI)
 				}
 
 				_, err = atproto.RepoCreateRecord(ctx, client, &atproto.RepoCreateRecord_Input{
@@ -187,9 +187,9 @@ func main() {
 					},
 				})
 				if err != nil {
-					log.Printf("create follow error: %v", err)
+					slog.Error("create follow failed", "error", err)
 				} else {
-					log.Printf("published follow for %s", targetDID)
+					slog.Info("published follow", "target", targetDID)
 				}
 			}
 
@@ -209,9 +209,9 @@ func main() {
 					},
 				})
 				if err != nil {
-					log.Printf("create repost error: %v", err)
+					slog.Error("create repost failed", "error", err)
 				} else {
-					log.Printf("published repost of %s", postURI)
+					slog.Info("published repost", "post", postURI)
 				}
 			}
 
@@ -232,15 +232,15 @@ func main() {
 					},
 				})
 				if err != nil {
-					log.Printf("create profile error: %v", err)
+					slog.Error("create profile failed", "error", err)
 				} else {
-					log.Printf("published profile update")
+					slog.Info("published profile update")
 				}
 			}
 
 			// Write a seed complete marker for the test runner
 			if err := os.WriteFile("/data/atproto-seed-complete", []byte(sess.Did), 0o644); err != nil {
-				log.Printf("warning: could not write seed marker: %v", err)
+				slog.Warn("could not write seed marker", "error", err)
 			}
 
 			return nil
@@ -248,6 +248,6 @@ func main() {
 	}
 
 	if err := app.Run(os.Args); err != nil {
-		log.Fatal(err)
+		slog.Error("application failed", "error", err)
 	}
 }

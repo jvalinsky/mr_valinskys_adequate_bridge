@@ -65,7 +65,7 @@ func (d BaseDirectory) ResolveHandle(ctx context.Context, handle syntax.Handle) 
 
 	txts, err := net.DefaultResolver.LookupTXT(ctx, "_atproto."+handle.String())
 	if err != nil {
-		return "", fmt.Errorf("%w: lookup txt for %s: %v", ErrHandleResolutionError, handle, err)
+		return "", fmt.Errorf("handle resolution failed for %s: %w", handle, err)
 	}
 	for _, txt := range txts {
 		if !strings.HasPrefix(txt, "did=") {
@@ -145,10 +145,10 @@ func (d BaseDirectory) resolveHandleHTTPS(ctx context.Context, handle syntax.Han
 	url := "https://" + handle.String() + "/.well-known/atproto-did"
 	body, status, err := d.read(ctx, url)
 	if err != nil {
-		return "", fmt.Errorf("%w: resolve handle %s: %v", ErrHandleResolutionError, handle, err)
+		return "", fmt.Errorf("handle resolution failed for %s: %w", handle, err)
 	}
 	if status != http.StatusOK {
-		return "", fmt.Errorf("%w: resolve handle %s returned %d", ErrHandleResolutionError, handle, status)
+		return "", fmt.Errorf("handle resolution for %s returned status %d", handle, status)
 	}
 	return syntax.ParseDID(strings.TrimSpace(string(body)))
 }
@@ -156,7 +156,7 @@ func (d BaseDirectory) resolveHandleHTTPS(ctx context.Context, handle syntax.Han
 func (d BaseDirectory) resolveJSON(ctx context.Context, url string) (*DIDDocument, error) {
 	body, status, err := d.read(ctx, url)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrDIDResolutionFailed, err)
+		return nil, fmt.Errorf("DID resolution failed: %w", err)
 	}
 	switch status {
 	case http.StatusOK:
@@ -168,7 +168,7 @@ func (d BaseDirectory) resolveJSON(ctx context.Context, url string) (*DIDDocumen
 
 	var doc DIDDocument
 	if err := json.Unmarshal(body, &doc); err != nil {
-		return nil, fmt.Errorf("%w: decode did document: %v", ErrDIDResolutionFailed, err)
+		return nil, fmt.Errorf("decode DID document: %w", err)
 	}
 	return &doc, nil
 }
