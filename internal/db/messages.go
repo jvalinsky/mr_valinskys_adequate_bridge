@@ -384,6 +384,43 @@ func (db *DB) CountDeferredMessages(ctx context.Context) (int, error) {
 	return count, nil
 }
 
+// OldestDeferredAgeSeconds returns the age in seconds of the oldest currently-deferred
+// message, or 0 if the deferred backlog is empty.
+func (db *DB) OldestDeferredAgeSeconds(ctx context.Context) (float64, error) {
+	var oldest sql.NullTime
+	err := db.conn.QueryRowContext(
+		ctx,
+		`SELECT MIN(COALESCE(last_defer_attempt_at, created_at)) FROM messages WHERE message_state = ?`,
+		MessageStateDeferred,
+	).Scan(&oldest)
+	if err != nil {
+		return 0, fmt.Errorf("query oldest deferred age: %w", err)
+	}
+	if !oldest.Valid {
+		return 0, nil
+	}
+	return time.Since(oldest.Time).Seconds(), nil
+}
+
+// CountExhaustedMessages returns the number of failed messages that have reached
+// or exceeded maxAttempts and will no longer be retried.
+func (db *DB) CountExhaustedMessages(ctx context.Context, maxAttempts int) (int, error) {
+	if maxAttempts <= 0 {
+		maxAttempts = 8
+	}
+	var count int
+	err := db.conn.QueryRowContext(
+		ctx,
+		`SELECT COUNT(*) FROM messages WHERE message_state = ? AND (ssb_msg_ref IS NULL OR ssb_msg_ref = '') AND publish_attempts >= ?`,
+		MessageStateFailed,
+		maxAttempts,
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count exhausted messages: %w", err)
+	}
+	return count, nil
+}
+
 func (db *DB) CountDeletedMessages(ctx context.Context) (int, error) {
 	var count int
 	if err := db.conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE message_state = ?`, MessageStateDeleted).Scan(&count); err != nil {

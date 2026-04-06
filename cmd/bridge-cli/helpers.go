@@ -27,6 +27,7 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomdb"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssbruntime"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/metrics"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/web/handlers"
 	"github.com/urfave/cli/v2"
 )
@@ -388,6 +389,12 @@ func runRetryScheduler(ctx context.Context, processor *bridge.Processor, logger 
 					result.Deferred,
 				)
 			}
+			if result.Published > 0 {
+				metrics.RetrySchedulerPublished.Add(float64(result.Published))
+			}
+			if result.Failed > 0 {
+				metrics.RetrySchedulerFailed.Add(float64(result.Failed))
+			}
 		}
 	}
 }
@@ -422,6 +429,12 @@ func runDeferredResolverScheduler(ctx context.Context, processor *bridge.Process
 					result.Deferred,
 					result.Failed,
 				)
+			}
+			if result.Published > 0 {
+				metrics.DeferredSchedulerPublished.Add(float64(result.Published))
+			}
+			if result.Failed > 0 {
+				metrics.DeferredSchedulerFailed.Add(float64(result.Failed))
 			}
 		}
 	}

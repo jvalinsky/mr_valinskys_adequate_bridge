@@ -81,4 +81,42 @@ var (
 		Name: "bridge_blob_store_size_bytes",
 		Help: "Total size of the SSB blob store directory in bytes",
 	})
+
+	// DependencyFetches counts dependency resolution attempts by outcome and reason.
+	// result label: "success", "error", "skip", "start"
+	// reason label: the note field from the log event (e.g. "remote_fetch", "local_resolved", "already_visited")
+	DependencyFetches = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "bridge_dependency_fetches_total",
+		Help: "Total number of dependency resolution attempts, by result and reason",
+	}, []string{"result", "reason"})
+
+	DeferredOldestAgeSeconds = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "bridge_deferred_oldest_age_seconds",
+		Help: "Age in seconds of the oldest currently-deferred message (0 if backlog is empty)",
+	})
+
+	RetryExhaustedMessages = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "bridge_retry_exhausted_messages",
+		Help: "Number of failed messages that have reached the maximum retry attempt count",
+	})
+
+	DeferredSchedulerPublished = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "bridge_deferred_scheduler_published_total",
+		Help: "Total messages published by the deferred resolver scheduler",
+	})
+
+	DeferredSchedulerFailed = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "bridge_deferred_scheduler_failed_total",
+		Help: "Total messages that failed during deferred resolver scheduler runs",
+	})
+
+	RetrySchedulerPublished = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "bridge_retry_scheduler_published_total",
+		Help: "Total messages published by the retry scheduler",
+	})
+
+	RetrySchedulerFailed = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "bridge_retry_scheduler_failed_total",
+		Help: "Total messages that failed during retry scheduler runs",
+	})
 )

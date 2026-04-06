@@ -11,6 +11,7 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/config"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/metrics"
 	comatproto "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto"
 	lexutil "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/lexutil"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/syntax"
@@ -466,6 +467,8 @@ func logDependencyEvent(logger *log.Logger, ctx context.Context, event, dependen
 			strings.TrimSpace(note),
 			err,
 		)
+		result := strings.TrimPrefix(event, "dependency_fetch_")
+		metrics.DependencyFetches.WithLabelValues(result, strings.TrimSpace(note)).Inc()
 		return
 	}
 
@@ -480,4 +483,7 @@ func logDependencyEvent(logger *log.Logger, ctx context.Context, event, dependen
 		reasonKey,
 		strings.TrimSpace(note),
 	)
+
+	result := strings.TrimPrefix(event, "dependency_fetch_")
+	metrics.DependencyFetches.WithLabelValues(result, strings.TrimSpace(note)).Inc()
 }

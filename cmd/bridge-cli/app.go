@@ -391,6 +391,14 @@ func (a *BridgeApp) updateMetrics(ctx context.Context) {
 	if size, err := dirSize(filepath.Join(a.cfg.RepoPath, "blobs")); err == nil {
 		metrics.BlobStoreSizeBytes.Set(float64(size))
 	}
+	if a.db != nil {
+		if age, err := a.db.OldestDeferredAgeSeconds(ctx); err == nil {
+			metrics.DeferredOldestAgeSeconds.Set(age)
+		}
+		if exhausted, err := a.db.CountExhaustedMessages(ctx, 8); err == nil {
+			metrics.RetryExhaustedMessages.Set(float64(exhausted))
+		}
+	}
 }
 
 func dirSize(path string) (int64, error) {
