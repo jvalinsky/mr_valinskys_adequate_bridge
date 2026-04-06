@@ -640,7 +640,8 @@ func newServeMux(ctx context.Context, db RoomDB, state *roomstate.Manager, keyPa
 
 func registerRoomHandlers(mux *muxrpc.HandlerMux, srv *roomhandlers.RoomServer, snapshots roomdb.RuntimeSnapshotsService, keyPair *keys.KeyPair, appKey string) *roomhandlers.TunnelHandler {
 	mux.Register(muxrpc.Method{"whoami"}, &whoamiHandler{srv})
-	mux.Register(muxrpc.Method{"room"}, roomhandlers.NewAliasHandler(srv))
+	roomH := roomhandlers.NewRoomHandler(srv, keyPair.FeedRef())
+	mux.Register(muxrpc.Method{"room"}, roomH)
 
 	tunnelHandler := roomhandlers.NewTunnelHandler(srv, keyPair, appKey)
 	tunnelHandler.SetRuntimeSnapshots(snapshots)
