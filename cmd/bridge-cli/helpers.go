@@ -250,7 +250,7 @@ func runRoomTunnelBootstrap(ctx context.Context, ssbRT *ssbruntime.Runtime, room
 
 	// Ensure bridge is a room admin so it can announce.
 	if err := roomRT.AddMember(ctx, bridgeFeed, roomdb.RoleAdmin); err != nil {
-		if !strings.Contains(err.Error(), "already exists") {
+		if !strings.Contains(err.Error(), "already exists") && !strings.Contains(err.Error(), "UNIQUE constraint") {
 			logger.Printf("event=room_add_member_failed err=%v", err)
 		}
 	}
