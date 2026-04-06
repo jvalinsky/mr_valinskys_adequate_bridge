@@ -430,6 +430,7 @@ func (r *Runtime) handleMUXRPCConn(ctx context.Context, conn net.Conn) {
 
 	if isMember && r.state != nil {
 		r.state.AddAttendant(*remoteFeed, tracked.RemoteAddr().String())
+		r.logger.Printf("event=room_member_connected feed=%s addr=%s", remoteFeed.String(), tracked.RemoteAddr().String())
 	}
 	if isMember && r.snapshots != nil {
 		_ = r.snapshots.UpsertAttendant(context.Background(), *remoteFeed, tracked.RemoteAddr().String(), time.Now().Unix())
@@ -446,6 +447,7 @@ func (r *Runtime) handleMUXRPCConn(ctx context.Context, conn net.Conn) {
 	if isMember && r.state != nil {
 		r.state.RemoveAttendant(*remoteFeed)
 		r.state.RemovePeer(*remoteFeed)
+		r.logger.Printf("event=room_member_disconnected feed=%s", remoteFeed.String())
 	}
 	if isMember && r.snapshots != nil {
 		_ = r.snapshots.DeactivateAttendant(context.Background(), *remoteFeed)
