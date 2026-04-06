@@ -429,6 +429,12 @@ in
         default = false;
         description = "Enable services.promtail to ship journald logs to Loki.";
       };
+
+      prometheus.enable = mkOption {
+        type = types.bool;
+        default = true;
+        description = "Enable services.prometheus to scrape bridge metrics.";
+      };
     };
   };
 
@@ -658,12 +664,44 @@ in
                 type = "loki";
                 access = "proxy";
                 url = "http://127.0.0.1:3100";
+                isDefault = false;
+                editable = false;
+              }
+              {
+                name = "Prometheus";
+                type = "prometheus";
+                access = "proxy";
+                url = "http://127.0.0.1:9090";
                 isDefault = true;
                 editable = false;
               }
             ];
           };
+          dashboards.settings.providers = [
+            {
+              name = "Bridge Dashboards";
+              options.path = ./dashboards;
+            }
+          ];
         };
+      };
+    })
+
+    (mkIf (cfg.observability.enable && cfg.observability.prometheus.enable) {
+      services.prometheus = {
+        enable = true;
+        listenAddress = "127.0.0.1";
+        port = 9090;
+        scrapeConfigs = [
+          {
+            job_name = "mr-valinskys-adequate-bridge";
+            static_configs = [
+              {
+                targets = [ "127.0.0.1:8080" ];
+              }
+            ];
+          }
+        ];
       };
     })
 
