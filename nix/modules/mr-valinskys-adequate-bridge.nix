@@ -102,6 +102,10 @@ let
       "--mcp-listen-addr"
       cfg.mcpListenAddr
     ]
+    ++ optionals (cfg.metricsListenAddr != null) [
+      "--metrics-listen-addr"
+      cfg.metricsListenAddr
+    ]
     ++ cfg.startExtraArgs;
 
   uiGlobalArgs =
@@ -436,6 +440,17 @@ in
         description = "Enable services.prometheus to scrape bridge metrics.";
       };
     };
+
+    metricsListenAddr = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      example = "127.0.0.1:2112";
+      description = ''
+        Address for the Prometheus metrics HTTP endpoint (e.g. 127.0.0.1:2112).
+        When set, passes --metrics-listen-addr to bridge-cli.
+        Defaults to 127.0.0.1:2112 when observability.prometheus.enable is true.
+      '';
+    };
   };
 
   config = mkIf cfg.enable (mkMerge [
@@ -688,6 +703,8 @@ in
     })
 
     (mkIf (cfg.observability.enable && cfg.observability.prometheus.enable) {
+      services.mr-valinskys-adequate-bridge.metricsListenAddr = mkDefault "127.0.0.1:2112";
+
       services.prometheus = {
         enable = true;
         listenAddress = "127.0.0.1";
@@ -697,7 +714,7 @@ in
             job_name = "mr-valinskys-adequate-bridge";
             static_configs = [
               {
-                targets = [ "127.0.0.1:8080" ];
+                targets = [ cfg.metricsListenAddr ];
               }
             ];
           }
