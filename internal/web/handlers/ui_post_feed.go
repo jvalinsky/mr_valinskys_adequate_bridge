@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -135,7 +134,7 @@ func (h *UIHandler) handleFeed(w http.ResponseWriter, r *http.Request) {
 
 	rows := make([]templates.FeedRow, 0, len(messages))
 	for _, msg := range messages {
-		rows = append(rows, templates.FeedRow{
+		row := templates.FeedRow{
 			ATURI:     msg.ATURI,
 			ATDID:     msg.ATDID,
 			Type:      msg.Type,
@@ -143,7 +142,11 @@ func (h *UIHandler) handleFeed(w http.ResponseWriter, r *http.Request) {
 			Text:      extractSSBText(msg.RawSSBJson),
 			HasImage:  hasSSBImage(msg.RawSSBJson),
 			ImageRef:  getSSBImageRef(msg.RawSSBJson),
-		})
+		}
+		if msg.RootATURI != "" {
+			row.ThreadURL = fmt.Sprintf("/messages/thread?root_at_uri=%s", url.QueryEscape(msg.RootATURI))
+		}
+		rows = append(rows, row)
 	}
 
 	data := templates.FeedData{
@@ -161,47 +164,4 @@ func (h *UIHandler) handleFeed(w http.ResponseWriter, r *http.Request) {
 	if err := templates.RenderFeed(w, data); err != nil {
 		h.writeInternalError(w, "handleFeed", "Template error", err)
 	}
-}
-
-func extractSSBText(rawJSON string) string {
-	var m map[string]interface{}
-	if err := json.Unmarshal([]byte(rawJSON), &m); err != nil {
-		return ""
-	}
-	text, _ := m["text"].(string)
-	if text == "" {
-		// Check for legacy SSB content object
-		if content, ok := m["content"].(map[string]interface{}); ok {
-			text, _ = content["text"].(string)
-		}
-	}
-	return text
-}
-
-func hasSSBImage(rawJSON string) bool {
-	return getSSBImageRef(rawJSON) != ""
-}
-
-func getSSBImageRef(rawJSON string) string {
-	var m map[string]interface{}
-	if err := json.Unmarshal([]byte(rawJSON), &m); err != nil {
-		return ""
-	}
-	content, _ := m["content"].(map[string]interface{})
-	if content == nil {
-		content = m // Flat format
-	}
-
-	mentions, _ := content["mentions"].([]interface{})
-	for _, item := range mentions {
-		mi, ok := item.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		link, _ := mi["link"].(string)
-		if strings.HasPrefix(link, "&") {
-			return link
-		}
-	}
-	return ""
 }

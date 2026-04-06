@@ -31,7 +31,7 @@ func (h *UIHandler) handleMessages(w http.ResponseWriter, r *http.Request) {
 	rows := make([]templates.MessageRow, 0, len(page.Messages))
 	for _, message := range page.Messages {
 		issueText, issueClass := messageIssueSummary(message)
-		rows = append(rows, templates.MessageRow{
+		row := templates.MessageRow{
 			ATURI:           message.ATURI,
 			ShortATURI:      truncateMiddle(message.ATURI, 66),
 			DetailURL:       fmt.Sprintf("/messages/detail?at_uri=%s", url.QueryEscape(message.ATURI)),
@@ -51,7 +51,11 @@ func (h *UIHandler) handleMessages(w http.ResponseWriter, r *http.Request) {
 			DeferAttempts:   message.DeferAttempts,
 			TotalAttempts:   message.PublishAttempts + message.DeferAttempts,
 			CreatedAt:       message.CreatedAt,
-		})
+		}
+		if message.RootATURI != "" {
+			row.ThreadURL = fmt.Sprintf("/messages/thread?root_at_uri=%s", url.QueryEscape(message.RootATURI))
+		}
+		rows = append(rows, row)
 	}
 
 	pagination := templates.MessagePagination{}
@@ -206,6 +210,102 @@ func (h *UIHandler) handleMessageDetail(w http.ResponseWriter, r *http.Request) 
 	if err := templates.RenderMessageDetail(w, data); err != nil {
 		h.writeInternalError(w, "message_detail", "Template error", err)
 	}
+}
+
+func (h *UIHandler) handleMessageThread(w http.ResponseWriter, r *http.Request) {
+	rootURI := strings.TrimSpace(r.URL.Query().Get("root_at_uri"))
+	if rootURI == "" {
+		http.Error(w, "Missing root_at_uri", http.StatusBadRequest)
+		return
+	}
+
+	messages, err := h.db.ListThread(r.Context(), rootURI)
+	if err != nil {
+		h.writeInternalError(w, "message_thread", "Failed to get thread", err)
+		return
+	}
+
+	data := templates.ThreadData{
+		Chrome: templates.PageChrome{
+			ActiveNav: "messages",
+			Breadcrumbs: []templates.Breadcrumb{
+				{Label: "Dashboard", Href: "/"},
+				{Label: "Messages", Href: "/messages"},
+				{Label: "Thread", Href: ""},
+			},
+		},
+		RootURI: rootURI,
+		Nodes:   buildThreadTree(messages),
+	}
+
+	w.Header().Set("Content-Type", "text/html")
+	if err := templates.RenderThread(w, data); err != nil {
+		h.writeInternalError(w, "message_thread", "Template error", err)
+	}
+}
+
+func buildThreadTree(messages []db.Message) []templates.ThreadNode {
+	if len(messages) == 0 {
+		return nil
+	}
+
+	// 1. Group by parent and index by URI
+	byParent := make(map[string][]db.Message)
+	uriMap := make(map[string]db.Message)
+	for _, msg := range messages {
+		uriMap[msg.ATURI] = msg
+	}
+
+	var roots []db.Message
+	for _, msg := range messages {
+		_, parentInSet := uriMap[msg.ParentATURI]
+		if msg.ParentATURI == "" || !parentInSet {
+			roots = append(roots, msg)
+		} else {
+			byParent[msg.ParentATURI] = append(byParent[msg.ParentATURI], msg)
+		}
+	}
+
+	// 2. Recursive build
+	var build func(msg db.Message, depth int) templates.ThreadNode
+	build = func(msg db.Message, depth int) templates.ThreadNode {
+		node := templates.ThreadNode{
+			FeedRow: templates.FeedRow{
+				ATURI:     msg.ATURI,
+				ATDID:     msg.ATDID,
+				Type:      msg.Type,
+				CreatedAt: msg.CreatedAt,
+				Text:      extractSSBText(msg.RawSSBJson),
+				HasImage:  hasSSBImage(msg.RawSSBJson),
+				ImageRef:  getSSBImageRef(msg.RawSSBJson),
+			},
+			Depth: depth,
+		}
+		// Sort children by date
+		children := byParent[msg.ATURI]
+		sort.Slice(children, func(i, j int) bool {
+			return children[i].CreatedAt.Before(children[j].CreatedAt)
+		})
+
+		for _, child := range children {
+			// Limit depth to 12 as a safety measure
+			if depth < 12 {
+				node.Replies = append(node.Replies, build(child, depth+1))
+			}
+		}
+		return node
+	}
+
+	// Sort roots by date
+	sort.Slice(roots, func(i, j int) bool {
+		return roots[i].CreatedAt.Before(roots[j].CreatedAt)
+	})
+
+	var res []templates.ThreadNode
+	for _, root := range roots {
+		res = append(res, build(root, 0))
+	}
+	return res
 }
 
 func (h *UIHandler) handleFailures(w http.ResponseWriter, r *http.Request) {
