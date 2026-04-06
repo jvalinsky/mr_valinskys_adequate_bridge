@@ -1897,6 +1897,9 @@ func (m *mockDatabase) ListMessageTypes(ctx context.Context) ([]string, error) {
 func (m *mockDatabase) GetMessage(ctx context.Context, atURI string) (*db.Message, error) {
 	return nil, m.err
 }
+func (m *mockDatabase) ListThread(ctx context.Context, rootURI string) ([]db.Message, error) {
+	return nil, m.err
+}
 func (m *mockDatabase) GetPublishFailures(ctx context.Context, limit int) ([]db.Message, error) {
 	return nil, m.err
 }
@@ -2366,6 +2369,9 @@ func (m *granularMockDatabase) GetMessage(ctx context.Context, atURI string) (*d
 	if m.getMessageErr != nil {
 		return nil, m.getMessageErr
 	}
+	return nil, m.err
+}
+func (m *granularMockDatabase) ListThread(ctx context.Context, rootURI string) ([]db.Message, error) {
 	return nil, m.err
 }
 func (m *granularMockDatabase) GetLatestDeferredReason(ctx context.Context) (string, bool, error) {
