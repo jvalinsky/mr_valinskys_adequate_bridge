@@ -3232,3 +3232,86 @@ func TestStartRateLimiterCleanupDisabled(t *testing.T) {
 	p.StartRateLimiterCleanup(ctx, time.Second, time.Minute)
 	// No panic, no goroutine started
 }
+
+func TestProcessRecordGeneratesReplyTangles(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open memory db: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	rootURI := "at://did:plc:alice/app.bsky.feed.post/root"
+	
+	// Seed root message
+	if err := database.AddMessage(ctx, db.Message{
+		ATURI:      rootURI,
+		ATCID:      "bafy-root",
+		SSBMsgRef:  "%rootmsg.sha256",
+		ATDID:      "did:plc:alice",
+		Type:       mapper.RecordTypePost,
+		RawATJson:  `{"text":"root"}`,
+		RawSSBJson: `{"type":"post","text":"root"}`,
+	}); err != nil {
+		t.Fatalf("seed root message: %v", err)
+	}
+
+	publisher := &recordingPublisher{}
+	processor := NewProcessor(database, log.New(io.Discard, "", 0), WithPublisher(publisher))
+
+	replyRecord := []byte(`{
+		"text":"reply",
+		"reply":{
+			"root":{"uri":"at://did:plc:alice/app.bsky.feed.post/root","cid":"bafy-root"},
+			"parent":{"uri":"at://did:plc:alice/app.bsky.feed.post/root","cid":"bafy-root"}
+		},
+		"createdAt":"2026-01-01T00:00:00Z"
+	}`)
+
+	err = processor.ProcessRecord(
+		ctx,
+		"did:plc:alice",
+		"at://did:plc:alice/app.bsky.feed.post/reply-1",
+		"bafy-reply",
+		mapper.RecordTypePost,
+		replyRecord,
+	)
+	if err != nil {
+		t.Fatalf("process reply record: %v", err)
+	}
+
+	stored, err := database.GetMessage(ctx, "at://did:plc:alice/app.bsky.feed.post/reply-1")
+	if err != nil {
+		t.Fatalf("get reply message: %v", err)
+	}
+	
+	var mapped map[string]interface{}
+	if err := json.Unmarshal([]byte(stored.RawSSBJson), &mapped); err != nil {
+		t.Fatalf("unmarshal mapped ssb json: %v", err)
+	}
+
+	// Verify legacy fields
+	if mapped["root"] != "%rootmsg.sha256" {
+		t.Fatalf("expected legacy root, got %v", mapped["root"])
+	}
+	if mapped["branch"] != "%rootmsg.sha256" {
+		t.Fatalf("expected legacy branch, got %v", mapped["branch"])
+	}
+
+	// Verify SIP-009 Tangles
+	tangles, ok := mapped["tangles"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected tangles map, got %T", mapped["tangles"])
+	}
+	comment, ok := tangles["comment"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected comment tangle, got %T", tangles["comment"])
+	}
+	if comment["root"] != "%rootmsg.sha256" {
+		t.Fatalf("expected tangle root, got %v", comment["root"])
+	}
+	previous, ok := comment["previous"].([]interface{})
+	if !ok || len(previous) != 1 || previous[0] != "%rootmsg.sha256" {
+		t.Fatalf("expected single previous parent, got %v", comment["previous"])
+	}
+}

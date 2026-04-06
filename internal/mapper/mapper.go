@@ -351,6 +351,20 @@ func ReplaceATProtoRefs(msg map[string]interface{}, lookupURI func(string) strin
 		if ssbRef := lookupURI(parentURI); ssbRef != "" {
 			msg["branch"] = ssbRef
 			delete(msg, "_atproto_reply_parent")
+
+			// SIP-009 Tangles support: add "comment" tangle using root and parent (branch).
+			// We only do this if "root" is also available, which is standard for BSky posts.
+			if ssbRoot, ok := msg["root"].(string); ok && ssbRoot != "" {
+				tangles, _ := msg["tangles"].(map[string]interface{})
+				if tangles == nil {
+					tangles = make(map[string]interface{})
+				}
+				tangles["comment"] = map[string]interface{}{
+					"root":     ssbRoot,
+					"previous": []string{ssbRef},
+				}
+				msg["tangles"] = tangles
+			}
 		}
 	}
 
