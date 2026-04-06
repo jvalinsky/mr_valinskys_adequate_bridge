@@ -211,6 +211,10 @@ func main() {
 						Value: "127.0.0.1:8081",
 						Usage: "Optional MCP SSE Server listen address (e.g. 127.0.0.1:8081). If empty, MCP server is disabled.",
 					},
+					&cli.StringFlag{
+						Name:  "metrics-listen-addr",
+						Usage: "Optional Prometheus metrics listen address (e.g. 127.0.0.1:2112). If empty, metrics server is disabled.",
+					},
 					&cli.IntFlag{
 						Name:  "max-msgs-per-did-per-min",
 						Value: 300,

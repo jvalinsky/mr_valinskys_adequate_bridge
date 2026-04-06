@@ -18,6 +18,7 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/bridge"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/firehose"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/metrics"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/publishqueue"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/room"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
@@ -26,6 +27,7 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/web/handlers"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/xrpc"
 	"github.com/mark3labs/mcp-go/server"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 type BridgeApp struct {
@@ -39,6 +41,7 @@ type BridgeApp struct {
 	logger          *log.Logger
 	mcpServer       *server.MCPServer
 	followerTracker *bridge.FollowerTracker
+	metricsSrv      *http.Server
 
 	cfg AppConfig
 }
@@ -62,6 +65,7 @@ type AppConfig struct {
 	PLCURL              string
 	AtprotoInsecure     bool
 	MCPListenAddr       string
+	MetricsListenAddr   string
 	MaxMsgsPerDIDPerMin int
 }
 
@@ -286,6 +290,15 @@ func (a *BridgeApp) Start(ctx context.Context) error {
 	setBridgeStateBestEffort(ctx, a.db, bridgeRuntimeStatusKey, "live", a.logger)
 	setBridgeStateBestEffort(ctx, a.db, bridgeRuntimeStartedAtKey, time.Now().UTC().Format(time.RFC3339), a.logger)
 
+	if a.cfg.MetricsListenAddr != "" {
+		a.startMetricsUpdater(ctx)
+		go func() {
+			if err := a.startMetricsServer(ctx); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				a.logger.Printf("metrics server error: %v", err)
+			}
+		}()
+	}
+
 	if a.cfg.MCPListenAddr != "" && a.mcpServer != nil {
 		go func() {
 			err := a.startMCPServer(ctx)
@@ -320,6 +333,57 @@ func (a *BridgeApp) startMCPServer(ctx context.Context) error {
 	}()
 
 	return srv.ListenAndServe()
+}
+
+func (a *BridgeApp) startMetricsServer(ctx context.Context) error {
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.Handler())
+
+	a.metricsSrv = &http.Server{
+		Addr:    a.cfg.MetricsListenAddr,
+		Handler: mux,
+	}
+
+	a.logger.Printf("event=metrics_server_start addr=%s", a.cfg.MetricsListenAddr)
+
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = a.metricsSrv.Shutdown(shutdownCtx)
+	}()
+
+	return a.metricsSrv.ListenAndServe()
+}
+
+func (a *BridgeApp) startMetricsUpdater(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				a.updateMetrics(ctx)
+			}
+		}
+	}()
+}
+
+func (a *BridgeApp) updateMetrics(ctx context.Context) {
+	if a.db != nil {
+		if active, err := a.db.CountActiveBridgedAccounts(ctx); err == nil {
+			metrics.ActiveAccounts.Set(float64(active))
+		}
+		if deferred, err := a.db.CountDeferredMessages(ctx); err == nil {
+			metrics.DeferredBacklog.Set(float64(deferred))
+		}
+	}
+	if a.indexer != nil {
+		metrics.IndexerQueueDepth.Set(float64(a.indexer.QueueDepth()))
+	}
 }
 
 func (a *BridgeApp) StartIndexerPipeline(ctx context.Context) error {

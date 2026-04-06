@@ -8,6 +8,7 @@ import (
 	"log"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/metrics"
 	"sync"
 )
 
@@ -120,6 +121,11 @@ func (p *WorkerPublisher) runLane(idx int, lane <-chan publishRequest) {
 	defer p.wg.Done()
 	for req := range lane {
 		ref, err := p.delegate.Publish(req.ctx, req.atDID, req.content)
+		if err != nil {
+			metrics.MessagesFailed.Inc()
+		} else {
+			metrics.MessagesPublished.Inc()
+		}
 		req.resp <- publishResponse{ref: ref, err: err}
 	}
 	p.logger.Printf("event=publish_lane_stopped lane=%d", idx)

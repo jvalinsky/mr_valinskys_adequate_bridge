@@ -94,6 +94,10 @@ func New(database *db.DB, resolver backfill.HostResolver, fetcher backfill.RepoF
 	}
 }
 
+func (s *Service) QueueDepth() int {
+	return len(s.queue)
+}
+
 func (s *Service) Start(ctx context.Context) {
 	go s.runWorker(ctx)
 }

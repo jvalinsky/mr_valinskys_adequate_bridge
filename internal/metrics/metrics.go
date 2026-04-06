@@ -55,4 +55,9 @@ var (
 		Name: "bridge_rate_limited_total",
 		Help: "Total number of messages rate-limited per-DID",
 	})
+	
+	IndexerQueueDepth = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "bridge_indexer_queue_depth",
+		Help: "Current number of DIDs waiting in the indexer backfill/sync queue",
+	})
 )

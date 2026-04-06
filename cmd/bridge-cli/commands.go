@@ -233,6 +233,7 @@ func runStart(c *cli.Context) error {
 		PLCURL:              c.String("plc-url"),
 		AtprotoInsecure:     c.Bool("atproto-insecure"),
 		MCPListenAddr:       c.String("mcp-listen-addr"),
+		MetricsListenAddr:   c.String("metrics-listen-addr"),
 		MaxMsgsPerDIDPerMin: c.Int("max-msgs-per-did-per-min"),
 	}
 

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/metrics"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto"
 	atfirehose "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/firehose"
 	atrepo "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/repo"
@@ -204,6 +205,7 @@ func (c *Client) handleStream(ctx context.Context, con *websocket.Conn) error {
 					"repo", event.RepoCommit.Repo)
 			}
 			lastSeq = event.RepoCommit.Seq
+			metrics.FirehoseLag.Set(float64(lastSeq))
 			if err := c.handleRepoCommit(ctx, event.RepoCommit); err != nil {
 				return err
 			}
