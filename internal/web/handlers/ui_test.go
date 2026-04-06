@@ -2827,3 +2827,154 @@ func TestHandlePostActionInvalidAccount(t *testing.T) {
 		t.Fatalf("expected 400, got %d: %s", rr.Code, rr.Body.String())
 	}
 }
+
+func TestHandleAccountsPage(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	ctx := context.Background()
+	database.AddBridgedAccount(ctx, db.BridgedAccount{
+		ATDID:     "did:plc:alice",
+		SSBFeedID: "@alice.test.ed25519",
+		Active:    true,
+	})
+
+	router := chi.NewRouter()
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).Mount(router)
+
+	req := httptest.NewRequest(http.MethodGet, "/accounts", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "did:plc:alice") {
+		t.Error("expected account DID in response")
+	}
+}
+
+func TestHandleAccountsAddMissingFields(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	router := chi.NewRouter()
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).Mount(router)
+
+	req := httptest.NewRequest(http.MethodPost, "/accounts", strings.NewReader("at_did=did:plc:test"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rr.Code)
+	}
+}
+
+func TestHandleAccountsAddSuccess(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	router := chi.NewRouter()
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).Mount(router)
+
+	form := url.Values{}
+	form.Set("at_did", "did:plc:newaccount")
+	form.Set("ssb_feed_id", "@newaccount.test.ed25519")
+
+	req := httptest.NewRequest(http.MethodPost, "/accounts", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303 redirect, got %d", rr.Code)
+	}
+
+	// Verify account was added
+	ctx := context.Background()
+	acc, err := database.GetBridgedAccount(ctx, "did:plc:newaccount")
+	if err != nil {
+		t.Fatalf("failed to get account: %v", err)
+	}
+	if !acc.Active {
+		t.Error("expected account to be active")
+	}
+}
+
+func TestSendDashboardStats(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	ctx := context.Background()
+	database.AddBridgedAccount(ctx, db.BridgedAccount{
+		ATDID:     "did:plc:alice",
+		SSBFeedID: "@alice.test.ed25519",
+		Active:    true,
+	})
+
+	handler := NewUIHandler(database, nil, nil, nil, &mockSSBStatus{})
+
+	rr := &flushingResponseRecorder{ResponseRecorder: httptest.NewRecorder()}
+
+	req := httptest.NewRequest(http.MethodGet, "/events", nil)
+	req = req.WithContext(context.Background())
+
+	handler.sendDashboardStats(rr, req, rr)
+
+	body := rr.Body.String()
+	if !strings.Contains(body, "data:") {
+		t.Errorf("expected SSE data prefix, got: %s", body)
+	}
+	if !strings.Contains(body, "accountCount") {
+		t.Errorf("expected accountCount in response, got: %s", body)
+	}
+	if !rr.FlushCalled {
+		t.Error("expected Flush to be called")
+	}
+}
+
+type flushingResponseRecorder struct {
+	*httptest.ResponseRecorder
+	FlushCalled bool
+}
+
+func (f *flushingResponseRecorder) Flush() {
+	f.FlushCalled = true
+}
+
+func TestHandleFailuresRetry(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	ctx := context.Background()
+	database.AddBridgedAccount(ctx, db.BridgedAccount{
+		ATDID:     "did:plc:alice",
+		SSBFeedID: "@alice.test.ed25519",
+		Active:    true,
+	})
+
+	// Add a failed message
+	database.AddMessage(ctx, db.Message{
+		ATURI:        "at://alice/post/fail1",
+		ATCID:        "c1",
+		ATDID:        "did:plc:alice",
+		Type:         "post",
+		MessageState: db.MessageStateFailed,
+	})
+
+	router := chi.NewRouter()
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).Mount(router)
+
+	req := httptest.NewRequest(http.MethodPost, "/failures/retry", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d", rr.Code)
+	}
+	location := rr.Header().Get("Location")
+	if !strings.Contains(location, "/failures") {
+		t.Errorf("expected redirect to /failures, got %s", location)
+	}
+}

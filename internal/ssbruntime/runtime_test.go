@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
 	_ "modernc.org/sqlite"
 )
 
@@ -359,4 +360,84 @@ func TestOpenWithCorruptLog2(t *testing.T) {
 		t.Fatalf("re-open runtime: %v", err)
 	}
 	defer rt2.Close()
+}
+
+func TestGossipDBAdapter(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "bridge.sqlite")
+	database, err := db.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer database.Close()
+
+	adapter := &GossipDBAdapter{db: database}
+
+	// Test AddKnownPeer
+	pubKey := []byte("testpubkey12345678901234567890123456")
+	err = adapter.AddKnownPeer(ctx, "127.0.0.1:8008", pubKey)
+	if err != nil {
+		t.Fatalf("AddKnownPeer: %v", err)
+	}
+
+	// Test GetKnownPeers
+	peers, err := adapter.GetKnownPeers(ctx)
+	if err != nil {
+		t.Fatalf("GetKnownPeers: %v", err)
+	}
+	if len(peers) != 1 {
+		t.Fatalf("expected 1 peer, got %d", len(peers))
+	}
+	if peers[0].Addr != "127.0.0.1:8008" {
+		t.Errorf("expected Addr=127.0.0.1:8008, got %s", peers[0].Addr)
+	}
+}
+
+func TestRuntimeGetPeersWithNilNode(t *testing.T) {
+	rt := &Runtime{}
+	peers := rt.GetPeers()
+	if peers != nil {
+		t.Errorf("expected nil peers for nil node, got %v", peers)
+	}
+}
+
+func TestRuntimeGetEBTStateWithNilNode(t *testing.T) {
+	rt := &Runtime{}
+	state := rt.GetEBTState()
+	if state != nil {
+		t.Errorf("expected nil state for nil node, got %v", state)
+	}
+}
+
+func TestRuntimeConnectPeerWithNilNode(t *testing.T) {
+	rt := &Runtime{}
+	err := rt.ConnectPeer(context.Background(), "127.0.0.1:8008", make([]byte, 32))
+	if err == nil {
+		t.Error("expected error for nil node")
+	}
+}
+
+func TestRuntimeConnectPeerWithInvalidKeyLength(t *testing.T) {
+	ctx := context.Background()
+	rt, err := Open(ctx, Config{
+		RepoPath:   filepath.Join(t.TempDir(), "repo"),
+		MasterSeed: []byte("test-master-seed"),
+	}, log.New(io.Discard, "", 0))
+	if err != nil {
+		t.Fatalf("open runtime: %v", err)
+	}
+	defer rt.Close()
+
+	err = rt.ConnectPeer(ctx, "127.0.0.1:8008", []byte("short"))
+	if err == nil {
+		t.Error("expected error for invalid key length")
+	}
+}
+
+func TestRuntimeBlobStoreWithNilNode(t *testing.T) {
+	rt := &Runtime{}
+	bs := rt.BlobStore()
+	if bs != nil {
+		t.Errorf("expected nil blob store for nil node, got %v", bs)
+	}
 }

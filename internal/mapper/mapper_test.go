@@ -946,3 +946,25 @@ func TestReplaceATProtoRefsAdditionalBranches(t *testing.T) {
 		t.Errorf("Expected unresolved parent to remain")
 	}
 }
+
+// FuzzMapRecord ensures MapRecord does not panic on arbitrary external input.
+// The mapper is the first code to process untrusted ATProto payloads from the firehose.
+func FuzzMapRecord(f *testing.F) {
+	// Seed with minimal valid examples of each supported collection.
+	f.Add(RecordTypePost, "did:plc:fuzz", []byte(`{"text":"hello","createdAt":"2024-01-01T00:00:00Z"}`))
+	f.Add(RecordTypeLike, "did:plc:fuzz", []byte(`{"subject":{"uri":"at://did:plc:x/app.bsky.feed.post/1","cid":"bafy"},"createdAt":"2024-01-01T00:00:00Z"}`))
+	f.Add(RecordTypeRepost, "did:plc:fuzz", []byte(`{"subject":{"uri":"at://did:plc:x/app.bsky.feed.post/1","cid":"bafy"},"createdAt":"2024-01-01T00:00:00Z"}`))
+	f.Add(RecordTypeFollow, "did:plc:fuzz", []byte(`{"subject":"did:plc:y","createdAt":"2024-01-01T00:00:00Z"}`))
+	f.Add(RecordTypeBlock, "did:plc:fuzz", []byte(`{"subject":"did:plc:y","createdAt":"2024-01-01T00:00:00Z"}`))
+	f.Add(RecordTypeProfile, "did:plc:fuzz", []byte(`{"displayName":"Fuzz","description":"testing"}`))
+	f.Add(RecordTypeList, "did:plc:fuzz", []byte(`{"name":"test list","purpose":"app.bsky.graph.defs#modlist","createdAt":"2024-01-01T00:00:00Z"}`))
+	f.Add(RecordTypeListItem, "did:plc:fuzz", []byte(`{"subject":"did:plc:y","list":"at://did:plc:x/app.bsky.graph.list/1","createdAt":"2024-01-01T00:00:00Z"}`))
+	f.Add(RecordTypeThreadgate, "did:plc:fuzz", []byte(`{"post":"at://did:plc:x/app.bsky.feed.post/1","createdAt":"2024-01-01T00:00:00Z"}`))
+	f.Add("app.bsky.unknown.type", "did:plc:fuzz", []byte(`{}`))
+	f.Add("", "", []byte(nil))
+
+	f.Fuzz(func(t *testing.T, recordType, atDID string, rawJSON []byte) {
+		// Must not panic for any input. Errors are acceptable.
+		MapRecord(recordType, atDID, rawJSON)
+	})
+}

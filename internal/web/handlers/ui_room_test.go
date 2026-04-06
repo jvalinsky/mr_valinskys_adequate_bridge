@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -265,3 +266,273 @@ func (f *fakeRoomOpsProvider) GetRoomPeers(ctx context.Context) ([]PeerStatus, e
 }
 
 func (f *fakeRoomOpsProvider) Close() error { return nil }
+
+func TestRoomMembersPage(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	router := chi.NewRouter()
+	provider := &fakeRoomOpsProvider{
+		members: []templates.RoomMemberRow{
+			{ID: 1, FeedID: "@alice.test.ed25519", Role: "admin"},
+		},
+	}
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).WithRoomOps(provider).Mount(router)
+
+	req := httptest.NewRequest(http.MethodGet, "/room/members", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "@alice.test.ed25519") {
+		t.Error("expected member feed in response")
+	}
+}
+
+func TestRoomMembersListError(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	router := chi.NewRouter()
+	provider := &fakeRoomOpsProvider{
+		overview: RoomOverview{Available: true},
+	}
+	provider.overviewErr = fmt.Errorf("room unavailable")
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).WithRoomOps(provider).Mount(router)
+
+	req := httptest.NewRequest(http.MethodGet, "/room/members", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+}
+
+func TestRoomAliasesPage(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	router := chi.NewRouter()
+	provider := &fakeRoomOpsProvider{
+		aliases: []templates.RoomAliasRow{
+			{Name: "#test:example.com", OwnerFeed: "@owner.test.ed25519"},
+		},
+	}
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).WithRoomOps(provider).Mount(router)
+
+	req := httptest.NewRequest(http.MethodGet, "/room/aliases", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+}
+
+func TestRoomInvitesPage(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	router := chi.NewRouter()
+	provider := &fakeRoomOpsProvider{
+		invites: []templates.RoomInviteRow{
+			{ID: 1, Status: "active", Active: true},
+		},
+	}
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).WithRoomOps(provider).Mount(router)
+
+	// Invites are on the aliases/invites page
+	req := httptest.NewRequest(http.MethodGet, "/room/aliases", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+}
+
+func TestRoomDeniedPage(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	router := chi.NewRouter()
+	provider := &fakeRoomOpsProvider{
+		denied: []templates.RoomDeniedKeyRow{
+			{ID: 1, FeedID: "@bad.test.ed25519"},
+		},
+	}
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).WithRoomOps(provider).Mount(router)
+
+	// Denied is on the moderation page
+	req := httptest.NewRequest(http.MethodGet, "/room/moderation", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+}
+
+func TestRoomAttendantsPage(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	router := chi.NewRouter()
+	provider := &fakeRoomOpsProvider{
+		attendants: []templates.RoomAttendantRow{
+			{FeedID: "@attendant.test.ed25519", Active: true},
+		},
+	}
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).WithRoomOps(provider).Mount(router)
+
+	req := httptest.NewRequest(http.MethodGet, "/room/attendants", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+}
+
+func TestRoomMemberRemove(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	router := chi.NewRouter()
+	provider := &fakeRoomOpsProvider{}
+	removed := false
+	provider.memberRemoveFn = func(ctx context.Context, memberID int64) error {
+		removed = true
+		if memberID != 42 {
+			return fmt.Errorf("unexpected member ID: %d", memberID)
+		}
+		return nil
+	}
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).WithRoomOps(provider).Mount(router)
+
+	req := httptest.NewRequest(http.MethodPost, "/room/members/remove", strings.NewReader("member_id=42"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d", rr.Code)
+	}
+	if !removed {
+		t.Error("expected memberRemoveFn to be called")
+	}
+}
+
+func TestRoomInviteRevoke(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	router := chi.NewRouter()
+	provider := &fakeRoomOpsProvider{}
+	revoked := false
+	provider.inviteRevokeFn = func(ctx context.Context, inviteID int64) error {
+		revoked = true
+		return nil
+	}
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).WithRoomOps(provider).Mount(router)
+
+	req := httptest.NewRequest(http.MethodPost, "/room/invites/revoke", strings.NewReader("invite_id=5"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d", rr.Code)
+	}
+	if !revoked {
+		t.Error("expected inviteRevokeFn to be called")
+	}
+}
+
+func TestRoomAliasRevoke(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	router := chi.NewRouter()
+	provider := &fakeRoomOpsProvider{}
+	revoked := false
+	provider.aliasRevokeFn = func(ctx context.Context, alias string) error {
+		revoked = true
+		return nil
+	}
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).WithRoomOps(provider).Mount(router)
+
+	req := httptest.NewRequest(http.MethodPost, "/room/aliases/revoke", strings.NewReader("alias=%23test%3Aexample.com"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d", rr.Code)
+	}
+	if !revoked {
+		t.Error("expected aliasRevokeFn to be called")
+	}
+}
+
+func TestRoomDeniedAdd(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	router := chi.NewRouter()
+	provider := &fakeRoomOpsProvider{}
+	added := false
+	provider.deniedAddFn = func(ctx context.Context, feed refs.FeedRef, comment string) error {
+		added = true
+		return nil
+	}
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).WithRoomOps(provider).Mount(router)
+
+	form := url.Values{}
+	form.Set("feed_id", "@paeusVttag54yJmEQsH1eAe3K4xpVnnPvE3u26g136I=.ed25519")
+	form.Set("comment", "spam")
+
+	req := httptest.NewRequest(http.MethodPost, "/room/denied/add", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d: %s", rr.Code, rr.Body.String())
+	}
+	loc := rr.Header().Get("Location")
+	t.Logf("redirect location: %s", loc)
+	if !added {
+		t.Error("expected deniedAddFn to be called")
+	}
+}
+
+func TestRoomDeniedRemove(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	router := chi.NewRouter()
+	provider := &fakeRoomOpsProvider{}
+	removed := false
+	provider.deniedRemoveFn = func(ctx context.Context, deniedID int64) error {
+		removed = true
+		return nil
+	}
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).WithRoomOps(provider).Mount(router)
+
+	req := httptest.NewRequest(http.MethodPost, "/room/denied/remove", strings.NewReader("denied_id=3"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d", rr.Code)
+	}
+	if !removed {
+		t.Error("expected deniedRemoveFn to be called")
+	}
+}

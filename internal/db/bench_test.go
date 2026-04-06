@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -72,8 +73,8 @@ func BenchmarkListMessages(b *testing.B) {
 
 	for i := 0; i < 100; i++ {
 		msg := Message{
-			ATURI:        "at://did:plc:bench/app.bsky.feed.post/list" + string(rune(i%26)),
-			ATCID:        "bafy-list" + string(rune(i%26)),
+			ATURI:        fmt.Sprintf("at://did:plc:bench/app.bsky.feed.post/list%d", i),
+			ATCID:        fmt.Sprintf("bafy-list%d", i),
 			ATDID:        "did:plc:bench",
 			Type:         "app.bsky.feed.post",
 			MessageState: MessageStatePublished,
@@ -270,8 +271,8 @@ func BenchmarkListMessagesPage(b *testing.B) {
 
 	for i := 0; i < 100; i++ {
 		msg := Message{
-			ATURI:        "at://did:plc:bench/app.bsky.feed.post/page" + string(rune(i%26)),
-			ATCID:        "bafy-page" + string(rune(i%26)),
+			ATURI:        fmt.Sprintf("at://did:plc:bench/app.bsky.feed.post/page%d", i),
+			ATCID:        fmt.Sprintf("bafy-page%d", i),
 			ATDID:        "did:plc:bench",
 			Type:         "app.bsky.feed.post",
 			MessageState: MessageStatePublished,

@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	stdlog "log"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -538,5 +539,199 @@ func anyValueToString(v *commonv1.AnyValue) string {
 		return strconv.FormatFloat(val.DoubleValue, 'f', -1, 64)
 	default:
 		return ""
+	}
+}
+
+func TestOTLPSlogHandlerEnabled(t *testing.T) {
+	var buf bytes.Buffer
+	h := &otlpSlogHandler{
+		level: slog.LevelInfo,
+		local: &buf,
+	}
+
+	ctx := context.Background()
+
+	// Debug level should be disabled
+	if h.Enabled(ctx, slog.LevelDebug) {
+		t.Error("Expected Debug level to be disabled")
+	}
+
+	// Info level should be enabled
+	if !h.Enabled(ctx, slog.LevelInfo) {
+		t.Error("Expected Info level to be enabled")
+	}
+
+	// Warn level should be enabled
+	if !h.Enabled(ctx, slog.LevelWarn) {
+		t.Error("Expected Warn level to be enabled")
+	}
+
+	// Error level should be enabled
+	if !h.Enabled(ctx, slog.LevelError) {
+		t.Error("Expected Error level to be enabled")
+	}
+}
+
+func TestOTLPSlogHandlerHandle(t *testing.T) {
+	var buf bytes.Buffer
+	h := &otlpSlogHandler{
+		level: slog.LevelInfo,
+		local: &buf,
+		attrs: []slog.Attr{slog.String("component", "test")},
+	}
+
+	ctx := context.Background()
+	record := slog.NewRecord(time.Now(), slog.LevelInfo, "test message", 0)
+	record.AddAttrs(slog.Int("count", 42))
+
+	err := h.Handle(ctx, record)
+	if err != nil {
+		t.Fatalf("Handle returned error: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "test message") {
+		t.Errorf("Expected output to contain message, got: %s", output)
+	}
+	if !strings.Contains(output, "component=test") {
+		t.Errorf("Expected output to contain component attr, got: %s", output)
+	}
+	if !strings.Contains(output, "count=42") {
+		t.Errorf("Expected output to contain count attr, got: %s", output)
+	}
+}
+
+func TestOTLPSlogHandlerHandleSkipsBelowLevel(t *testing.T) {
+	var buf bytes.Buffer
+	h := &otlpSlogHandler{
+		level: slog.LevelWarn,
+		local: &buf,
+	}
+
+	ctx := context.Background()
+	record := slog.NewRecord(time.Now(), slog.LevelInfo, "test message", 0)
+
+	err := h.Handle(ctx, record)
+	if err != nil {
+		t.Fatalf("Handle returned error: %v", err)
+	}
+
+	if buf.String() != "" {
+		t.Errorf("Expected no output for below-level record, got: %s", buf.String())
+	}
+}
+
+func TestOTLPSlogHandlerWithAttrs(t *testing.T) {
+	var buf bytes.Buffer
+	h := &otlpSlogHandler{
+		level: slog.LevelInfo,
+		local: &buf,
+		attrs: []slog.Attr{slog.String("a", "1")},
+	}
+
+	h2 := h.WithAttrs([]slog.Attr{slog.String("b", "2")}).(*otlpSlogHandler)
+
+	// Original handler should be unchanged
+	if len(h.attrs) != 1 {
+		t.Errorf("Expected original handler to have 1 attr, got %d", len(h.attrs))
+	}
+
+	// New handler should have both attrs
+	if len(h2.attrs) != 2 {
+		t.Errorf("Expected new handler to have 2 attrs, got %d", len(h2.attrs))
+	}
+	if h2.attrs[0].Key != "a" || h2.attrs[0].Value.String() != "1" {
+		t.Errorf("Expected first attr to be a=1")
+	}
+	if h2.attrs[1].Key != "b" || h2.attrs[1].Value.String() != "2" {
+		t.Errorf("Expected second attr to be b=2")
+	}
+}
+
+func TestOTLPSlogHandlerWithGroup(t *testing.T) {
+	var buf bytes.Buffer
+	h := &otlpSlogHandler{
+		level: slog.LevelInfo,
+		local: &buf,
+		group: "parent",
+	}
+
+	h2 := h.WithGroup("child").(*otlpSlogHandler)
+
+	// Original handler should be unchanged
+	if h.group != "parent" {
+		t.Errorf("Expected original group to be 'parent', got %q", h.group)
+	}
+
+	// New handler should have combined group
+	if h2.group != "parent.child" {
+		t.Errorf("Expected new group to be 'parent.child', got %q", h2.group)
+	}
+}
+
+func TestOTLPSlogHandlerWithGroupEmpty(t *testing.T) {
+	var buf bytes.Buffer
+	h := &otlpSlogHandler{
+		level: slog.LevelInfo,
+		local: &buf,
+		group: "",
+	}
+
+	h2 := h.WithGroup("first").(*otlpSlogHandler)
+	if h2.group != "first" {
+		t.Errorf("Expected group to be 'first', got %q", h2.group)
+	}
+}
+
+func TestAttrsToMap(t *testing.T) {
+	attrs := []slog.Attr{
+		slog.String("name", "test"),
+		slog.Int("count", 42),
+		slog.Bool("flag", true),
+	}
+
+	m := attrsToMap(attrs)
+
+	if m["name"] != "test" {
+		t.Errorf("Expected name='test', got %v", m["name"])
+	}
+	if m["count"] != int64(42) {
+		t.Errorf("Expected count=42, got %v", m["count"])
+	}
+	if m["flag"] != true {
+		t.Errorf("Expected flag=true, got %v", m["flag"])
+	}
+}
+
+func TestAttrsToMapEmpty(t *testing.T) {
+	m := attrsToMap(nil)
+	if len(m) != 0 {
+		t.Errorf("Expected empty map for nil attrs, got %d entries", len(m))
+	}
+}
+
+func TestRuntimeSetupDefaultSlogger(t *testing.T) {
+	var buf bytes.Buffer
+	rt, err := NewRuntime(Config{
+		ServiceName: "test",
+		LocalOutput: "text",
+		LocalWriter: &buf,
+	})
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+
+	rt.SetupDefaultSlogger(slog.LevelInfo)
+
+	// Verify default logger is set
+	defaultLogger := slog.Default()
+	if defaultLogger == nil {
+		t.Error("Expected default logger to be set")
+	}
+
+	// Log something and verify it appears in output
+	slog.Info("test default log")
+	if !strings.Contains(buf.String(), "test default log") {
+		t.Errorf("Expected default log in output, got: %s", buf.String())
 	}
 }

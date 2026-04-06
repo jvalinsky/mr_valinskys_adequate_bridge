@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -15,6 +16,7 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/mapper"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto"
+	"golang.org/x/time/rate"
 )
 
 type mockPublisher struct {
@@ -63,14 +65,19 @@ func (p *recordingPublisher) snapshot() []map[string]interface{} {
 }
 
 type mockFeedResolver struct {
-	mu      sync.Mutex
-	refs    map[string]string
-	lookups map[string]int
-	waitCh  chan struct{}
-	err     error
+	mu        sync.Mutex
+	refs      map[string]string
+	lookups   map[string]int
+	waitCh    chan struct{}
+	err       error
+	ready     chan struct{}
+	readyOnce sync.Once
 }
 
 func (m *mockFeedResolver) ResolveFeed(ctx context.Context, did string) (string, error) {
+	if m.ready != nil {
+		m.readyOnce.Do(func() { close(m.ready) })
+	}
 	if m.waitCh != nil {
 		select {
 		case <-m.waitCh:
@@ -98,14 +105,19 @@ func (m *mockFeedResolver) lookupCount(did string) int {
 }
 
 type stubRecordFetcher struct {
-	mu      sync.Mutex
-	records map[string]FetchedRecord
-	errors  map[string]error
-	fetches map[string]int
-	waitCh  chan struct{}
+	mu        sync.Mutex
+	records   map[string]FetchedRecord
+	errors    map[string]error
+	fetches   map[string]int
+	waitCh    chan struct{}
+	ready     chan struct{}
+	readyOnce sync.Once
 }
 
 func (f *stubRecordFetcher) FetchRecord(ctx context.Context, atURI string) (FetchedRecord, error) {
+	if f.ready != nil {
+		f.readyOnce.Do(func() { close(f.ready) })
+	}
 	if f.waitCh != nil {
 		select {
 		case <-f.waitCh:
@@ -1075,6 +1087,7 @@ func TestDependencyResolverDeduplicatesInFlightFetches(t *testing.T) {
 	waitCh := make(chan struct{})
 	fetcher := &stubRecordFetcher{
 		waitCh: waitCh,
+		ready:  make(chan struct{}),
 		records: map[string]FetchedRecord{
 			"at://did:plc:bob/app.bsky.feed.post/shared": {
 				ATDID:      "did:plc:bob",
@@ -1104,7 +1117,8 @@ func TestDependencyResolverDeduplicatesInFlightFetches(t *testing.T) {
 		}()
 	}
 
-	time.Sleep(50 * time.Millisecond)
+	<-fetcher.ready   // G1 has entered FetchRecord and is about to block
+	runtime.Gosched() // yield to let G2 join the inflight call before we release G1
 	close(waitCh)
 	wg.Wait()
 	close(errCh)
@@ -1129,6 +1143,7 @@ func TestLookupFeedDeduplicatesInFlightResolution(t *testing.T) {
 	waitCh := make(chan struct{})
 	feedResolver := &mockFeedResolver{
 		waitCh: waitCh,
+		ready:  make(chan struct{}),
 		refs: map[string]string{
 			"did:plc:bob": "@bob.ed25519",
 		},
@@ -1151,7 +1166,8 @@ func TestLookupFeedDeduplicatesInFlightResolution(t *testing.T) {
 		}()
 	}
 
-	time.Sleep(50 * time.Millisecond)
+	<-feedResolver.ready // G1 has entered ResolveFeed and is about to block
+	runtime.Gosched()    // yield to let G2 join the inflight call before we release G1
 	close(waitCh)
 	wg.Wait()
 	close(results)
@@ -2825,4 +2841,394 @@ func TestHydrateRecordDependenciesNoDependencyResolver(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
+}
+
+func TestWithMaxMessagesPerMinuteZeroDisablesRateLimiting(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer database.Close()
+
+	p := NewProcessor(database, log.New(io.Discard, "", 0), WithMaxMessagesPerMinute(0))
+	lim := p.getRateLimiter("did:plc:test")
+	if lim != nil {
+		t.Error("expected nil limiter when maxMessagesPerMinute=0")
+	}
+}
+
+func TestWithMaxMessagesPerMinutePositiveSetsLimiter(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer database.Close()
+
+	p := NewProcessor(database, log.New(io.Discard, "", 0), WithMaxMessagesPerMinute(10))
+	lim := p.getRateLimiter("did:plc:test")
+	if lim == nil {
+		t.Error("expected non-nil limiter when maxMessagesPerMinute=10")
+	}
+}
+
+func TestCleanupStaleRateLimiters(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer database.Close()
+
+	p := NewProcessor(database, log.New(io.Discard, "", 0), WithMaxMessagesPerMinute(10))
+
+	// Seed rateLimiters and lastActivity directly (package-internal access).
+	p.rateLimiters["did:plc:old"] = rate.NewLimiter(rate.Limit(10), 10)
+	p.lastActivity["did:plc:old"] = time.Now().Add(-2 * time.Hour)
+
+	p.rateLimiters["did:plc:recent"] = rate.NewLimiter(rate.Limit(10), 10)
+	p.lastActivity["did:plc:recent"] = time.Now()
+
+	idleTimeout := 1 * time.Hour
+
+	// Run cleanup.
+	p.cleanupStaleRateLimiters(idleTimeout)
+
+	if _, ok := p.rateLimiters["did:plc:old"]; ok {
+		t.Error("expected old limiter to be removed")
+	}
+	if _, ok := p.lastActivity["did:plc:old"]; ok {
+		t.Error("expected old activity to be removed")
+	}
+	if _, ok := p.rateLimiters["did:plc:recent"]; !ok {
+		t.Error("expected recent limiter to remain")
+	}
+}
+
+func TestCleanupStaleRateLimitersEmpty(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer database.Close()
+
+	p := NewProcessor(database, log.New(io.Discard, "", 0), WithMaxMessagesPerMinute(10))
+	// Empty maps -- should not panic.
+	p.cleanupStaleRateLimiters(1 * time.Hour)
+}
+
+func TestHandleRecordEventPost(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	if err := database.AddBridgedAccount(ctx, db.BridgedAccount{
+		ATDID:     "did:plc:alice",
+		SSBFeedID: "@alice.ed25519",
+		Active:    true,
+	}); err != nil {
+		t.Fatalf("add account: %v", err)
+	}
+
+	pub := &recordingPublisher{}
+	p := NewProcessor(database, log.New(io.Discard, "", 0), WithPublisher(pub))
+
+	seq := int64(42)
+	event := db.ATProtoRecordEvent{
+		DID:        "did:plc:alice",
+		Collection: mapper.RecordTypePost,
+		RKey:       "post1",
+		ATURI:      "at://did:plc:alice/app.bsky.feed.post/post1",
+		ATCID:      "bafy-post1",
+		Action:     "create",
+		Live:       true,
+		Seq:        &seq,
+		RecordJSON: `{"text":"hello","createdAt":"2026-01-01T00:00:00Z"}`,
+	}
+
+	if err := p.HandleRecordEvent(ctx, event); err != nil {
+		t.Fatalf("HandleRecordEvent: %v", err)
+	}
+
+	msg, err := database.GetMessage(ctx, "at://did:plc:alice/app.bsky.feed.post/post1")
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	if msg == nil {
+		t.Fatal("expected message to be stored")
+	}
+	if msg.MessageState != db.MessageStatePublished {
+		t.Errorf("expected published state, got %q", msg.MessageState)
+	}
+}
+
+func TestHandleRecordEventDelete(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	if err := database.AddBridgedAccount(ctx, db.BridgedAccount{
+		ATDID:     "did:plc:alice",
+		SSBFeedID: "@alice.ed25519",
+		Active:    true,
+	}); err != nil {
+		t.Fatalf("add account: %v", err)
+	}
+
+	pub := &mockPublisher{ref: "%deleted.sha256"}
+	p := NewProcessor(database, log.New(io.Discard, "", 0), WithPublisher(pub))
+
+	// Seed an existing message to delete.
+	if err := database.AddMessage(ctx, db.Message{
+		ATURI:        "at://did:plc:alice/app.bsky.feed.like/1",
+		ATCID:        "bafy-like",
+		ATDID:        "did:plc:alice",
+		Type:         mapper.RecordTypeLike,
+		MessageState: db.MessageStatePublished,
+		RawATJson:    `{"subject":{"uri":"at://did:plc:alice/app.bsky.feed.post/1","cid":"bafy-post"},"createdAt":"2026-01-01T00:00:00Z"}`,
+		RawSSBJson:   `{"type":"vote","vote":{"link":"%post.sha256","value":1,"expression":"Like"}}`,
+	}); err != nil {
+		t.Fatalf("seed like: %v", err)
+	}
+	if err := database.AddMessage(ctx, db.Message{
+		ATURI:        "at://did:plc:alice/app.bsky.feed.post/1",
+		ATCID:        "bafy-post",
+		ATDID:        "did:plc:alice",
+		Type:         mapper.RecordTypePost,
+		MessageState: db.MessageStatePublished,
+		SSBMsgRef:    "%post.sha256",
+		RawATJson:    `{"text":"post"}`,
+		RawSSBJson:   `{"type":"post","text":"post"}`,
+	}); err != nil {
+		t.Fatalf("seed post: %v", err)
+	}
+
+	seq := int64(50)
+	event := db.ATProtoRecordEvent{
+		DID:        "did:plc:alice",
+		Collection: mapper.RecordTypeLike,
+		RKey:       "1",
+		ATURI:      "at://did:plc:alice/app.bsky.feed.like/1",
+		ATCID:      "bafy-like",
+		Action:     "delete",
+		Live:       true,
+		Seq:        &seq,
+	}
+
+	if err := p.HandleRecordEvent(ctx, event); err != nil {
+		t.Fatalf("HandleRecordEvent delete: %v", err)
+	}
+
+	msg, err := database.GetMessage(ctx, "at://did:plc:alice/app.bsky.feed.like/1")
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	if msg == nil {
+		t.Fatal("expected message after delete event")
+	}
+	if msg.MessageState != db.MessageStatePublished {
+		t.Errorf("expected published state for unlike, got %q", msg.MessageState)
+	}
+}
+
+func TestHandleRecordEventNilSeq(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	if err := database.AddBridgedAccount(ctx, db.BridgedAccount{
+		ATDID:     "did:plc:alice",
+		SSBFeedID: "@alice.ed25519",
+		Active:    true,
+	}); err != nil {
+		t.Fatalf("add account: %v", err)
+	}
+
+	p := NewProcessor(database, log.New(io.Discard, "", 0))
+
+	// nil Seq should use seq=0, no panic.
+	event := db.ATProtoRecordEvent{
+		DID:        "did:plc:alice",
+		Collection: mapper.RecordTypePost,
+		RKey:       "nilseq",
+		ATURI:      "at://did:plc:alice/app.bsky.feed.post/nilseq",
+		ATCID:      "bafy-nilseq",
+		Action:     "delete",
+		Live:       true,
+		Seq:        nil,
+	}
+
+	if err := p.HandleRecordEvent(ctx, event); err != nil {
+		t.Fatalf("HandleRecordEvent nil seq: %v", err)
+	}
+
+	msg, err := database.GetMessage(ctx, "at://did:plc:alice/app.bsky.feed.post/nilseq")
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	if msg == nil {
+		t.Fatal("expected message")
+	}
+	if msg.DeletedSeq == nil || *msg.DeletedSeq != 0 {
+		t.Errorf("expected deleted_seq 0, got %v", msg.DeletedSeq)
+	}
+}
+
+func TestExpireDeferredMessagesTransitionsToFailed(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	oldTime := time.Now().UTC().Add(-48 * time.Hour).Truncate(time.Second)
+
+	// Seed a deferred message older than maxAge.
+	if err := database.AddMessage(ctx, db.Message{
+		ATURI:         "at://did:plc:alice/app.bsky.feed.like/expired1",
+		ATCID:         "bafy-exp1",
+		ATDID:         "did:plc:alice",
+		Type:          mapper.RecordTypeLike,
+		MessageState:  db.MessageStateDeferred,
+		RawATJson:     `{"subject":{"uri":"at://missing","cid":"x"},"createdAt":"2026-01-01T00:00:00Z"}`,
+		RawSSBJson:    `{"type":"vote"}`,
+		DeferReason:   "_atproto_subject=at://missing",
+		DeferAttempts: 1,
+		CreatedAt:     oldTime,
+	}); err != nil {
+		t.Fatalf("seed expired deferred: %v", err)
+	}
+
+	p := NewProcessor(database, log.New(io.Discard, "", 0))
+
+	result, err := p.ExpireDeferredMessages(ctx, 24*time.Hour, 10)
+	if err != nil {
+		t.Fatalf("ExpireDeferredMessages: %v", err)
+	}
+	if result.Selected != 1 {
+		t.Errorf("expected 1 selected, got %d", result.Selected)
+	}
+	if result.Expired != 1 {
+		t.Errorf("expected 1 expired, got %d", result.Expired)
+	}
+
+	msg, err := database.GetMessage(ctx, "at://did:plc:alice/app.bsky.feed.like/expired1")
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	if msg == nil {
+		t.Fatal("expected message")
+	}
+	if msg.MessageState != db.MessageStateFailed {
+		t.Errorf("expected failed state, got %q", msg.MessageState)
+	}
+	if msg.PublishError != "deferred_ttl_expired" {
+		t.Errorf("expected deferred_ttl_expired, got %q", msg.PublishError)
+	}
+}
+
+func TestExpireDeferredMessagesDefaultLimit(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	p := NewProcessor(database, log.New(io.Discard, "", 0))
+
+	// limit=0 -> defaults to 500, no panic.
+	result, err := p.ExpireDeferredMessages(ctx, 24*time.Hour, 0)
+	if err != nil {
+		t.Fatalf("ExpireDeferredMessages default limit: %v", err)
+	}
+	if result.Selected != 0 {
+		t.Errorf("expected 0 selected, got %d", result.Selected)
+	}
+}
+
+func TestExpireDeferredMessagesEmptyResult(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	p := NewProcessor(database, log.New(io.Discard, "", 0))
+
+	// No expired candidates.
+	result, err := p.ExpireDeferredMessages(ctx, 24*time.Hour, 10)
+	if err != nil {
+		t.Fatalf("ExpireDeferredMessages empty: %v", err)
+	}
+	if result.Selected != 0 || result.Expired != 0 || result.Failed != 0 {
+		t.Errorf("expected zero result, got %+v", result)
+	}
+}
+
+func TestStartRateLimiterCleanup(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	p := NewProcessor(database, log.New(io.Discard, "", 0))
+	p.maxMessagesPerMinute = 60
+
+	// Add a rate limiter that should be cleaned up
+	p.rateLimitMu.Lock()
+	p.rateLimiters["did:plc:stale"] = rate.NewLimiter(rate.Limit(1), 1)
+	p.lastActivity["did:plc:stale"] = time.Now().Add(-2 * time.Minute)
+	p.rateLimiters["did:plc:active"] = rate.NewLimiter(rate.Limit(1), 1)
+	p.lastActivity["did:plc:active"] = time.Now()
+	p.rateLimitMu.Unlock()
+
+	// Start cleanup with a short interval and short idle timeout
+	cleanupCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	p.StartRateLimiterCleanup(cleanupCtx, 50*time.Millisecond, 90*time.Second)
+
+	// Wait for cleanup to run
+	time.Sleep(150 * time.Millisecond)
+
+	// Check that stale limiter was removed but active one remains
+	p.rateLimitMu.Lock()
+	_, staleExists := p.rateLimiters["did:plc:stale"]
+	_, activeExists := p.rateLimiters["did:plc:active"]
+	p.rateLimitMu.Unlock()
+
+	if staleExists {
+		t.Error("expected stale rate limiter to be cleaned up")
+	}
+	if !activeExists {
+		t.Error("expected active rate limiter to remain")
+	}
+}
+
+func TestStartRateLimiterCleanupDisabled(t *testing.T) {
+	database, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	p := NewProcessor(database, log.New(io.Discard, "", 0))
+	p.maxMessagesPerMinute = 0 // Disabled
+
+	// Should return immediately without starting goroutine
+	p.StartRateLimiterCleanup(ctx, time.Second, time.Minute)
+	// No panic, no goroutine started
 }

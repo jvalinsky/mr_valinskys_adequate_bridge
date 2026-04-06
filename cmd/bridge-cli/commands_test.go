@@ -4,12 +4,16 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/atindex"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/backfill"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/mapper"
 )
@@ -135,4 +139,200 @@ func captureStdout(t *testing.T, fn func()) string {
 		t.Fatalf("close reader: %v", err)
 	}
 	return output
+}
+
+func TestWaitForIndexedRepoStateNilIndexer(t *testing.T) {
+	_, err := waitForIndexedRepoState(context.Background(), nil, "did:example:test", time.Second)
+	if err == nil {
+		t.Error("expected error for nil indexer")
+	}
+}
+
+func TestWaitForIndexedRepoStateTimeout(t *testing.T) {
+	database := setupTestDB(t)
+	logger := log.New(io.Discard, "", 0)
+	indexer := atindex.New(database, backfill.DIDPDSResolver{}, backfill.XRPCRepoFetcher{}, "", logger)
+
+	ctx := context.Background()
+	indexer.Start(ctx)
+
+	_, err := waitForIndexedRepoState(ctx, indexer, "did:example:nonexistent", 100*time.Millisecond)
+	if err == nil {
+		t.Error("expected timeout error")
+	}
+}
+
+func TestWaitForReplayCursorNilDatabase(t *testing.T) {
+	err := waitForReplayCursor(context.Background(), nil, 100, time.Second)
+	if err == nil {
+		t.Error("expected error for nil database")
+	}
+}
+
+func TestWaitForReplayCursorZeroTarget(t *testing.T) {
+	database := setupTestDB(t)
+	err := waitForReplayCursor(context.Background(), database, 0, time.Second)
+	if err != nil {
+		t.Errorf("expected no error for zero target, got %v", err)
+	}
+}
+
+func TestWaitForReplayCursorNegativeTarget(t *testing.T) {
+	database := setupTestDB(t)
+	err := waitForReplayCursor(context.Background(), database, -1, time.Second)
+	if err != nil {
+		t.Errorf("expected no error for negative target, got %v", err)
+	}
+}
+
+func TestWaitForReplayCursorAlreadyMet(t *testing.T) {
+	database := setupTestDB(t)
+
+	ctx := context.Background()
+	err := database.SetBridgeState(ctx, "atproto_event_cursor", "100")
+	if err != nil {
+		t.Fatalf("failed to set bridge state: %v", err)
+	}
+
+	err = waitForReplayCursor(ctx, database, 50, time.Second)
+	if err != nil {
+		t.Errorf("expected no error when cursor already met, got %v", err)
+	}
+}
+
+func TestCompositeBlobStoreGetWithNilPrimary(t *testing.T) {
+	store := &compositeBlobStore{
+		primary: nil,
+		fsPath:  "",
+	}
+
+	_, err := store.Get([]byte("test"))
+	if err == nil {
+		t.Error("expected error when both primary and fsPath are empty")
+	}
+}
+
+func TestCompositeBlobStoreGetWithEmptyFSPath(t *testing.T) {
+	store := &compositeBlobStore{
+		primary: nil,
+		fsPath:  "",
+	}
+
+	_, err := store.Get([]byte{0x01, 0x02})
+	if err == nil {
+		t.Error("expected error with empty fsPath and nil primary")
+	}
+}
+
+func TestSetBridgeStateBestEffortNilDB(t *testing.T) {
+	setBridgeStateBestEffort(context.Background(), nil, "test_key", "test_value", log.New(io.Discard, "", 0))
+}
+
+func TestSetBridgeStateBestEffortEmptyKey(t *testing.T) {
+	database := setupTestDB(t)
+	setBridgeStateBestEffort(context.Background(), database, "", "test_value", log.New(io.Discard, "", 0))
+}
+
+func TestRunRuntimeHeartbeatSchedulerNilDB(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	runRuntimeHeartbeatScheduler(ctx, nil, log.New(io.Discard, "", 0), time.Second)
+}
+
+func TestRunRetrySchedulerNilProcessor(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	runRetryScheduler(ctx, nil, log.New(io.Discard, "", 0))
+}
+
+func TestRunDeferredResolverSchedulerNilProcessor(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	runDeferredResolverScheduler(ctx, nil, log.New(io.Discard, "", 0))
+}
+
+func TestRunDeferredExpirySchedulerNilProcessor(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	runDeferredExpiryScheduler(ctx, nil, log.New(io.Discard, "", 0))
+}
+
+func TestRunATProtoTrackSchedulerNilDB(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	runATProtoTrackScheduler(ctx, nil, nil, log.New(io.Discard, "", 0))
+}
+
+func TestRunATProtoTrackSchedulerNilIndexer(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	database := setupTestDB(t)
+
+	runATProtoTrackScheduler(ctx, database, nil, log.New(io.Discard, "", 0))
+}
+
+func TestTrackActiveRepos(t *testing.T) {
+	database := setupTestDB(t)
+	logger := log.New(io.Discard, "", 0)
+
+	ctx := context.Background()
+	trackActiveRepos(ctx, database, nil, logger)
+}
+
+func TestShutdownLogRuntimeNil(t *testing.T) {
+	shutdownLogRuntime(nil)
+}
+
+func TestParseHMACKeyInvalidLength(t *testing.T) {
+	_, err := parseHMACKey("tooshort")
+	if err == nil {
+		t.Error("expected error for invalid length key")
+	}
+}
+
+func TestParseHMACKeyValidBase64(t *testing.T) {
+	key, err := parseHMACKey("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
+	if err != nil {
+		t.Fatalf("expected no error for valid base64 key, got %v", err)
+	}
+	if key == nil {
+		t.Error("expected non-nil key for valid base64")
+	}
+}
+
+func TestParseHMACKeyValidHex(t *testing.T) {
+	key, err := parseHMACKey("0000000000000000000000000000000000000000000000000000000000000000")
+	if err != nil {
+		t.Fatalf("expected no error for valid hex key, got %v", err)
+	}
+	if key == nil {
+		t.Error("expected non-nil key for valid hex")
+	}
+}
+
+func TestFallbackValueEmpty(t *testing.T) {
+	result := fallbackValue("", "default")
+	if result != "default" {
+		t.Errorf("expected 'default', got %q", result)
+	}
+}
+
+func TestFallbackValueWhitespace(t *testing.T) {
+	result := fallbackValue("   ", "default")
+	if result != "default" {
+		t.Errorf("expected 'default', got %q", result)
+	}
+}
+
+func TestFallbackValueNonEmpty(t *testing.T) {
+	result := fallbackValue("value", "default")
+	if result != "value" {
+		t.Errorf("expected 'value', got %q", result)
+	}
 }
