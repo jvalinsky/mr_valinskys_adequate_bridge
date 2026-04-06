@@ -16,6 +16,7 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/mapper"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/metrics"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/feedlog"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto"
 	appbsky "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/appbsky"
@@ -369,6 +370,7 @@ func (b *Bridge) ensureBlob(ctx context.Context, atDID string, cand blobCandidat
 	if err != nil {
 		return "", fmt.Errorf("fetch blob cid=%s did=%s: %w", cand.CID, atDID, err)
 	}
+	metrics.BlobsDownloaded.Inc()
 
 	blobHash, err := b.blobStore.Put(bytes.NewReader(payload))
 	if err != nil {
@@ -393,6 +395,7 @@ func (b *Bridge) ensureBlob(ctx context.Context, atDID string, cand blobCandidat
 	}); err != nil {
 		return "", fmt.Errorf("persist blob mapping cid=%s: %w", cand.CID, err)
 	}
+	metrics.BlobsPublished.Inc()
 
 	b.logger.Printf("event=blob_bridged did=%s cid=%s ssb_blob_ref=%s size=%d mime=%s", atDID, cand.CID, blobRefStr, len(payload), strings.TrimSpace(cand.MimeType))
 	return blobRefStr, nil
