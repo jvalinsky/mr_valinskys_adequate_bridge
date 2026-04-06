@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"math/rand"
 	"net/http"
 	"net/url"
@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto"
 	atfirehose "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/firehose"
 	atrepo "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/repo"
@@ -39,7 +38,6 @@ type AccountHandler interface {
 type Client struct {
 	relayURL          string
 	handler           EventHandler
-	logger            *log.Logger
 	dialer            *websocket.Dialer
 	cursor            *int64
 	ConnectedCallback func()
@@ -69,15 +67,13 @@ func WithConnectedCallback(cb func()) ClientOption {
 }
 
 // NewClient creates a firehose Client with optional configuration.
-func NewClient(relayURL string, handler EventHandler, logger *log.Logger, opts ...ClientOption) *Client {
+func NewClient(relayURL string, handler EventHandler, _ interface{}, opts ...ClientOption) *Client {
 	if relayURL == "" {
 		relayURL = "wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos"
 	}
-	logger = logutil.Ensure(logger)
 	client := &Client{
 		relayURL: relayURL,
 		handler:  handler,
-		logger:   logger,
 		dialer:   websocket.DefaultDialer,
 	}
 	for _, opt := range opts {
@@ -92,7 +88,7 @@ func (c *Client) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("build stream URL: %w", err)
 	}
-	c.logger.Printf("Connecting to ATProto firehose at %s", streamURL)
+	slog.Info("firehose: connecting", "url", streamURL)
 
 	con, resp, err := c.dialer.DialContext(ctx, streamURL, http.Header{})
 	if err != nil {
@@ -103,10 +99,40 @@ func (c *Client) Run(ctx context.Context) error {
 	}
 	defer con.Close()
 
-	c.logger.Println("Connected to firehose")
+	slog.Info("firehose: connected")
 
 	if c.ConnectedCallback != nil {
-		c.ConnectedCallback()
+		go c.ConnectedCallback()
+	}
+
+	// Keepalive ping loop
+	go func() {
+		ticker := time.NewTicker(25 * time.Second)
+		defer ticker.Stop()
+
+		failures := 0
+		for {
+			select {
+			case <-ctx.Done():
+				_ = con.Close()
+				return
+			case <-ticker.C:
+				if err := con.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(10*time.Second)); err != nil {
+					slog.Warn("firehose: ping failed", "error", err)
+					failures++
+					if failures >= 4 {
+						_ = con.Close()
+						return
+					}
+					continue
+				}
+				failures = 0
+			}
+		}
+	}()
+
+	if c.ConnectedCallback != nil {
+		go c.ConnectedCallback()
 	}
 
 	return c.handleStream(ctx, con)
@@ -125,7 +151,7 @@ func (c *Client) handleStream(ctx context.Context, con *websocket.Conn) error {
 				return
 			case <-ticker.C:
 				if err := con.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(10*time.Second)); err != nil {
-					c.logger.Printf("event=firehose_ping_failed err=%v", err)
+					slog.Warn("firehose: ping failed", "error", err)
 					failures++
 					if failures >= 4 {
 						_ = con.Close()
@@ -176,10 +202,13 @@ func (c *Client) handleStream(ctx context.Context, con *websocket.Conn) error {
 		switch {
 		case event.RepoCommit != nil:
 			if event.RepoCommit.Seq < lastSeq {
-				c.logger.Printf("event=firehose_out_of_order seq=%d prev=%d repo=%s", event.RepoCommit.Seq, lastSeq, event.RepoCommit.Repo)
+				slog.Warn("firehose: out of order event",
+					"seq", event.RepoCommit.Seq,
+					"lastSeq", lastSeq,
+					"repo", event.RepoCommit.Repo)
 			}
 			lastSeq = event.RepoCommit.Seq
-			if err := c.handleRepoCommit(event.RepoCommit); err != nil {
+			if err := c.handleRepoCommit(ctx, event.RepoCommit); err != nil {
 				return err
 			}
 		case event.RepoInfo != nil:
@@ -188,13 +217,13 @@ func (c *Client) handleStream(ctx context.Context, con *websocket.Conn) error {
 			}
 		case event.RepoIdentity != nil:
 			if handler, ok := c.handler.(IdentityHandler); ok {
-				if err := handler.HandleIdentity(context.Background(), event.RepoIdentity); err != nil {
+				if err := handler.HandleIdentity(ctx, event.RepoIdentity); err != nil {
 					return err
 				}
 			}
 		case event.RepoAccount != nil:
 			if handler, ok := c.handler.(AccountHandler); ok {
-				if err := handler.HandleAccount(context.Background(), event.RepoAccount); err != nil {
+				if err := handler.HandleAccount(ctx, event.RepoAccount); err != nil {
 					return err
 				}
 			}
@@ -206,25 +235,33 @@ func (c *Client) handleStream(ctx context.Context, con *websocket.Conn) error {
 	}
 }
 
-func (c *Client) handleRepoCommit(evt *atproto.SyncSubscribeRepos_Commit) error {
-	c.logger.Printf("[FIREHOSE DEBUG] RepoCommit: repo=%s seq=%d ops=%d",
-		evt.Repo, evt.Seq, len(evt.Ops))
+func (c *Client) handleRepoCommit(ctx context.Context, evt *atproto.SyncSubscribeRepos_Commit) error {
+	slog.Debug("firehose: repo commit",
+		"repo", evt.Repo,
+		"seq", evt.Seq,
+		"ops", len(evt.Ops))
 	for i, op := range evt.Ops {
 		cidStr := "nil"
 		if op.Cid != nil {
 			cidStr = op.Cid.String()
 		}
-		c.logger.Printf("[FIREHOSE DEBUG]   op[%d]: action=%s path=%s cid=%s",
-			i, op.Action, op.Path, cidStr)
+		slog.Debug("firehose: commit op",
+			"index", i,
+			"action", op.Action,
+			"path", op.Path,
+			"cid", cidStr)
 	}
-	if err := c.handler.HandleCommit(context.Background(), evt); err != nil {
-		c.logger.Printf("Error handling commit: %v", err)
+	if err := c.handler.HandleCommit(ctx, evt); err != nil {
+		slog.Error("firehose: commit handler error",
+			"error", err,
+			"repo", evt.Repo,
+			"seq", evt.Seq)
 	}
 	return nil
 }
 
 func (c *Client) handleRepoInfo(info *atproto.SyncSubscribeRepos_Info) error {
-	c.logger.Printf("RepoInfo: %v", info.Name)
+	slog.Debug("firehose: repo info", "name", info.Name)
 	return nil
 }
 
@@ -233,10 +270,10 @@ func (c *Client) handleError(errEvt *atfirehose.ErrorFrame) error {
 		return nil
 	}
 	if errEvt.Message != nil {
-		c.logger.Printf("Error from firehose: %s", *errEvt.Message)
+		slog.Error("firehose: error", "message", *errEvt.Message)
 		return nil
 	}
-	c.logger.Printf("Error from firehose: %s", errEvt.Error)
+	slog.Error("firehose: error", "error", errEvt.Error)
 	return nil
 }
 
@@ -251,12 +288,10 @@ func (c *Client) RunWithReconnect(ctx context.Context, cfg ReconnectConfig) erro
 		cfg.Jitter = 750 * time.Millisecond
 	}
 
-	return runWithReconnectLoop(ctx, c.logger, cfg, c.Run)
+	return runWithReconnectLoop(ctx, cfg, c.Run)
 }
 
-func runWithReconnectLoop(ctx context.Context, logger *log.Logger, cfg ReconnectConfig, runOnce func(context.Context) error) error {
-	logger = logutil.Ensure(logger)
-
+func runWithReconnectLoop(ctx context.Context, cfg ReconnectConfig, runOnce func(context.Context) error) error {
 	backoff := cfg.InitialBackoff
 	for {
 		err := runOnce(ctx)
@@ -268,7 +303,9 @@ func runWithReconnectLoop(ctx context.Context, logger *log.Logger, cfg Reconnect
 		}
 
 		sleepFor := jitterDuration(backoff, cfg.Jitter)
-		logger.Printf("event=firehose_reconnect_retry backoff=%s err=%v", sleepFor, err)
+		slog.Warn("firehose: reconnect retry",
+			"backoff", sleepFor,
+			"error", err)
 		select {
 		case <-ctx.Done():
 			return ctx.Err()

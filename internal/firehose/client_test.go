@@ -164,7 +164,7 @@ func TestRunWithReconnectLoopRetriesTransientAndSucceeds(t *testing.T) {
 		Jitter:         0,
 	}
 
-	err := runWithReconnectLoop(context.Background(), log.New(os.Stdout, "", 0), cfg, func(context.Context) error {
+	err := runWithReconnectLoop(context.Background(), cfg, func(context.Context) error {
 		n := attempts.Add(1)
 		if n < 3 {
 			return errors.New("temporary disconnect")
@@ -187,7 +187,7 @@ func TestRunWithReconnectLoopStopsOnFatal(t *testing.T) {
 		Jitter:         0,
 	}
 
-	err := runWithReconnectLoop(context.Background(), log.New(os.Stdout, "", 0), cfg, func(context.Context) error {
+	err := runWithReconnectLoop(context.Background(), cfg, func(context.Context) error {
 		attempts.Add(1)
 		return errors.New("failed to dial (status=401): bad handshake")
 	})
@@ -209,7 +209,7 @@ func TestRunWithReconnectLoopContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := runWithReconnectLoop(ctx, log.New(os.Stdout, "", 0), cfg, func(context.Context) error {
+	err := runWithReconnectLoop(ctx, cfg, func(context.Context) error {
 		return errors.New("temporary error")
 	})
 	if !errors.Is(err, context.Canceled) {
@@ -272,7 +272,6 @@ func TestStreamURLWithInvalidURL(t *testing.T) {
 	client := &Client{
 		relayURL: "http://[ invalid",
 		handler:  handler,
-		logger:   log.New(os.Stdout, "", 0),
 		cursor:   ptrInt64(123),
 	}
 
@@ -323,7 +322,7 @@ func TestReconnectConfigDefaults(t *testing.T) {
 	var attempts atomic.Int32
 	cfg := ReconnectConfig{}
 
-	err := runWithReconnectLoop(context.Background(), log.New(os.Stdout, "", 0), cfg, func(context.Context) error {
+	err := runWithReconnectLoop(context.Background(), cfg, func(context.Context) error {
 		n := attempts.Add(1)
 		if n < 2 {
 			return errors.New("temporary disconnect")
@@ -695,18 +694,18 @@ func TestClientRunDialErrorWithResponse(t *testing.T) {
 }
 
 func TestClientCallbacksCoverage(t *testing.T) {
-	c := NewClient("", &mockHandler{}, log.New(io.Discard, "", 0))
+	c := NewClient("", &mockHandler{}, nil)
 
 	t.Run("handleRepoCommit", func(t *testing.T) {
-		err := c.handleRepoCommit(&atproto.SyncSubscribeRepos_Commit{Repo: "did:plc:x"})
+		err := c.handleRepoCommit(context.Background(), &atproto.SyncSubscribeRepos_Commit{Repo: "did:plc:x"})
 		if err != nil {
 			t.Error(err)
 		}
 	})
 
 	t.Run("handleRepoCommitError", func(t *testing.T) {
-		c2 := NewClient("", &failingHandler{err: fmt.Errorf("fail")}, log.New(io.Discard, "", 0))
-		err := c2.handleRepoCommit(&atproto.SyncSubscribeRepos_Commit{Repo: "did:plc:x"})
+		c2 := NewClient("", &failingHandler{err: fmt.Errorf("fail")}, nil)
+		err := c2.handleRepoCommit(context.Background(), &atproto.SyncSubscribeRepos_Commit{Repo: "did:plc:x"})
 		if err != nil {
 			t.Error(err)
 		}
@@ -801,7 +800,7 @@ func TestClientRunSuccess(t *testing.T) {
 
 func TestRunWithReconnectSuccessFirstTry(t *testing.T) {
 	cfg := ReconnectConfig{}
-	err := runWithReconnectLoop(context.Background(), log.New(io.Discard, "", 0), cfg, func(context.Context) error {
+	err := runWithReconnectLoop(context.Background(), cfg, func(context.Context) error {
 		return nil
 	})
 	if err != nil {
@@ -839,4 +838,28 @@ func TestClientRunWithReconnectFatal(t *testing.T) {
 	if !strings.Contains(err.Error(), "status=401") {
 		t.Fatalf("unexpected error: %v", err)
 	}
+}
+
+func TestHandleErrorNilEvent(t *testing.T) {
+	c := &Client{}
+	err := c.handleError(nil)
+	if err != nil {
+		t.Errorf("handleError(nil) = %v, want nil", err)
+	}
+}
+
+func TestHandleErrorWithErrorField(t *testing.T) {
+	c := &Client{}
+	err := c.handleError(&atfirehose.ErrorFrame{Error: "ErrConnectionClosed"})
+	if err != nil {
+		t.Errorf("handleError with Error field = %v, want nil", err)
+	}
+}
+
+type errorHandler struct {
+	err error
+}
+
+func (m *errorHandler) HandleCommit(ctx context.Context, evt *atproto.SyncSubscribeRepos_Commit) error {
+	return m.err
 }

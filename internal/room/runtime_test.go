@@ -3149,3 +3149,90 @@ func TestWhoamiHandleConnect(t *testing.T) {
 	h := &whoamiHandler{}
 	h.HandleConnect(context.Background(), nil)
 }
+
+func TestNormalizeNextPath(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"", ""},
+		{"   ", ""},
+		{"/", "/"},
+		{"/accounts", "/accounts"},
+		{"/room/123", "/room/123"},
+		{"//", ""},
+		{"http://example.com", ""},
+		{"https://example.com", ""},
+		{"ftp://example.com", ""},
+		{"/http://evil.com", ""},
+		{"/https://evil.com", ""},
+	}
+	for _, tt := range tests {
+		result := normalizeNextPath(tt.input)
+		if result != tt.expected {
+			t.Errorf("normalizeNextPath(%q) = %q, want %q", tt.input, result, tt.expected)
+		}
+	}
+}
+
+func TestHandleLoginSubmitMissingFields(t *testing.T) {
+	h := &authHandler{}
+
+	tests := []struct {
+		name     string
+		username string
+		password string
+		wantCode int
+	}{
+		{"empty username", "", "password123", http.StatusBadRequest},
+		{"empty password", "user", "", http.StatusBadRequest},
+		{"both empty", "", "", http.StatusBadRequest},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(""))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			req.PostForm = url.Values{
+				"username": {tt.username},
+				"password": {tt.password},
+			}
+			rr := httptest.NewRecorder()
+			h.handleLoginSubmit(rr, req)
+			if rr.Code != tt.wantCode {
+				t.Errorf("handleLoginSubmit returned %d, want %d", rr.Code, tt.wantCode)
+			}
+		})
+	}
+}
+
+func TestHandleResetPasswordSubmitMissingFields(t *testing.T) {
+	h := &authHandler{}
+
+	tests := []struct {
+		name     string
+		token    string
+		password string
+		wantCode int
+	}{
+		{"empty token", "", "password123", http.StatusBadRequest},
+		{"empty password", "token", "", http.StatusBadRequest},
+		{"both empty", "", "", http.StatusBadRequest},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/reset-password", strings.NewReader(""))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			req.PostForm = url.Values{
+				"token":    {tt.token},
+				"password": {tt.password},
+			}
+			rr := httptest.NewRecorder()
+			h.handleResetPasswordSubmit(rr, req)
+			if rr.Code != tt.wantCode {
+				t.Errorf("handleResetPasswordSubmit returned %d, want %d", rr.Code, tt.wantCode)
+			}
+		})
+	}
+}

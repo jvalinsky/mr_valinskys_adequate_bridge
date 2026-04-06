@@ -5,7 +5,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -57,7 +57,7 @@ func (c *PDSClient) createSession(ctx context.Context, identifier string) (*xrpc
 }
 
 func (c *PDSClient) UploadBlob(ctx context.Context, identifier string, reader io.Reader, mime string) (*appbsky.LexBlob, error) {
-	log.Printf("unit=pds event=upload_blob_start identifier=%q mime=%q", identifier, mime)
+	slog.Info("pds: upload blob start", "identifier", identifier, "mime", mime)
 	client, err := c.createSession(ctx, identifier)
 	if err != nil {
 		return nil, err
@@ -65,11 +65,11 @@ func (c *PDSClient) UploadBlob(ctx context.Context, identifier string, reader io
 
 	resp, err := atproto.RepoUploadBlob(ctx, client, reader)
 	if err != nil {
-		log.Printf("unit=pds event=upload_blob_error identifier=%q error=%q", identifier, err)
+		slog.Error("pds: upload blob error", "identifier", identifier, "error", err)
 		return nil, fmt.Errorf("upload blob: %w", err)
 	}
 
-	log.Printf("unit=pds event=upload_blob_success identifier=%q cid=%q", identifier, resp.Blob.Ref)
+	slog.Info("pds: upload blob success", "identifier", identifier, "cid", resp.Blob.Ref)
 	return &appbsky.LexBlob{
 		Ref:      resp.Blob.Ref,
 		MimeType: resp.Blob.MimeType,
