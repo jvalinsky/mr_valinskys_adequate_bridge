@@ -133,7 +133,7 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
-          "expr": "rate(MessagesPublished_total[5m])",
+          "expr": "rate(bridge_messages_published_total[5m])",
           "legendFormat": "Published",
           "range": true,
           "refId": "A"
@@ -144,7 +144,7 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
-          "expr": "rate(MessagesFailed_total[5m])",
+          "expr": "rate(bridge_messages_failed_total[5m])",
           "legendFormat": "Failed",
           "range": true,
           "refId": "B"
@@ -155,7 +155,7 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
-          "expr": "rate(MessagesDeferred_total[5m])",
+          "expr": "rate(bridge_messages_deferred_total[5m])",
           "legendFormat": "Deferred",
           "range": true,
           "refId": "C"
@@ -219,7 +219,7 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
-          "expr": "FirehoseLag",
+          "expr": "bridge_firehose_lag",
           "range": true,
           "refId": "A"
         }
@@ -275,7 +275,7 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
-          "expr": "ActiveAccounts",
+          "expr": "bridge_active_accounts",
           "range": true,
           "refId": "A"
         }
@@ -364,7 +364,7 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
-          "expr": "IndexerQueueDepth",
+          "expr": "bridge_indexer_queue_depth",
           "legendFormat": "Queue Depth",
           "range": true,
           "refId": "A"
@@ -375,7 +375,7 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
-          "expr": "DeferredBacklog",
+          "expr": "bridge_deferred_backlog",
           "legendFormat": "Deferred Backlog",
           "range": true,
           "refId": "B"
@@ -465,7 +465,7 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
-          "expr": "rate(BlobsDownloaded_total[5m])",
+          "expr": "rate(bridge_blobs_downloaded_total[5m])",
           "legendFormat": "Downloaded",
           "range": true,
           "refId": "A"
@@ -476,7 +476,7 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
-          "expr": "rate(BlobsPublished_total[5m])",
+          "expr": "rate(bridge_blobs_published_total[5m])",
           "legendFormat": "Published",
           "range": true,
           "refId": "B"
@@ -503,6 +503,6 @@
   "timezone": "",
   "title": "Bridge Monitoring",
   "uid": "bridge-monitoring",
-  "version": 1,
+  "version": 2,
   "weekStart": ""
 }
