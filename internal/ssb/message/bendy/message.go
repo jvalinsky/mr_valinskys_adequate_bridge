@@ -44,7 +44,7 @@ func (m *Message) Validate() error {
 		return ErrInvalidAuthor
 	}
 
-	if m.Previous == nil {
+	if len(m.Previous) == 0 {
 	} else if len(m.Previous) != 34 || m.Previous[0] != bfe.TypeMessage {
 		return ErrInvalidPrevious
 	}
@@ -60,8 +60,22 @@ func (m *Message) Validate() error {
 	return nil
 }
 
+func (m *Message) ToBencode() interface{} {
+	header := []interface{}{
+		m.Author,
+		m.Sequence,
+		m.Previous,
+		m.Timestamp,
+		m.ContentSection,
+	}
+	return []interface{}{
+		header,
+		m.Signature,
+	}
+}
+
 func (m *Message) Key() ([]byte, error) {
-	encoded, err := bencode.Encode(m)
+	encoded, err := bencode.Encode(m.ToBencode())
 	if err != nil {
 		return nil, err
 	}
@@ -75,17 +89,18 @@ func (m *Message) Key() ([]byte, error) {
 }
 
 func (m *Message) Sign(kp *keys.KeyPair) ([]byte, error) {
-	contentBytes, err := bencode.Encode(m.ContentSection)
+	contentBytes, err := bencode.Encode(m.ContentSection[0])
 	if err != nil {
 		return nil, err
 	}
 
-	prefix := []byte("bendybutt")
+	prefix := []byte("bendybutt-v1")
 	msgToSign := make([]byte, 0, len(prefix)+len(contentBytes))
 	msgToSign = append(msgToSign, prefix...)
 	msgToSign = append(msgToSign, contentBytes...)
 
 	sig := ed25519.Sign(kp.Private(), msgToSign)
+	m.Signature = sig
 	return sig, nil
 }
 
@@ -104,12 +119,12 @@ func (m *Message) Verify() error {
 
 	authorPubKey := m.Author[2:34]
 
-	contentBytes, err := bencode.Encode(m.ContentSection)
+	contentBytes, err := bencode.Encode(m.ContentSection[0])
 	if err != nil {
 		return err
 	}
 
-	prefix := []byte("bendybutt")
+	prefix := []byte("bendybutt-v1")
 	msgToVerify := make([]byte, 0, len(prefix)+len(contentBytes))
 	msgToVerify = append(msgToVerify, prefix...)
 	msgToVerify = append(msgToVerify, contentBytes...)
@@ -128,6 +143,17 @@ func (m *Message) ToRefsMessage() (*refs.MessageRef, error) {
 	}
 
 	return refs.NewMessageRef(key, refs.RefAlgoMessageBendyButt)
+}
+
+func asBytes(v interface{}) []byte {
+	switch val := v.(type) {
+	case []byte:
+		return val
+	case string:
+		return []byte(val)
+	default:
+		return nil
+	}
 }
 
 func FromStoredMessage(encoded []byte) (*Message, error) {
@@ -150,8 +176,8 @@ func FromStoredMessage(encoded []byte) (*Message, error) {
 		return nil, ErrInvalidMessage
 	}
 
-	sig, ok := list[1].([]byte)
-	if !ok {
+	sig := asBytes(list[1])
+	if sig == nil {
 		return nil, ErrInvalidSignature
 	}
 
@@ -163,8 +189,8 @@ func FromStoredMessage(encoded []byte) (*Message, error) {
 		Signature: sig,
 	}
 
-	author, ok := payload[0].([]byte)
-	if !ok {
+	author := asBytes(payload[0])
+	if author == nil {
 		return nil, ErrInvalidAuthor
 	}
 	msg.Author = author
@@ -175,11 +201,9 @@ func FromStoredMessage(encoded []byte) (*Message, error) {
 	}
 	msg.Sequence = seq
 
-	prev, ok := payload[2].([]byte)
-	if !ok {
-		if payload[2] != nil {
-			return nil, ErrInvalidPrevious
-		}
+	prev := asBytes(payload[2])
+	if prev == nil && payload[2] != nil {
+		return nil, ErrInvalidPrevious
 	}
 	msg.Previous = prev
 
@@ -193,13 +217,34 @@ func FromStoredMessage(encoded []byte) (*Message, error) {
 	if !ok {
 		return nil, ErrInvalidContent
 	}
-	msg.ContentSection = cs
+	msg.ContentSection = convertStringsToBytes(cs).([]interface{})
 
 	return msg, nil
 }
 
+func convertStringsToBytes(v interface{}) interface{} {
+	switch val := v.(type) {
+	case string:
+		return []byte(val)
+	case []interface{}:
+		result := make([]interface{}, len(val))
+		for i, v := range val {
+			result[i] = convertStringsToBytes(v)
+		}
+		return result
+	case map[string]interface{}:
+		result := make(map[string]interface{})
+		for k, v := range val {
+			result[k] = convertStringsToBytes(v)
+		}
+		return result
+	default:
+		return v
+	}
+}
+
 func (m *Message) Encode() ([]byte, error) {
-	encoded, err := bencode.Encode(m)
+	encoded, err := bencode.Encode(m.ToBencode())
 	if err != nil {
 		return nil, err
 	}
@@ -252,9 +297,9 @@ func encodeValueToBFE(v interface{}) interface{} {
 		return bfe.EncodeString(val)[2:]
 	case bool:
 		if val {
-			return []byte{bfe.TypeGeneric, 0x01}
+			return []byte{bfe.TypeGeneric, 0x01, 0x01}
 		}
-		return []byte{bfe.TypeGeneric, 0x01}
+		return []byte{bfe.TypeGeneric, 0x01, 0x00}
 	case nil:
 		return bfe.EncodeNil()
 	case int, int64, int32:
