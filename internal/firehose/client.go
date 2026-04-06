@@ -131,10 +131,6 @@ func (c *Client) Run(ctx context.Context) error {
 		}
 	}()
 
-	if c.ConnectedCallback != nil {
-		go c.ConnectedCallback()
-	}
-
 	return c.handleStream(ctx, con)
 }
 
