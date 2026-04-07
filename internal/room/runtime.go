@@ -450,6 +450,8 @@ func (r *Runtime) handleMUXRPCConn(ctx context.Context, conn net.Conn) {
 		return
 	}
 
+	r.logger.Printf("room: shs handshake success from %s", remoteFeed.String())
+
 	if r.roomDB != nil && r.roomDB.DeniedKeys().HasFeed(ctx, *remoteFeed) {
 		_ = shs.Close()
 		r.logger.Printf("room: denied shs peer %s", remoteFeed.String())
@@ -489,6 +491,7 @@ func (r *Runtime) handleMUXRPCConn(ctx context.Context, conn net.Conn) {
 
 	if r.roomSrv != nil {
 		r.roomSrv.PeerRegistry().Register(*remoteFeed, srv)
+		r.logger.Printf("room: registered peer in PeerRegistry: %s", remoteFeed.String())
 	}
 
 	if isMember && r.state != nil {

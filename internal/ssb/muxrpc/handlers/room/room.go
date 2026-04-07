@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/url"
 	"strings"
 	"sync"
@@ -41,6 +42,7 @@ func NewPeerRegistry() *PeerRegistry {
 func (r *PeerRegistry) Register(feed refs.FeedRef, srv *muxrpc.Server) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	log.Printf("PeerRegistry: Registering peer %s", feed.String())
 	r.peers[feed.String()] = srv
 }
 
@@ -53,7 +55,9 @@ func (r *PeerRegistry) Unregister(feed refs.FeedRef) {
 func (r *PeerRegistry) Get(feed refs.FeedRef) *muxrpc.Server {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return r.peers[feed.String()]
+	srv, ok := r.peers[feed.String()]
+	log.Printf("PeerRegistry: Lookup peer %s found=%v", feed.String(), ok)
+	return srv
 }
 
 type ListedPeer struct {
