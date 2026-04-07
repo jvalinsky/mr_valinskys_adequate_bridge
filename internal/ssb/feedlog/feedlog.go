@@ -17,6 +17,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/message/legacy"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/message/tangle"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 )
 
@@ -44,12 +45,15 @@ type StoredMessage struct {
 }
 
 type Metadata struct {
-	Author    string
-	Sequence  int64
-	Previous  string
-	Timestamp int64
-	Sig       []byte
-	Hash      string
+	Author     string
+	Sequence   int64
+	Previous   string
+	Timestamp  int64
+	Sig        []byte
+	Hash       string
+	TangleName string
+	Root       string
+	Parents    []string
 }
 
 type QuerySpec interface{}
@@ -71,12 +75,25 @@ type FeedStore interface {
 	Logs() MultiLog
 	ReceiveLog() (Log, error)
 	Blobs() BlobStore
+	Tangles() TangleStorage
+	Close() error
+}
+
+type TangleStorage interface {
+	AddMessage(ctx context.Context, msgKey, tangleName, rootKey string, parentKeys []string) error
+	GetTangle(ctx context.Context, name, root string) (*tangle.Tangle, error)
+	GetTangleMessages(ctx context.Context, name, root string, sinceSeq int64) ([]tangle.MessageWithTangles, error)
+	GetMessagesByParent(ctx context.Context, parentKey string) ([]tangle.MessageWithTangles, error)
+	GetTangleTips(ctx context.Context, name, root string) ([]string, error)
+	GetTangleMembership(ctx context.Context, msgKey string) (*tangle.TangleMembership, error)
+	GetTangleMessageCount(ctx context.Context, name, root string) (int, error)
 	Close() error
 }
 
 type BlobStore interface {
 	Put(r io.Reader) ([]byte, error)
 	Get(hash []byte) (io.ReadCloser, error)
+	GetRange(hash []byte, start, size int64) (io.ReadCloser, error)
 	Has(hash []byte) (bool, error)
 	Size(hash []byte) (int64, error)
 	Delete(hash []byte) error
@@ -230,6 +247,27 @@ func (s *StoreImpl) migrate() error {
 			created_at INTEGER NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_blobs_hash ON blobs(hash)`,
+		`CREATE TABLE IF NOT EXISTS tangles (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			root TEXT NOT NULL,
+			tips TEXT,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL,
+			UNIQUE(name, root)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_tangles_name_root ON tangles(name, root)`,
+		`CREATE TABLE IF NOT EXISTS tangle_membership (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			message_key TEXT NOT NULL,
+			tangle_name TEXT NOT NULL,
+			root_key TEXT NOT NULL,
+			parent_keys TEXT,
+			created_at INTEGER NOT NULL,
+			UNIQUE(message_key, tangle_name)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_tangle_membership_tangle ON tangle_membership(tangle_name, root_key)`,
+		`CREATE INDEX IF NOT EXISTS idx_tangle_membership_root ON tangle_membership(root_key)`,
 	}
 
 	_, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS schema_version (
@@ -260,7 +298,9 @@ func (s *StoreImpl) migrate() error {
 }
 
 func (s *StoreImpl) Logs() MultiLog {
-	return &multiLog{db: s.db}
+	ml := &multiLog{db: s.db}
+	ml.SetTangles(s.Tangles())
+	return ml
 }
 
 func (s *StoreImpl) ReceiveLog() (Log, error) {
@@ -295,13 +335,153 @@ func (s *StoreImpl) Blobs() BlobStore {
 	return &blobStore{db: s.db, blobPath: s.blobPath}
 }
 
+func (s *StoreImpl) Tangles() TangleStorage {
+	return &tangleStore{db: s.db}
+}
+
+type tangleStore struct {
+	db *sql.DB
+}
+
+func (ts *tangleStore) AddMessage(ctx context.Context, msgKey, tangleName, rootKey string, parentKeys []string) error {
+	parentJSON, _ := json.Marshal(parentKeys)
+	_, err := ts.db.ExecContext(ctx,
+		`INSERT OR REPLACE INTO tangle_membership (message_key, tangle_name, root_key, parent_keys, created_at) VALUES (?, ?, ?, ?, ?)`,
+		msgKey, tangleName, rootKey, string(parentJSON), time.Now().Unix())
+	return err
+}
+
+func (ts *tangleStore) GetTangle(ctx context.Context, name, root string) (*tangle.Tangle, error) {
+	row := ts.db.QueryRowContext(ctx,
+		`SELECT id, name, root, tips, created_at, updated_at FROM tangles WHERE name = ? AND root = ?`,
+		name, root)
+
+	var t tangle.Tangle
+	var tipsJSON string
+	err := row.Scan(&t.ID, &t.Name, &t.Root, &tipsJSON, &t.CreatedAt, &t.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	json.Unmarshal([]byte(tipsJSON), &t.Tips)
+	return &t, nil
+}
+
+func (ts *tangleStore) GetTangleMessages(ctx context.Context, name, root string, sinceSeq int64) ([]tangle.MessageWithTangles, error) {
+	rows, err := ts.db.QueryContext(ctx,
+		`SELECT tm.message_key, tm.tangle_name, tm.root_key, tm.parent_keys, m.value_json
+		 FROM tangle_membership tm
+		 LEFT JOIN messages m ON m.key = tm.message_key
+		 WHERE tm.tangle_name = ? AND tm.root_key = ?
+		 ORDER BY m.seq ASC`,
+		name, root)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var msgs []tangle.MessageWithTangles
+	for rows.Next() {
+		var m tangle.MessageWithTangles
+		var parentJSON string
+		var content []byte
+		err := rows.Scan(&m.Key, &m.TangleName, &m.Root, &parentJSON, &content)
+		if err != nil {
+			continue
+		}
+		json.Unmarshal([]byte(parentJSON), &m.Parents)
+		m.Content = content
+		msgs = append(msgs, m)
+	}
+	return msgs, nil
+}
+
+func (ts *tangleStore) GetMessagesByParent(ctx context.Context, parentKey string) ([]tangle.MessageWithTangles, error) {
+	rows, err := ts.db.QueryContext(ctx,
+		`SELECT message_key, tangle_name, root_key, parent_keys FROM tangle_membership WHERE parent_keys LIKE ?`,
+		"%"+parentKey+"%")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var msgs []tangle.MessageWithTangles
+	for rows.Next() {
+		var m tangle.MessageWithTangles
+		var parentJSON string
+		err := rows.Scan(&m.Key, &m.TangleName, &m.Root, &parentJSON)
+		if err != nil {
+			continue
+		}
+		json.Unmarshal([]byte(parentJSON), &m.Parents)
+		msgs = append(msgs, m)
+	}
+	return msgs, nil
+}
+
+func (ts *tangleStore) GetTangleTips(ctx context.Context, name, root string) ([]string, error) {
+	rows, err := ts.db.QueryContext(ctx,
+		`SELECT tm.message_key FROM tangle_membership tm
+		 WHERE tm.tangle_name = ? AND tm.root_key = ?
+		 AND NOT EXISTS (
+		   SELECT 1 FROM tangle_membership tm2
+		   WHERE tm2.parent_keys LIKE '%' || tm.message_key || '%'
+		 )`,
+		name, root)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tips []string
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err == nil {
+			tips = append(tips, key)
+		}
+	}
+	return tips, nil
+}
+
+func (ts *tangleStore) GetTangleMembership(ctx context.Context, msgKey string) (*tangle.TangleMembership, error) {
+	row := ts.db.QueryRowContext(ctx,
+		`SELECT id, message_key, tangle_name, root_key, parent_keys, created_at FROM tangle_membership WHERE message_key = ?`,
+		msgKey)
+
+	var tm tangle.TangleMembership
+	var parentJSON string
+	err := row.Scan(&tm.ID, &tm.MessageKey, &tm.TangleName, &tm.RootKey, &parentJSON, &tm.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	json.Unmarshal([]byte(parentJSON), &tm.ParentKeys)
+	return &tm, nil
+}
+
+func (ts *tangleStore) GetTangleMessageCount(ctx context.Context, name, root string) (int, error) {
+	var count int
+	row := ts.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM tangle_membership WHERE tangle_name = ? AND root_key = ?`,
+		name, root)
+	err := row.Scan(&count)
+	return count, err
+}
+
+func (ts *tangleStore) Close() error {
+	return nil
+}
+
 func (s *StoreImpl) Close() error {
 	return s.db.Close()
 }
 
 type multiLog struct {
-	db *sql.DB
-	mu sync.RWMutex
+	db      *sql.DB
+	mu      sync.RWMutex
+	tangles TangleStorage
+}
+
+func (m *multiLog) SetTangles(ts TangleStorage) {
+	m.tangles = ts
 }
 
 func (m *multiLog) List() ([]string, error) {
@@ -338,7 +518,8 @@ func (m *multiLog) Get(addr string) (Log, error) {
 		return nil, err
 	}
 
-	return &logAdapter{db: m.db, feedID: feedID}, nil
+	la := &logAdapter{db: m.db, feedID: feedID, tangles: m.tangles}
+	return la, nil
 }
 
 func (m *multiLog) Create(addr string) (Log, error) {
@@ -355,7 +536,8 @@ func (m *multiLog) Create(addr string) (Log, error) {
 		return nil, err
 	}
 
-	return &logAdapter{db: m.db, feedID: id}, nil
+	la := &logAdapter{db: m.db, feedID: id, tangles: m.tangles}
+	return la, nil
 }
 
 func (m *multiLog) Has(addr string) (bool, error) {
@@ -378,9 +560,14 @@ func (m *multiLog) Close() error {
 }
 
 type logAdapter struct {
-	db     *sql.DB
-	feedID int64
-	mu     sync.RWMutex
+	db      *sql.DB
+	feedID  int64
+	mu      sync.RWMutex
+	tangles TangleStorage
+}
+
+func (l *logAdapter) SetTangles(ts TangleStorage) {
+	l.tangles = ts
 }
 
 func (l *logAdapter) Seq() (int64, error) {
@@ -437,6 +624,10 @@ func (l *logAdapter) Append(content []byte, metadata *Metadata) (int64, error) {
 	)
 	if err != nil {
 		return 0, err
+	}
+
+	if l.tangles != nil && metadata != nil && metadata.TangleName != "" {
+		_ = l.tangles.AddMessage(context.Background(), key, metadata.TangleName, metadata.Root, metadata.Parents)
 	}
 
 	return nextSeq, nil
@@ -710,6 +901,36 @@ func (b *blobStore) Get(hash []byte) (io.ReadCloser, error) {
 	}
 
 	return io.NopCloser(io.LimitReader(nil, size)), nil
+}
+
+func (b *blobStore) GetRange(hash []byte, start, size int64) (io.ReadCloser, error) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	var totalSize int64
+	err := b.db.QueryRow("SELECT size FROM blobs WHERE hash = ?", hash).Scan(&totalSize)
+	if err == sql.ErrNoRows {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	if b.blobPath != "" {
+		blobFile := filepath.Join(b.blobPath, fmt.Sprintf("%x", hash))
+		f, err := os.Open(blobFile)
+		if err != nil {
+			return nil, err
+		}
+		_, err = f.Seek(start, io.SeekStart)
+		if err != nil {
+			f.Close()
+			return nil, err
+		}
+		return io.NopCloser(io.LimitReader(f, size)), nil
+	}
+
+	return nil, errors.New("blob storage does not support range reads")
 }
 
 func (b *blobStore) Has(hash []byte) (bool, error) {

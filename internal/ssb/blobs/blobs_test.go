@@ -33,6 +33,20 @@ func (m *mockBlobStore) Get(hash []byte) (io.ReadCloser, error) {
 	return nil, errors.New("not found")
 }
 
+func (m *mockBlobStore) GetRange(hash []byte, start, size int64) (io.ReadCloser, error) {
+	if data, ok := m.blobs[string(hash)]; ok {
+		if start >= int64(len(data)) {
+			return nil, errors.New("offset out of bounds")
+		}
+		end := start + size
+		if end > int64(len(data)) {
+			end = int64(len(data))
+		}
+		return io.NopCloser(bytes.NewReader(data[start:end])), nil
+	}
+	return nil, errors.New("not found")
+}
+
 func (m *mockBlobStore) Has(hash []byte) (bool, error) {
 	_, ok := m.blobs[string(hash)]
 	return ok, nil

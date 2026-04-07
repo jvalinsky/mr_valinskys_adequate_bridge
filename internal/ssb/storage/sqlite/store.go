@@ -460,6 +460,36 @@ func (b *BlobStoreImpl) Get(hash []byte) (io.ReadCloser, error) {
 	return io.NopCloser(io.LimitReader(nil, size)), nil
 }
 
+func (b *BlobStoreImpl) GetRange(hash []byte, start, size int64) (io.ReadCloser, error) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	var totalSize int64
+	err := b.db.QueryRow("SELECT size FROM blobs WHERE hash = ?", hash).Scan(&totalSize)
+	if err == sql.ErrNoRows {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	if b.blobPath != "" {
+		blobFile := filepath.Join(b.blobPath, fmt.Sprintf("%x", hash))
+		f, err := os.Open(blobFile)
+		if err != nil {
+			return nil, err
+		}
+		_, err = f.Seek(start, io.SeekStart)
+		if err != nil {
+			f.Close()
+			return nil, err
+		}
+		return io.NopCloser(io.LimitReader(f, size)), nil
+	}
+
+	return nil, errors.New("blob storage does not support range reads")
+}
+
 func (b *BlobStoreImpl) Has(hash []byte) (bool, error) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()

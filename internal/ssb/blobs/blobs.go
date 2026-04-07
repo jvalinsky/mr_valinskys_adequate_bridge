@@ -21,6 +21,7 @@ const DefaultMaxSize = 5 << 20
 type BlobStore interface {
 	Put(r io.Reader) ([]byte, error)
 	Get(hash []byte) (io.ReadCloser, error)
+	GetRange(hash []byte, start, size int64) (io.ReadCloser, error)
 	Has(hash []byte) (bool, error)
 	Size(hash []byte) (int64, error)
 }
@@ -55,6 +56,7 @@ func (s *Store) Register(mux *muxrpc.HandlerMux, self *refs.FeedRef, edp muxrpc.
 	plug := NewPlugin(self, s.bs, s.wm, edp)
 	mux.Register(muxrpc.Method{"blobs", "add"}, plug)
 	mux.Register(muxrpc.Method{"blobs", "get"}, plug)
+	mux.Register(muxrpc.Method{"blobs", "getSlice"}, plug)
 	mux.Register(muxrpc.Method{"blobs", "has"}, plug)
 	mux.Register(muxrpc.Method{"blobs", "size"}, plug)
 	mux.Register(muxrpc.Method{"blobs", "want"}, plug)
@@ -163,6 +165,8 @@ func (h *Handler) HandleCall(ctx context.Context, req *muxrpc.Request) {
 		h.handleWant(ctx, req)
 	case req.Method.String() == "blobs.get":
 		h.handleGet(ctx, req)
+	case req.Method.String() == "blobs.getSlice":
+		h.handleGetSlice(ctx, req)
 	case req.Method.String() == "blobs.add":
 		h.handleAdd(ctx, req)
 	case req.Method.String() == "blobs.createWants":
@@ -315,6 +319,71 @@ func (h *Handler) handleGet(ctx context.Context, req *muxrpc.Request) {
 		}
 	}
 	slog.Debug("blobs.get done", "hash", hashStr)
+}
+
+func (h *Handler) handleGetSlice(ctx context.Context, req *muxrpc.Request) {
+	if req.Type != "source" {
+		req.CloseWithError(fmt.Errorf("blobs.getSlice is a source handler"))
+		return
+	}
+
+	var args struct {
+		Hash  string `json:"hash"`
+		Start int64  `json:"start"`
+		Size  int64  `json:"size"`
+	}
+	if err := decodeArgs(req.RawArgs, &args); err != nil {
+		req.CloseWithError(err)
+		return
+	}
+
+	if args.Hash == "" {
+		req.CloseWithError(errors.New("blobs.getSlice: no hash provided"))
+		return
+	}
+
+	if args.Size <= 0 {
+		args.Size = 4 << 10 // default 4KB
+	}
+
+	slog.Debug("blobs.getSlice", "hash", args.Hash, "start", args.Start, "size", args.Size)
+
+	ref, err := refs.ParseBlobRef(args.Hash)
+	if err != nil {
+		req.CloseWithError(fmt.Errorf("blobs.getSlice: invalid ref: %w", err))
+		return
+	}
+
+	rc, err := h.bs.GetRange(ref.Hash(), args.Start, args.Size)
+	if err != nil {
+		slog.Debug("blobs.getSlice not found", "hash", args.Hash)
+		req.CloseWithError(fmt.Errorf("blobs.getSlice: not found"))
+		return
+	}
+	defer rc.Close()
+
+	sink, err := req.ResponseSink()
+	if err != nil {
+		req.CloseWithError(fmt.Errorf("blobs.getSlice: get sink: %w", err))
+		return
+	}
+
+	buf := make([]byte, 4096)
+	for {
+		n, err := rc.Read(buf)
+		if n > 0 {
+			if _, werr := sink.Write(buf[:n]); werr != nil {
+				return
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return
+		}
+	}
+	slog.Debug("blobs.getSlice done", "hash", args.Hash)
 }
 
 func (h *Handler) handleAdd(ctx context.Context, req *muxrpc.Request) {

@@ -45,6 +45,7 @@ type Store interface {
 type BlobStore interface {
 	Put(r io.Reader) ([]byte, error)
 	Get(hash []byte) (io.ReadCloser, error)
+	GetRange(hash []byte, start, size int64) (io.ReadCloser, error)
 	Has(hash []byte) (bool, error)
 	Size(hash []byte) (int64, error)
 	Close() error
