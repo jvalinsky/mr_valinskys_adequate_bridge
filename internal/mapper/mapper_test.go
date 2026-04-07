@@ -947,7 +947,50 @@ func TestReplaceATProtoRefsAdditionalBranches(t *testing.T) {
 	}
 }
 
-// FuzzMapRecord ensures MapRecord does not panic on arbitrary external input.
+// Table-driven tests for invalid JSON handling across all record types.
+// These tests verify that malformed JSON returns an error, while empty/missing
+// fields may cause panics (which are caught by the fuzz test).
+func TestMapRecord_InvalidJSON_TableDriven(t *testing.T) {
+	tests := []struct {
+		name       string
+		recordType string
+		json       string
+		wantErr    bool
+	}{
+		{"post_malformed", RecordTypePost, `{invalid`, true},
+		{"like_malformed", RecordTypeLike, `{malformed`, true},
+		{"repost_malformed", RecordTypeRepost, `not json`, true},
+		{"follow_malformed", RecordTypeFollow, `broken`, true},
+		{"block_malformed", RecordTypeBlock, `also broken`, true},
+		{"profile_malformed", RecordTypeProfile, `trash`, true},
+		{"post_empty_array", RecordTypePost, "[]", true},
+		{"like_empty_array", RecordTypeLike, "[]", true},
+		{"repost_empty_array", RecordTypeRepost, "[]", true},
+		{"follow_empty_array", RecordTypeFollow, "[]", true},
+		{"block_empty_array", RecordTypeBlock, "[]", true},
+		{"profile_empty_array", RecordTypeProfile, "[]", true},
+		{"unknown_type", "app.bsky.unknown.type", "{}", true},
+		{"empty_type", "", "{}", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("MapRecord(%q, _, %q) panicked: %v", tt.recordType, tt.json, r)
+				}
+			}()
+			_, err := MapRecord(tt.recordType, "did:plc:test", []byte(tt.json))
+			if tt.wantErr && err == nil {
+				t.Errorf("MapRecord(%q, _, %q) expected error, got nil", tt.recordType, tt.json)
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("MapRecord(%q, _, %q) unexpected error: %v", tt.recordType, tt.json, err)
+			}
+		})
+	}
+}
+
 // The mapper is the first code to process untrusted ATProto payloads from the firehose.
 func FuzzMapRecord(f *testing.F) {
 	// Seed with minimal valid examples of each supported collection.
