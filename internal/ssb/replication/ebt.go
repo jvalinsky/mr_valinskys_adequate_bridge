@@ -24,13 +24,10 @@ type Note struct {
 type NetworkFrontier map[string]Note
 
 func (n Note) MarshalJSON() ([]byte, error) {
-	if !n.Replicate {
+	if !n.Replicate || n.Seq == -1 {
 		return []byte("-1"), nil
 	}
 	i := n.Seq
-	if i == -1 {
-		return []byte("-1"), nil
-	}
 	i = i << 1
 	if !n.Receive {
 		i |= 1
@@ -53,7 +50,7 @@ func (nf *NetworkFrontier) UnmarshalJSON(data []byte) error {
 
 		n := Note{
 			Replicate: i != -1,
-			Receive:   !(i&1 == 1),
+			Receive:   i != -1 && !(i&1 == 1),
 			Seq:       i >> 1,
 		}
 		result[fstr] = n
@@ -213,57 +210,34 @@ func (sm *StateMatrix) Changed(self, peer *refs.FeedRef) (NetworkFrontier, error
 	if err != nil {
 		return nil, err
 	}
-	if selfNf == nil {
-		selfNf = make(NetworkFrontier)
-	}
-
-	slog.Debug("ebt changed self", "self", self.String(), "frontier_count", len(selfNf), "frontier", fmt.Sprintf("%+v", selfNf))
-
-	var peerNf NetworkFrontier
-	if peer != nil {
-		peerNf, err = sm.loadFrontier(peer.String())
-		if err != nil {
-			return nil, err
-		}
-		if peerNf == nil {
-			peerNf = make(NetworkFrontier)
-		}
-		slog.Debug("ebt changed peer", "peer", peer.String(), "frontier_count", len(peerNf))
-	} else {
-		peerNf = make(NetworkFrontier)
-		slog.Debug("ebt changed peer (initial state request)", "peer", nil)
-	}
-
-	relevant := make(NetworkFrontier)
 
 	if peer == nil {
+		relevant := make(NetworkFrontier)
 		for feed, note := range selfNf {
 			if note.Replicate {
 				relevant[feed] = note
 			}
 		}
-		slog.Debug("ebt changed initial state", "feeds_advertising", len(relevant))
 		return relevant, nil
 	}
 
-	for wantedFeed, myNote := range selfNf {
-		theirNote, has := peerNf[wantedFeed]
-		if !has && myNote.Receive {
-			relevant[wantedFeed] = myNote
-			continue
-		}
-
-		if !theirNote.Replicate {
-			continue
-		}
-
-		if !theirNote.Receive && wantedFeed != peer.String() {
-			continue
-		}
-
-		relevant[wantedFeed] = theirNote
+	peerNf, err := sm.loadFrontier(peer.String())
+	if err != nil {
+		return nil, err
 	}
 
+	relevant := make(NetworkFrontier)
+	for feed, myNote := range selfNf {
+		theirNote, has := peerNf[feed]
+		if !has {
+			relevant[feed] = myNote
+			continue
+		}
+
+		if myNote.Seq != theirNote.Seq || myNote.Receive != theirNote.Receive || myNote.Replicate != theirNote.Replicate {
+			relevant[feed] = myNote
+		}
+	}
 	return relevant, nil
 }
 
@@ -484,49 +458,54 @@ func (h *EBTHandler) HandleDuplex(ctx context.Context, tx Writer, rx ByteSourceR
 			return err
 		}
 
-		// Compute what's changed between our frontier and the remote peer's
-		wants, err := h.stateMatrix.Changed(h.self, remoteFeed)
-		if err != nil {
-			return err
+		// Decide what to stream based on current frontiers
+		sm := h.stateMatrix
+		sm.mu.Lock()
+		selfNf, _ := sm.loadFrontier(h.self.String())
+		sm.mu.Unlock()
+
+		for feedStr, theirNote := range frontierUpdate {
+			myNote, has := selfNf[feedStr]
+			if !has {
+				continue
+			}
+
+			// If they said they want to receive AND we have more than they do, start streaming
+			if theirNote.Receive && myNote.Seq > theirNote.Seq {
+				feed, err := refs.ParseFeedRef(feedStr)
+				if err != nil {
+					continue
+				}
+
+				slog.Debug("ebt handle duplex streaming history", "feed", feedStr, "from_seq", theirNote.Seq+1)
+
+				arg := CreateHistArgs{
+					ID:    feed,
+					Seq:   theirNote.Seq + 1,
+					Limit: -1,
+					Live:  true,
+				}
+
+				subCtx, cancel := context.WithCancel(ctx)
+				session.Subscribed(feedStr, cancel)
+
+				go func(fStr string, cxt context.Context, a CreateHistArgs) {
+					if err := h.createStreamHistory(cxt, tx, a); err != nil {
+						if !errors.Is(err, context.Canceled) {
+							slog.Debug("ebt create stream history error", "feed", fStr, "err", err)
+						}
+					}
+				}(feedStr, subCtx, arg)
+			}
 		}
 
-		slog.Debug("ebt handle duplex feeds wanted", "count", len(wants), "wants", fmt.Sprintf("%+v", wants))
-
-		for feedStr, note := range wants {
-			if !note.Replicate {
-				session.Unsubscribe(feedStr)
-				continue
+		// Also check if WE need to send notes back (e.g. if we are following feeds they just mentioned)
+		wants, err := h.stateMatrix.Changed(h.self, remoteFeed)
+		if err == nil && len(wants) > 0 {
+			data, err := json.Marshal(wants)
+			if err == nil {
+				_ = tx.Write(ctx, data)
 			}
-
-			if !note.Receive {
-				session.Unsubscribe(feedStr)
-				continue
-			}
-
-			feed, err := refs.ParseFeedRef(feedStr)
-			if err != nil {
-				continue
-			}
-
-			slog.Debug("ebt handle duplex streaming history", "feed", feedStr, "seq", note.Seq+1)
-
-			arg := CreateHistArgs{
-				ID:    feed,
-				Seq:   note.Seq + 1,
-				Limit: -1,
-				Live:  true,
-			}
-
-			subCtx, cancel := context.WithCancel(ctx)
-			session.Subscribed(feedStr, cancel)
-
-			go func(fStr string, cxt context.Context, a CreateHistArgs) {
-				if err := h.createStreamHistory(cxt, tx, a); err != nil {
-					if !errors.Is(err, context.Canceled) {
-						slog.Debug("ebt create stream history error", "feed", fStr, "err", err)
-					}
-				}
-			}(feedStr, subCtx, arg)
 		}
 	}
 }

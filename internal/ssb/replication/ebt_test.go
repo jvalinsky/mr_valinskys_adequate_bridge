@@ -21,7 +21,6 @@ func TestNoteRoundTrip(t *testing.T) {
 		{"Replicate True, Receive True", Note{Seq: 10, Replicate: true, Receive: true}},
 		{"Replicate True, Receive False", Note{Seq: 10, Replicate: true, Receive: false}},
 		{"Seq 0", Note{Seq: 0, Replicate: true, Receive: true}},
-		{"Seq -1", Note{Seq: -1, Replicate: true, Receive: true}},
 	}
 
 	for _, tt := range tests {
@@ -42,23 +41,20 @@ func TestNoteRoundTrip(t *testing.T) {
 				t.Fatalf("Note for %s not found in unmarshaled result", feed)
 			}
 
+			if got.Replicate != tt.note.Replicate {
+				t.Errorf("Replicate mismatch: got %v, want %v", got.Replicate, tt.note.Replicate)
+			}
+
 			if !tt.note.Replicate {
-				if got.Replicate {
-					t.Errorf("Replicate mismatch: got %v, want %v", got.Replicate, tt.note.Replicate)
-				}
 				return
 			}
 
-			if got.Replicate != tt.note.Replicate || got.Receive != tt.note.Receive {
-				t.Errorf("Flags mismatch: got %+v, want %+v", got, tt.note)
+			if got.Receive != tt.note.Receive {
+				t.Errorf("Receive mismatch: got %v, want %v", got.Receive, tt.note.Receive)
 			}
 
-			expectedSeq := tt.note.Seq
-			if expectedSeq == -1 {
-				expectedSeq = 0 // Original behavior: -1 normalizes to 0
-			}
-			if got.Seq != expectedSeq {
-				t.Errorf("Seq mismatch: got %d, want %d", got.Seq, expectedSeq)
+			if got.Seq != tt.note.Seq {
+				t.Errorf("Seq mismatch: got %d, want %d", got.Seq, tt.note.Seq)
 			}
 		})
 	}
@@ -92,8 +88,9 @@ func TestStateMatrix(t *testing.T) {
 
 	// Test Changed (after peer update)
 	wants, _ = sm.Changed(alice, bob)
-	if wants[alice.String()].Seq != 5 {
-		t.Errorf("expected peer's seq 5, got %d", wants[alice.String()].Seq)
+	// Alice is at 10, Bob told us he has 5. We should tell Bob we are at 10.
+	if wants[alice.String()].Seq != 10 {
+		t.Errorf("expected our own seq 10, got %d", wants[alice.String()].Seq)
 	}
 }
 
@@ -192,19 +189,26 @@ func TestEBTHandler(t *testing.T) {
 }
 
 func TestNote_MarshalJSON_Uninitialized(t *testing.T) {
-	note := Note{
-		Seq:       -1,
-		Replicate: true,
-		Receive:   false,
+	tests := []struct {
+		name string
+		note Note
+	}{
+		{"Replicate False", Note{Seq: 0, Replicate: false, Receive: true}},
+		{"Seq -1", Note{Seq: -1, Replicate: true, Receive: true}},
+		{"Both", Note{Seq: -1, Replicate: false, Receive: false}},
 	}
 
-	b, err := json.Marshal(note)
-	if err != nil {
-		t.Fatalf("Marshal failed: %v", err)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b, err := json.Marshal(tt.note)
+			if err != nil {
+				t.Fatalf("Marshal failed: %v", err)
+			}
 
-	if string(b) != "-1" {
-		t.Errorf("uninitialized feed (Seq=-1, Replicate=true) should marshal to -1, got %s", string(b))
+			if string(b) != "-1" {
+				t.Errorf("%s: expected -1, got %s", tt.name, string(b))
+			}
+		})
 	}
 }
 
