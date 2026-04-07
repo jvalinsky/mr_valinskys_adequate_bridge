@@ -491,7 +491,6 @@ func (r *Runtime) handleMUXRPCConn(ctx context.Context, conn net.Conn) {
 
 	if r.roomSrv != nil {
 		r.roomSrv.PeerRegistry().Register(*remoteFeed, srv)
-		r.logger.Printf("room: registered peer in PeerRegistry: %s", remoteFeed.String())
 	}
 
 	if isMember && r.state != nil {

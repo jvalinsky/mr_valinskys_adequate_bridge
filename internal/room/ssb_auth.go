@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -146,14 +145,11 @@ func (h *ssbAuthHandler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 6. Issue token
-	log.Printf("SIP 6: Looking up member by feed: %s", cid.String())
 	member, err := h.members.GetByFeed(r.Context(), *cid)
 	if err != nil {
-		log.Printf("SIP 6: Member not found: %s (err: %v)", cid.String(), err)
 		http.Error(w, "Not a member", http.StatusForbidden)
 		return
 	}
-	log.Printf("SIP 6: Found member %d for feed: %s (role: %d)", member.ID, cid.String(), member.Role)
 
 	token, err := h.authTokens.CreateToken(r.Context(), member.ID)
 	if err != nil {
