@@ -847,6 +847,20 @@ func fetchUI(t *testing.T, database *db.DB, path string) string {
 	return rr.Body.String()
 }
 
+func fetchUIPost(t *testing.T, database *db.DB, path string, formData url.Values) string {
+	t.Helper()
+
+	router := chi.NewRouter()
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).Mount(router)
+
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(formData.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	return rr.Body.String()
+}
+
 type erroringDB struct {
 	db.DB
 	failMethod string
@@ -2983,4 +2997,90 @@ func TestHandleFailuresRetry(t *testing.T) {
 	if !strings.Contains(location, "/failures") {
 		t.Errorf("expected redirect to /failures, got %s", location)
 	}
+}
+
+func TestHandleConnectionAdd(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	router := chi.NewRouter()
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).Mount(router)
+
+	t.Run("missing_fields", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/connections/add", nil)
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("expected 400, got %d", rr.Code)
+		}
+	})
+
+	t.Run("invalid_pubkey", func(t *testing.T) {
+		form := url.Values{}
+		form.Set("addr", "1.2.3.4:8008")
+		form.Set("pubkey", "not-valid-base64!")
+
+		req := httptest.NewRequest(http.MethodPost, "/connections/add", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("expected 400 for invalid base64, got %d", rr.Code)
+		}
+	})
+
+	t.Run("wrong_pubkey_length", func(t *testing.T) {
+		form := url.Values{}
+		form.Set("addr", "1.2.3.4:8008")
+		form.Set("pubkey", "YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXo=") // "abcdefghijklmnopqrstuvwxyz" base64 - 26 bytes
+
+		req := httptest.NewRequest(http.MethodPost, "/connections/add", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("expected 400 for wrong length pubkey, got %d", rr.Code)
+		}
+	})
+
+	t.Run("valid_pubkey", func(t *testing.T) {
+		// 32 bytes base64 encoded = MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI=
+		validPubkey := "MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI="
+
+		form := url.Values{}
+		form.Set("addr", "1.2.3.4:8008")
+		form.Set("pubkey", validPubkey)
+
+		req := httptest.NewRequest(http.MethodPost, "/connections/add", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusSeeOther {
+			t.Errorf("expected 303 redirect, got %d", rr.Code)
+		}
+	})
+}
+
+func TestHandleConnectionConnect(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	router := chi.NewRouter()
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).Mount(router)
+
+	t.Run("missing_fields", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/connections/connect", nil)
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusBadRequest {
+			t.Errorf("expected 400, got %d", rr.Code)
+		}
+	})
 }
