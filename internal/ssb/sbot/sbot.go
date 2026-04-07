@@ -265,6 +265,8 @@ func registerHandlers(mux *muxrpc.HandlerMux, store *feedlog.StoreImpl, ebt *rep
 	historyHandler := handlers.NewHistoryStreamHandler(store)
 	mux.Register(muxrpc.Method{"createHistoryStream"}, historyHandler)
 
+	handlers.RegisterTangleHandler(mux, store)
+
 	selfRef := keyPair.FeedRef()
 	blobHandler := blobs.NewPlugin(&selfRef, blobStore.BlobStore(), blobStore.WantManager(), nil)
 	mux.Register(muxrpc.Method{"blobs", "add"}, blobHandler)
