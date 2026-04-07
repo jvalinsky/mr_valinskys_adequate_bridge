@@ -16,10 +16,13 @@ import (
 const EBTVersion = 3
 
 type Note struct {
-	Seq       int64
-	Replicate bool
-	Receive   bool
+	Seq           int64
+	Replicate     bool
+	Receive       bool
+	TangleRootSeq int64
 }
+
+type TangleFrontier map[string]int64
 
 type NetworkFrontier map[string]Note
 
@@ -60,25 +63,39 @@ func (nf *NetworkFrontier) UnmarshalJSON(data []byte) error {
 }
 
 type StateMatrix struct {
-	basePath  string
-	self      string
-	mu        sync.Mutex
-	frontiers map[string]NetworkFrontier
-	store     feedlog.FeedStore
-	updateCh  chan struct{}
+	basePath        string
+	self            string
+	mu              sync.Mutex
+	frontiers       map[string]NetworkFrontier
+	tangleFrontiers map[string]TangleFrontier
+	store           feedlog.FeedStore
+	updateCh        chan struct{}
 }
 
 func NewStateMatrix(basePath string, self *refs.FeedRef, store feedlog.FeedStore) (*StateMatrix, error) {
 	sm := &StateMatrix{
-		basePath:  basePath,
-		frontiers: make(map[string]NetworkFrontier),
-		store:     store,
-		updateCh:  make(chan struct{}, 1),
+		basePath:        basePath,
+		frontiers:       make(map[string]NetworkFrontier),
+		tangleFrontiers: make(map[string]TangleFrontier),
+		store:           store,
+		updateCh:        make(chan struct{}, 1),
 	}
 	if self != nil {
 		sm.self = self.String()
 	}
 	return sm, nil
+}
+
+func (sm *StateMatrix) GetTangleFrontier(peer string) TangleFrontier {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	return sm.tangleFrontiers[peer]
+}
+
+func (sm *StateMatrix) SetTangleFrontier(peer string, frontier TangleFrontier) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.tangleFrontiers[peer] = frontier
 }
 
 func (sm *StateMatrix) notify() {
