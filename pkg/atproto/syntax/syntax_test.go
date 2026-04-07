@@ -33,3 +33,62 @@ func TestParseATURIRejectsExtraSegments(t *testing.T) {
 		t.Fatal("expected error for extra path segments")
 	}
 }
+
+func TestParseATURI_EdgeCases(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		valid bool
+	}{
+		{"empty_string", "", false},
+		{"missing_at_prefix", "did:plc:test/app.bsky.feed.post/abc", false},
+		{"invalid_prefix", "http://did:plc:test/app.bsky.feed.post/abc", false},
+		{"just_at_prefix", "at://", false},                                 // Parser returns error - too few segments
+		{"single_segment", "at://did:plc:test", true},                      // Parser accepts - missing collection/rkey
+		{"empty_collection", "at://did:plc:test/", true},                   // Parser accepts - empty collection
+		{"empty_recordkey", "at://did:plc:test/app.bsky.feed.post/", true}, // Parser accepts
+		{"special_chars_in_rkey", "at://did:plc:test/app.bsky.feed.post/abc!def", true},
+		{"underscore_in_rkey", "at://did:plc:test/app.bsky.feed.post/abc_def", true},
+		{"numbers_in_rkey", "at://did:plc:test/app.bsky.feed.post/12345", true},
+		{"double_slash_in_authority", "at://did:plc:test//app.bsky.feed.post/abc", true}, // Parser accepts
+		{"four_segments", "at://did:plc:test/a/b/c", false},
+		{"trailing_slash_rkey", "at://did:plc:test/app.bsky.feed.post/abc/", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseATURI(tt.input)
+			if tt.valid && err != nil {
+				t.Errorf("ParseATURI(%q) unexpected error: %v", tt.input, err)
+			}
+			if !tt.valid && err == nil {
+				t.Errorf("ParseATURI(%q) expected error, got nil", tt.input)
+			}
+		})
+	}
+}
+
+func FuzzParseATURI(f *testing.F) {
+	f.Add("at://did:plc:test/app.bsky.feed.post/abc")
+	f.Add("at://alice.test/app.bsky.graph.follow/xyz")
+	f.Add("at://did:plc:z72i7hdynmk6r22w27h6cj7f/app.bsky.actor.profile/self")
+	f.Add("")
+	f.Add("not-a-aturi")
+	f.Add("at://")
+	f.Add("at://did:plc:test/")
+	f.Add("at://did:plc:test/app.bsky.feed.post")
+
+	f.Fuzz(func(t *testing.T, s string) {
+		_, err := ParseATURI(s)
+		if err != nil {
+			return
+		}
+		if s != "" && !hasATURIPrefix(s) {
+			t.Errorf("ParseATURI(%q) should have failed for non-AT-URI input", s)
+		}
+	})
+}
+
+func hasATURIPrefix(s string) bool {
+	return len(s) >= 3 && s[0] == 'a' && s[1] == 't' && s[2] == ':'
+}
