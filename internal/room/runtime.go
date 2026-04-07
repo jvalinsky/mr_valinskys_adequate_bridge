@@ -487,15 +487,16 @@ func (r *Runtime) handleMUXRPCConn(ctx context.Context, conn net.Conn) {
 		r.handler.HandleConnect(connCtx, srv)
 	}
 
+	if r.roomSrv != nil {
+		r.roomSrv.PeerRegistry().Register(*remoteFeed, srv)
+	}
+
 	if isMember && r.state != nil {
 		r.state.AddAttendant(*remoteFeed, tracked.RemoteAddr().String())
 		r.logger.Printf("event=room_member_connected feed=%s addr=%s", remoteFeed.String(), tracked.RemoteAddr().String())
 	}
 	if isMember && r.snapshots != nil {
 		_ = r.snapshots.UpsertAttendant(context.Background(), *remoteFeed, tracked.RemoteAddr().String(), time.Now().Unix())
-	}
-	if isMember && r.roomSrv != nil {
-		r.roomSrv.PeerRegistry().Register(*remoteFeed, srv)
 	}
 
 	select {
