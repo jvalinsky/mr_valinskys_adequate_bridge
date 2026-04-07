@@ -205,6 +205,18 @@ func main() {
 					},
 				},
 			},
+			{
+				Name:  "room",
+				Usage: "Room command (SIP 6 auth)",
+				Subcommands: []*cli.Command{
+					{
+						Name:      "login",
+						Usage:     "Log in to a room using SSB HTTP Auth (SIP 6)",
+						ArgsUsage: "<room-http-url>",
+						Action:    runRoomLogin,
+					},
+				},
+			},
 		},
 	}
 

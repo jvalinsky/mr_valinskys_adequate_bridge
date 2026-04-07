@@ -39,7 +39,8 @@ type Options struct {
 }
 
 type Sbot struct {
-	ctx context.Context
+	ctx    context.Context
+	cancel context.CancelFunc
 
 	KeyPair *keys.KeyPair
 	opts    Options
@@ -244,6 +245,8 @@ func newManifest(enableEBT, enableRoom bool) *muxrpc.Manifest {
 		m.RegisterSource("tunnel.endpoints")
 		m.RegisterAsync("tunnel.isRoom")
 		m.RegisterSync("tunnel.ping")
+		m.RegisterAsync("httpAuth.requestSolution")
+		m.RegisterAsync("httpAuth.invalidateAllSolutions")
 
 		m.RegisterAsync("invite.create")
 		m.RegisterAsync("invite.use")
@@ -276,7 +279,7 @@ func registerHandlers(mux *muxrpc.HandlerMux, store *feedlog.StoreImpl, ebt *rep
 }
 
 func (s *Sbot) Serve() error {
-	s.ctx, _ = context.WithCancel(context.Background())
+	s.ctx, s.cancel = context.WithCancel(context.Background())
 
 	go func() {
 		if err := s.netServer.Serve(s.ctx, s.handlerMux); err != nil {
@@ -300,6 +303,10 @@ func (s *Sbot) Shutdown() error {
 		return nil
 	}
 	s.closed = true
+
+	if s.cancel != nil {
+		s.cancel()
+	}
 
 	var errs []error
 

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	crypto_rand "crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -25,6 +26,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/feedlog"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/keys"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/sbot"
 	websecurity "github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/web/security"
 	"github.com/urfave/cli/v2"
@@ -313,7 +315,7 @@ li { background: var(--panel); border: 1px solid var(--line); padding: 12px 15px
 `
 
 func navHTML() string {
-	return fmt.Sprintf(`<header class="app-header">
+	return `<header class="app-header">
 <div class="header-content">
   <span class="brand">SSB Client</span>
   <nav class="nav-row">
@@ -331,7 +333,7 @@ func navHTML() string {
     <a href="/settings" class="nav-link">Settings</a>
   </nav>
 </div>
-</header>`)
+</header>`
 }
 
 func htmlPage(title, body string) string {
@@ -2218,6 +2220,70 @@ func runPublish(c *cli.Context) error {
 	}
 
 	return apiPost("/api/publish", content)
+}
+
+func runRoomLogin(c *cli.Context) error {
+	roomURL := c.Args().First()
+	if roomURL == "" {
+		return fmt.Errorf("missing room HTTP URL")
+	}
+
+	// For CLI commands, we might not have sbotInstance if we're not in 'serve' mode.
+	// But SIP 6 requires a running MUXRPC connection.
+	// So the user should run 'serve' first.
+	if sbotInstance == nil {
+		return fmt.Errorf("sbot not running (run serve first)")
+	}
+
+	// Register auth handler if not already registered
+	sbotInstance.HandlerMux().Register(muxrpc.Method{"httpAuth"}, &clientAuthHandler{kp: sbotInstance.KeyPair})
+
+	// Get cid and cc
+	cid := sbotInstance.KeyPair.FeedRef().String()
+
+	ccBytes := make([]byte, 32)
+	if _, err := crypto_rand.Read(ccBytes); err != nil {
+		return err
+	}
+	cc := base64.StdEncoding.EncodeToString(ccBytes)
+
+	// Build URL
+	u, err := url.Parse(roomURL)
+	if err != nil {
+		return err
+	}
+	if !strings.HasSuffix(u.Path, "/login") {
+		u.Path = filepath.Join(u.Path, "login")
+	}
+	q := u.Query()
+	q.Set("ssb-http-auth", "1")
+	q.Set("cid", cid)
+	q.Set("cc", cc)
+	u.RawQuery = q.Encode()
+
+	fmt.Printf("Logging in to %s...\n", u.String())
+
+	resp, err := http.Get(u.String())
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("login failed: %s (body: %s)", resp.Status, string(body))
+	}
+
+	// Check for session cookie
+	for _, cookie := range resp.Cookies() {
+		if cookie.Name == "session" {
+			fmt.Printf("Login successful! Session cookie received: %s\n", cookie.Value)
+			return nil
+		}
+	}
+
+	fmt.Println("Login request sent. Check if session was established.")
+	return nil
 }
 
 func runPeersList(c *cli.Context) error {

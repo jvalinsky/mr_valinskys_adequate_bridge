@@ -10,6 +10,7 @@ import (
 type authHandler struct {
 	authFallback authFallbackService
 	authTokens   authTokenService
+	ssbAuth      *ssbAuthHandler
 }
 
 type authFallbackService interface {
@@ -25,15 +26,24 @@ type authTokenService interface {
 
 const authTokenCookieName = "auth_token"
 
-func newAuthHandler(authFallback authFallbackService, authTokens authTokenService) *authHandler {
+func newAuthHandler(authFallback authFallbackService, authTokens authTokenService, ssbAuth *ssbAuthHandler) *authHandler {
 	return &authHandler{
 		authFallback: authFallback,
 		authTokens:   authTokens,
+		ssbAuth:      ssbAuth,
 	}
 }
 
 func (h *authHandler) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
+		if r.URL.Query().Get("ssb-http-auth") == "1" {
+			if h.ssbAuth != nil {
+				h.ssbAuth.handleLogin(w, r)
+				return
+			}
+			http.Error(w, "SSB HTTP Auth not configured", http.StatusNotImplemented)
+			return
+		}
 		h.serveLoginPage(w, r)
 		return
 	}

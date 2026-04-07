@@ -188,7 +188,7 @@ func (r *Runtime) initHandlers() {
 	if handlerMux == nil {
 		handlerMux = &muxrpc.HandlerMux{}
 	}
-	tunnelH := registerRoomHandlers(handlerMux, roomSrv, r.snapshots, r.keyPair, r.cfg.AppKey)
+	tunnelH := registerRoomHandlers(handlerMux, roomSrv, r.snapshots, r.keyPair, r.cfg.AppKey, r.roomDB.AuthTokens())
 	tunnelH.SetMetrics(r)
 	r.tunnelHandler = tunnelH
 
@@ -212,7 +212,7 @@ func (r *Runtime) initNetwork() error {
 	r.muxrpcListener = muxrpcListener
 	r.muxrpcAddr = muxrpcListener.Addr().String()
 
-	muxHandler := newServeMux(r.ctx, r.roomDB, r.state, r.keyPair, r.cfg.HTTPSDomain, r.httpAddr, r.muxrpcAddr)
+	muxHandler := newServeMux(r.ctx, r.roomDB, r.state, r.keyPair, r.cfg.HTTPSDomain, r.httpAddr, r.muxrpcAddr, r.roomSrv)
 	r.httpServer = &http.Server{
 		Handler: newBridgeRoomHandlerWithAuth(
 			muxHandler,
@@ -596,7 +596,7 @@ func newRoomServer(keyPair *refs.FeedRef, db RoomDB, state *roomstate.Manager) *
 	}
 }
 
-func newServeMux(ctx context.Context, db RoomDB, state *roomstate.Manager, keyPair *keys.KeyPair, httpsDomain, httpAddr, muxrpcAddr string) *http.ServeMux {
+func newServeMux(ctx context.Context, db RoomDB, state *roomstate.Manager, keyPair *keys.KeyPair, httpsDomain, httpAddr, muxrpcAddr string, roomSrv *roomhandlers.RoomServer) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -631,14 +631,15 @@ func newServeMux(ctx context.Context, db RoomDB, state *roomstate.Manager, keyPa
 	mux.HandleFunc("/invite/consume", inviteH.handleInviteConsumeRoute)
 	mux.HandleFunc("/", inviteH.handleAliasEndpoint)
 
-	authH := newAuthHandler(db.AuthFallback(), db.AuthTokens())
+	ssbAuthH := newSSBAuthHandler(newChallengeStore(), db.Members(), db.AuthTokens(), keyPair.FeedRef(), roomSrv.GetPeerMuxRPC)
+	authH := newAuthHandler(db.AuthFallback(), db.AuthTokens(), ssbAuthH)
 	mux.HandleFunc("/login", authH.handleLogin)
 	mux.HandleFunc("/reset-password", authH.handleResetPassword)
 
 	return mux
 }
 
-func registerRoomHandlers(mux *muxrpc.HandlerMux, srv *roomhandlers.RoomServer, snapshots roomdb.RuntimeSnapshotsService, keyPair *keys.KeyPair, appKey string) *roomhandlers.TunnelHandler {
+func registerRoomHandlers(mux *muxrpc.HandlerMux, srv *roomhandlers.RoomServer, snapshots roomdb.RuntimeSnapshotsService, keyPair *keys.KeyPair, appKey string, authTokens roomdb.AuthWithSSBService) *roomhandlers.TunnelHandler {
 	mux.Register(muxrpc.Method{"whoami"}, &whoamiHandler{srv})
 	roomH := roomhandlers.NewRoomHandler(srv, keyPair.FeedRef())
 	mux.Register(muxrpc.Method{"room"}, roomH)
@@ -651,6 +652,7 @@ func registerRoomHandlers(mux *muxrpc.HandlerMux, srv *roomhandlers.RoomServer, 
 	mux.Register(muxrpc.Method{"tunnel", "endpoints"}, tunnelHandler)
 	mux.Register(muxrpc.Method{"tunnel", "isRoom"}, tunnelHandler)
 	mux.Register(muxrpc.Method{"tunnel", "ping"}, tunnelHandler)
+	mux.Register(muxrpc.Method{"httpAuth"}, roomhandlers.NewHTTPAuthHandler(authTokens))
 
 	return tunnelHandler
 }

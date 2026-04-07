@@ -2,10 +2,12 @@ package sqlite
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -918,9 +920,8 @@ func checkPasswordHash(password string, hash []byte) bool {
 
 func randomToken() string {
 	b := make([]byte, 16)
-	for i := range b {
-		b[i] = byte(time.Now().UnixNano() % 256)
-		time.Sleep(time.Nanosecond)
+	if _, err := io.ReadFull(rand.Reader, b); err != nil {
+		panic(fmt.Errorf("failed to generate random token: %w", err))
 	}
 	return base64.URLEncoding.EncodeToString(b)
 }

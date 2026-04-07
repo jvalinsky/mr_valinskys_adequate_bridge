@@ -81,22 +81,7 @@ func parseAliasRegisterArgs(raw json.RawMessage) (string, []byte, error) {
 }
 
 func AuthenticatedFeedFromAddr(addr net.Addr) (refs.FeedRef, error) {
-	switch tv := addr.(type) {
-	case secretstream.Addr:
-		ref, err := refs.NewFeedRef(tv.PubKey, refs.RefAlgoFeedSSB1)
-		if err != nil {
-			return refs.FeedRef{}, err
-		}
-		return *ref, nil
-	case *secretstream.Addr:
-		ref, err := refs.NewFeedRef(tv.PubKey, refs.RefAlgoFeedSSB1)
-		if err != nil {
-			return refs.FeedRef{}, err
-		}
-		return *ref, nil
-	default:
-		return refs.FeedRef{}, fmt.Errorf("no authenticated shs identity")
-	}
+	return secretstream.AuthenticatedFeedFromAddr(addr)
 }
 
 func isInternalMember(s *RoomServer, ctx context.Context, feed refs.FeedRef) bool {

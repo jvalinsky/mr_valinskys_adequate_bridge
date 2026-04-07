@@ -17,7 +17,10 @@ import (
 	"golang.org/x/crypto/ed25519"
 	"golang.org/x/crypto/nacl/auth"
 	"golang.org/x/crypto/nacl/box"
+	"fmt"
 	"time"
+
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 )
 
 const NetworkString = "boxstream"
@@ -693,3 +696,21 @@ func (c *Client) RemoteAddr() net.Addr {
 func (c *Client) SetDeadline(t time.Time) error      { return c.conn.SetDeadline(t) }
 func (c *Client) SetReadDeadline(t time.Time) error  { return c.conn.SetReadDeadline(t) }
 func (c *Client) SetWriteDeadline(t time.Time) error { return c.conn.SetWriteDeadline(t) }
+func AuthenticatedFeedFromAddr(addr net.Addr) (refs.FeedRef, error) {
+	switch tv := addr.(type) {
+	case Addr:
+		ref, err := refs.NewFeedRef(tv.PubKey, refs.RefAlgoFeedSSB1)
+		if err != nil {
+			return refs.FeedRef{}, err
+		}
+		return *ref, nil
+	case *Addr:
+		ref, err := refs.NewFeedRef(tv.PubKey, refs.RefAlgoFeedSSB1)
+		if err != nil {
+			return refs.FeedRef{}, err
+		}
+		return *ref, nil
+	default:
+		return refs.FeedRef{}, fmt.Errorf("no authenticated shs identity")
+	}
+}

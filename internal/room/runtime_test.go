@@ -1864,7 +1864,7 @@ func TestRuntimeAliasRegisterEndpointAndRevoke(t *testing.T) {
 		t.Fatalf("expected /oak alias URL, got %q", aliasURL)
 	}
 
-	aliasMux := newServeMux(ctx, rt.roomDB, rt.state, rt.keyPair, rt.cfg.HTTPSDomain, rt.HTTPAddr(), rt.Addr())
+	aliasMux := newServeMux(ctx, rt.roomDB, rt.state, rt.keyPair, rt.cfg.HTTPSDomain, rt.HTTPAddr(), rt.Addr(), rt.roomSrv)
 	jsonReq := httptest.NewRequest(http.MethodGet, "/oak?encoding=json", nil)
 	jsonRec := httptest.NewRecorder()
 	aliasMux.ServeHTTP(jsonRec, jsonReq)

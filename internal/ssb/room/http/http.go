@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
@@ -10,7 +11,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
@@ -376,10 +376,8 @@ func (s *Server) ServeMUXRPC(ctx context.Context) error {
 
 func GenerateAuthToken() string {
 	b := make([]byte, 32)
-	time.Now().UnixNano()
-	for i := range b {
-		b[i] = byte(time.Now().UnixNano() % 256)
-		time.Sleep(time.Nanosecond)
+	if _, err := io.ReadFull(rand.Reader, b); err != nil {
+		panic(fmt.Errorf("failed to generate auth token: %w", err))
 	}
 	return base64.URLEncoding.EncodeToString(b)
 }
