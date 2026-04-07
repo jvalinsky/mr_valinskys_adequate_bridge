@@ -55,7 +55,7 @@ func TestNoteRoundTrip(t *testing.T) {
 
 			expectedSeq := tt.note.Seq
 			if expectedSeq == -1 {
-				expectedSeq = 0 // -1 is normalized to 0 for Replicate=true
+				expectedSeq = 0 // Original behavior: -1 normalizes to 0
 			}
 			if got.Seq != expectedSeq {
 				t.Errorf("Seq mismatch: got %d, want %d", got.Seq, expectedSeq)
@@ -188,5 +188,39 @@ func TestEBTHandler(t *testing.T) {
 
 	if len(tx.data) < 2 {
 		t.Errorf("expected at least 2 packets (initial state + 1 message), got %d", len(tx.data))
+	}
+}
+
+func TestNote_MarshalJSON_Uninitialized(t *testing.T) {
+	note := Note{
+		Seq:       -1,
+		Replicate: true,
+		Receive:   false,
+	}
+
+	b, err := json.Marshal(note)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+
+	if string(b) != "-1" {
+		t.Errorf("uninitialized feed (Seq=-1, Replicate=true) should marshal to -1, got %s", string(b))
+	}
+}
+
+func TestNote_MarshalJSON_Normal(t *testing.T) {
+	note := Note{
+		Seq:       5,
+		Replicate: true,
+		Receive:   true,
+	}
+
+	b, err := json.Marshal(note)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+
+	if string(b) != "10" {
+		t.Errorf("Seq=5, Receive=true should marshal to 10 (5<<1|0), got %s", string(b))
 	}
 }

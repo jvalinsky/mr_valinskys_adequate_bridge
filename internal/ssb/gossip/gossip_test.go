@@ -191,7 +191,7 @@ func TestManagerConnect(t *testing.T) {
 		log.New(io.Discard, "", 0),
 	)
 
-	err = manager.Connect(ctx, addr, pubKeyFromBytes(serverKeys.Public()))
+	_, err = manager.Connect(ctx, addr, pubKeyFromBytes(serverKeys.Public()))
 	if err != nil {
 		t.Fatalf("connect failed: %v", err)
 	}
@@ -247,7 +247,7 @@ func TestManagerConnectStartsEBTReplication(t *testing.T) {
 		log.New(io.Discard, "", 0),
 	)
 
-	err = manager.Connect(ctx, addr, pubKeyFromBytes(serverKeys.Public()))
+	_, err = manager.Connect(ctx, addr, pubKeyFromBytes(serverKeys.Public()))
 	if err != nil {
 		t.Fatalf("connect failed: %v", err)
 	}
@@ -304,7 +304,7 @@ func TestManagerReconnect(t *testing.T) {
 	manager.peers[addr] = PeerInfo{Addr: addr, PubKey: pubKeyFromBytes(serverKeys.Public())}
 	manager.mu.Unlock()
 
-	err = manager.Connect(ctx, addr, pubKeyFromBytes(serverKeys.Public()))
+	_, err = manager.Connect(ctx, addr, pubKeyFromBytes(serverKeys.Public()))
 	if err != nil {
 		t.Fatalf("connect failed: %v", err)
 	}
@@ -387,7 +387,7 @@ func TestManagerPingPeers(t *testing.T) {
 		log.New(io.Discard, "", 0),
 	)
 
-	err = manager.Connect(ctx, addr, pubKeyFromBytes(serverKeys.Public()))
+	_, err = manager.Connect(ctx, addr, pubKeyFromBytes(serverKeys.Public()))
 	if err != nil {
 		t.Fatalf("connect failed: %v", err)
 	}

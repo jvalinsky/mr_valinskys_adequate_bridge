@@ -102,6 +102,39 @@ func TestCurve25519Conversion(t *testing.T) {
 	}
 }
 
+func TestCurve25519Public_Deterministic(t *testing.T) {
+	var testKey [32]byte
+	testKey[0] = 9
+	testKey[31] = 128
+
+	result1 := Curve25519Public(testKey)
+	result2 := Curve25519Public(testKey)
+
+	if result1 != result2 {
+		t.Errorf("same input should produce same output")
+	}
+}
+
+func TestCurve25519Public_NotAllZero(t *testing.T) {
+	var testKey [32]byte
+	testKey[0] = 9
+	testKey[31] = 128
+
+	result := Curve25519Public(testKey)
+
+	allZero := true
+	for _, b := range result {
+		if b != 0 {
+			allZero = false
+			break
+		}
+	}
+
+	if allZero {
+		t.Errorf("conversion should not produce all-zero output for non-zero input")
+	}
+}
+
 func TestParseSecret(t *testing.T) {
 	kp, err := Generate()
 	if err != nil {
