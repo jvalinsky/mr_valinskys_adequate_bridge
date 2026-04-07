@@ -361,12 +361,14 @@ unit=ssbruntime event=replication_started total=401 registered=4
 A large gap between `total` and `registered` indicates many empty feeds were correctly filtered out.
 
 ### Planetary crash from malformed SSB messages (fixed in 1d176e1)
+...
+### Redirect loop behind reverse proxy (fixed in 3c6a8ad)
 
-**Symptom:** Planetary crashes with SIGABRT in `swift_arrayDestroy` ~2 seconds after launch.
+**Symptom:** Accessing the room via HTTPS results in `ERR_TOO_MANY_REDIRECTS`.
 
-**Root cause:** Three issues: (1) duplicate EBT contact message floods from `Publish()` publishing a follow for every record, (2) `_atproto_*` internal fields leaking into published SSB messages that Planetary's strict Codable decoders didn't expect, (3) `room.members` muxrpc response wrapping each member in an array.
+**Root cause:** The bridge's internal "force HTTPS" logic was improperly redirecting even when behind an SSL-terminating proxy (like Caddy).
 
-**Fix:** Dedup contact messages via `sync.Map`, strip `_atproto_*` fields via `SanitizeForPublish()` before publishing, validate required fields via `ReadyForPublish()`, fix `room.members` encoding.
+**Fix:** The bridge now respects the `X-Forwarded-Proto: https` header. Ensure your reverse proxy is configured to send this header (Caddy does so by default).
 
 ## Pre-release Live Interop Gate
 Run this gate before release/staging promotion to validate live firehose ingest plus room peer interoperability.
