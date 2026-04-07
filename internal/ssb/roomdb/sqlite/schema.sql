@@ -68,6 +68,8 @@ CREATE TABLE auth_tokens (
   token      TEXT UNIQUE NOT NULL,
   member_id  INTEGER NOT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  last_used_at DATETIME,
+  rotation_count INTEGER NOT NULL DEFAULT 0,
 
   FOREIGN KEY ( member_id ) REFERENCES members( "id" )  ON DELETE CASCADE
 );

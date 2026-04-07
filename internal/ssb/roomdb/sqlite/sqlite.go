@@ -119,6 +119,8 @@ CREATE TABLE IF NOT EXISTS auth_tokens (
   token      TEXT UNIQUE NOT NULL,
   member_id  INTEGER NOT NULL,
   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  last_used_at DATETIME,
+  rotation_count INTEGER NOT NULL DEFAULT 0,
   FOREIGN KEY ( member_id ) REFERENCES members( "id" )  ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS auth_tokens_by_token ON auth_tokens(token);
@@ -812,6 +814,10 @@ func (a *AuthTokens) CheckToken(ctx context.Context, token string) (int64, error
 	if err != nil {
 		return 0, fmt.Errorf("auth tokens check: %w", err)
 	}
+
+	_, _ = a.db.conn.ExecContext(ctx,
+		"UPDATE auth_tokens SET last_used_at = ? WHERE token = ?", time.Now(), token)
+
 	return memberID, nil
 }
 
@@ -825,6 +831,63 @@ func (a *AuthTokens) WipeTokensForMember(ctx context.Context, memberID int64) er
 	_, err := a.db.conn.ExecContext(ctx,
 		"DELETE FROM auth_tokens WHERE member_id = ?", memberID)
 	return err
+}
+
+func (a *AuthTokens) RotateToken(ctx context.Context, oldToken string) (string, error) {
+	tx, err := a.db.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return "", fmt.Errorf("auth tokens rotate: begin: %w", err)
+	}
+	defer tx.Rollback()
+
+	var memberID int64
+	var rotationCount int
+	err = tx.QueryRowContext(ctx,
+		"SELECT member_id, rotation_count FROM auth_tokens WHERE token = ?", oldToken).Scan(&memberID, &rotationCount)
+	if err != nil {
+		return "", fmt.Errorf("auth tokens rotate: find old: %w", err)
+	}
+
+	_, err = tx.ExecContext(ctx,
+		"DELETE FROM auth_tokens WHERE token = ?", oldToken)
+	if err != nil {
+		return "", fmt.Errorf("auth tokens rotate: delete old: %w", err)
+	}
+
+	newToken := randomToken()
+	_, err = tx.ExecContext(ctx,
+		"INSERT INTO auth_tokens (token, member_id, created_at, rotation_count) VALUES (?, ?, ?, ?)",
+		newToken, memberID, time.Now(), rotationCount+1)
+	if err != nil {
+		return "", fmt.Errorf("auth tokens rotate: create new: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return "", fmt.Errorf("auth tokens rotate: commit: %w", err)
+	}
+
+	return newToken, nil
+}
+
+func (a *AuthTokens) GetTokenInfo(ctx context.Context, token string) (roomdb.TokenInfo, error) {
+	var info roomdb.TokenInfo
+	var createdAt, lastUsedAt sql.NullTime
+	err := a.db.conn.QueryRowContext(ctx,
+		`SELECT member_id, created_at, last_used_at, rotation_count 
+		 FROM auth_tokens WHERE token = ?`, token).Scan(
+		&info.MemberID, &createdAt, &lastUsedAt, &info.RotationCount)
+	if err != nil {
+		return roomdb.TokenInfo{}, fmt.Errorf("auth tokens info: %w", err)
+	}
+
+	if createdAt.Valid {
+		info.CreatedAt = createdAt.Time
+	}
+	if lastUsedAt.Valid {
+		info.LastUsedAt = lastUsedAt.Time
+	}
+
+	return info, nil
 }
 
 type AuthFallback struct {

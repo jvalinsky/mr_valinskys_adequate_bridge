@@ -44,6 +44,8 @@ func (h *HTTPAuthHandler) HandleCall(ctx context.Context, req *muxrpc.Request) {
 		h.handleInvalidateAllSolutions(ctx, req)
 	case "requestSolution":
 		h.handleRequestSolution(ctx, req)
+	case "rotateToken":
+		h.handleRotateToken(ctx, req)
 	default:
 		req.CloseWithError(fmt.Errorf("httpAuth: unknown method %s", req.Method[1]))
 	}
@@ -119,4 +121,36 @@ func (h *HTTPAuthHandler) handleRequestSolution(ctx context.Context, req *muxrpc
 
 	// Return signature
 	req.Return(ctx, sig)
+}
+
+func (h *HTTPAuthHandler) handleRotateToken(ctx context.Context, req *muxrpc.Request) {
+	if req.Type != "async" {
+		req.CloseWithError(fmt.Errorf("httpAuth.rotateToken is async"))
+		return
+	}
+
+	if h.authTokens == nil {
+		req.CloseWithError(fmt.Errorf("httpAuth.rotateToken: no auth tokens service"))
+		return
+	}
+
+	var args []string
+	if err := json.Unmarshal(req.RawArgs, &args); err != nil {
+		req.CloseWithError(fmt.Errorf("httpAuth.rotateToken: parse args: %w", err))
+		return
+	}
+	if len(args) < 1 {
+		req.CloseWithError(fmt.Errorf("httpAuth.rotateToken: missing current token"))
+		return
+	}
+
+	currentToken := args[0]
+
+	newToken, err := h.authTokens.RotateToken(ctx, currentToken)
+	if err != nil {
+		req.CloseWithError(fmt.Errorf("httpAuth.rotateToken: rotate failed: %w", err))
+		return
+	}
+
+	req.Return(ctx, newToken)
 }

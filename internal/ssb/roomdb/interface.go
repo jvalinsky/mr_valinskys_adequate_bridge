@@ -2,6 +2,7 @@ package roomdb
 
 import (
 	"context"
+	"time"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 )
@@ -101,6 +102,16 @@ type AuthWithSSBService interface {
 	CheckToken(ctx context.Context, token string) (int64, error)
 	RemoveToken(ctx context.Context, token string) error
 	WipeTokensForMember(ctx context.Context, memberID int64) error
+
+	RotateToken(ctx context.Context, oldToken string) (string, error)
+	GetTokenInfo(ctx context.Context, token string) (TokenInfo, error)
+}
+
+type TokenInfo struct {
+	MemberID      int64
+	CreatedAt     time.Time
+	LastUsedAt    time.Time
+	RotationCount int
 }
 
 type MembersService interface {
