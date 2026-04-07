@@ -942,6 +942,22 @@ const accountsContent = `
         </table>
     </div>
 </section>
+
+<section class="section section-pad">
+    <h2 class="page-title" style="font-size:1.2rem">Add Bridged Account</h2>
+    <p class="subtitle">Register a new ATProto DID and its corresponding SSB feed identity.</p>
+    <form action="/accounts" method="POST" style="display:grid; gap:12px; grid-template-columns: 1fr 1fr auto; align-items: end; margin-top:8px">
+        <div class="field">
+            <label for="at_did">ATProto DID</label>
+            <input type="text" id="at_did" name="at_did" placeholder="did:plc:abcdef..." required>
+        </div>
+        <div class="field">
+            <label for="ssb_feed_id">SSB Feed ID</label>
+            <input type="text" id="ssb_feed_id" name="ssb_feed_id" placeholder="@...ed25519" required>
+        </div>
+        <button type="submit" class="button">Add Account</button>
+    </form>
+</section>
 {{end}}
 `
 
