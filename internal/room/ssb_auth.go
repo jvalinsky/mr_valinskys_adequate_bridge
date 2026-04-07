@@ -127,16 +127,10 @@ func (h *ssbAuthHandler) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	// 3. Call requestSolution async
 	scB64 := base64.StdEncoding.EncodeToString(sc)
-	var solB64 string
-	err = peer.Async(r.Context(), &solB64, muxrpc.TypeJSON, muxrpc.Method{"httpAuth", "requestSolution"}, scB64, ccB64)
+	var sol []byte
+	err = peer.Async(r.Context(), &sol, muxrpc.TypeBinary, muxrpc.Method{"httpAuth", "requestSolution"}, scB64, ccB64)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Muxrpc error: %v", err), http.StatusForbidden)
-		return
-	}
-
-	sol, err := base64.StdEncoding.DecodeString(solB64)
-	if err != nil {
-		http.Error(w, "Invalid solution encoding", http.StatusForbidden)
 		return
 	}
 
