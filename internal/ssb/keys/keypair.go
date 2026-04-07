@@ -11,6 +11,7 @@ import (
 	"io"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/secretstream"
 )
 
 var (
@@ -119,41 +120,7 @@ func VerifyWithHMAC(pubKey []byte, msg, sig, hmacKey []byte) bool {
 }
 
 func Curve25519Public(ed25519Pub [32]byte) [32]byte {
-	var curve25519Pub [32]byte
-	curve25519Pub[0] = ed25519Pub[0] & 248
-	curve25519Pub[1] = ed25519Pub[1] & 127
-	curve25519Pub[1] = curve25519Pub[1] | 64
-	curve25519Pub[2] = ed25519Pub[2] & 127
-	curve25519Pub[3] = ed25519Pub[3] | 64
-	curve25519Pub[4] = ed25519Pub[4] & 127
-	curve25519Pub[5] = ed25519Pub[5] | 128
-	curve25519Pub[6] = ed25519Pub[6] & 127
-	curve25519Pub[7] = ed25519Pub[7] | 128
-	curve25519Pub[8] = ed25519Pub[8] & 127
-	curve25519Pub[9] = ed25519Pub[9] | 128
-	curve25519Pub[10] = ed25519Pub[10] & 127
-	curve25519Pub[11] = ed25519Pub[11] | 128
-	curve25519Pub[12] = ed25519Pub[12] & 127
-	curve25519Pub[13] = ed25519Pub[13] | 128
-	curve25519Pub[14] = ed25519Pub[14] & 127
-	curve25519Pub[15] = ed25519Pub[15] | 128
-	curve25519Pub[16] = ed25519Pub[16] & 127
-	curve25519Pub[17] = ed25519Pub[17] | 128
-	curve25519Pub[18] = ed25519Pub[18] & 127
-	curve25519Pub[19] = ed25519Pub[19] | 128
-	curve25519Pub[20] = ed25519Pub[20] & 127
-	curve25519Pub[21] = ed25519Pub[21] | 128
-	curve25519Pub[22] = ed25519Pub[22] & 127
-	curve25519Pub[23] = ed25519Pub[23] | 128
-	curve25519Pub[24] = ed25519Pub[24] & 127
-	curve25519Pub[25] = ed25519Pub[25] | 128
-	curve25519Pub[26] = ed25519Pub[26] & 127
-	curve25519Pub[27] = ed25519Pub[27] | 128
-	curve25519Pub[28] = ed25519Pub[28] & 127
-	curve25519Pub[29] = ed25519Pub[29] | 128
-	curve25519Pub[30] = ed25519Pub[30] & 127
-	curve25519Pub[31] = ed25519Pub[31] | 128
-	return curve25519Pub
+	return secretstream.Ed25519PublicToCurve25519(ed25519Pub[:])
 }
 
 func Curve25519Private(ed25519Priv [64]byte) [32]byte {

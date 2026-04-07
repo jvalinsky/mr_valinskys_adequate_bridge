@@ -13,11 +13,11 @@ import (
 
 	"crypto/sha512"
 	"filippo.io/edwards25519"
+	"fmt"
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/crypto/ed25519"
 	"golang.org/x/crypto/nacl/auth"
 	"golang.org/x/crypto/nacl/box"
-	"fmt"
 	"time"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
@@ -310,6 +310,9 @@ func (s *State) verifyChallenge(ch []byte) bool {
 	remoteEphPubKey := ch[32:]
 
 	ok := auth.Verify(mac, remoteEphPubKey, &s.appKey)
+	if !ok {
+		return false
+	}
 
 	copy(s.remoteExchange[:], remoteEphPubKey)
 	copy(s.remoteAppMac[:], mac)
@@ -326,7 +329,7 @@ func (s *State) verifyChallenge(ch []byte) bool {
 }
 
 func (s *State) createClientAuth() []byte {
-	curveRemotePub := ed25519PublicToCurve25519(s.remotePublic)
+	curveRemotePub := Ed25519PublicToCurve25519(s.remotePublic)
 
 	var aBob [32]byte
 	curve25519.ScalarMult(&aBob, &s.localExchangeS, &curveRemotePub)
@@ -392,7 +395,7 @@ func (s *State) verifyClientAuth(data []byte) bool {
 }
 
 func (s *State) createServerAccept() []byte {
-	curveRemotePub := ed25519PublicToCurve25519(s.remotePublic)
+	curveRemotePub := Ed25519PublicToCurve25519(s.remotePublic)
 
 	var bAlice [32]byte
 	curve25519.ScalarMult(&bAlice, &s.localExchangeS, &curveRemotePub)
@@ -489,7 +492,7 @@ func (s *State) GetBoxstreamDecKeys() ([32]byte, [24]byte) {
 	return deKey, nonce
 }
 
-func ed25519PublicToCurve25519(edPub ed25519.PublicKey) [32]byte {
+func Ed25519PublicToCurve25519(edPub ed25519.PublicKey) [32]byte {
 	pt, err := new(edwards25519.Point).SetBytes(edPub)
 	if err != nil {
 		return [32]byte{}

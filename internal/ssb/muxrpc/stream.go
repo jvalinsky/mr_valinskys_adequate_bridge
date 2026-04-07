@@ -321,9 +321,13 @@ func (bs *ByteSink) CloseWithError(err error) error {
 
 	if bs.usePacker && bs.pkr != nil {
 		errBytes := []byte(fmt.Sprintf(`{"name":"Error","message":"%v"}`, err))
+		id := bs.req
+		if bs.isCounter {
+			id = -id
+		}
 		pkt := codec.Packet{
 			Flag: codec.FlagJSON | codec.FlagEndErr,
-			Req:  -bs.req,
+			Req:  id,
 			Body: errBytes,
 		}
 		bs.pkr.WritePacket(pkt)
@@ -403,6 +407,10 @@ func (ps *PacketStream) Write(p []byte) (int, error) {
 
 	if ps.packer == nil {
 		return len(p), nil
+	}
+
+	if ps.reqPtr == nil || ps.reqPtr.sink == nil {
+		return 0, fmt.Errorf("muxrpc: no active request")
 	}
 
 	encFlag, _ := ps.reqPtr.sink.encoding.AsCodecFlag()
