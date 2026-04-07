@@ -225,6 +225,19 @@ func (h *UIHandler) handleMessageThread(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	nodes := buildThreadTree(messages)
+
+	var stats *templates.TangleStats
+	if len(messages) > 0 {
+		stats = &templates.TangleStats{
+			Name:         "post",
+			Root:         rootURI,
+			TipCount:     countTips(messages),
+			MessageCount: len(messages),
+			Depth:        computeThreadDepth(messages),
+		}
+	}
+
 	data := templates.ThreadData{
 		Chrome: templates.PageChrome{
 			ActiveNav: "messages",
@@ -234,14 +247,61 @@ func (h *UIHandler) handleMessageThread(w http.ResponseWriter, r *http.Request) 
 				{Label: "Thread", Href: ""},
 			},
 		},
-		RootURI: rootURI,
-		Nodes:   buildThreadTree(messages),
+		RootURI:     rootURI,
+		Nodes:       nodes,
+		TangleStats: stats,
 	}
 
 	w.Header().Set("Content-Type", "text/html")
 	if err := templates.RenderThread(w, data); err != nil {
 		h.writeInternalError(w, "message_thread", "Template error", err)
 	}
+}
+
+func countTips(messages []db.Message) int {
+	childURIs := make(map[string]bool)
+	for _, msg := range messages {
+		if msg.ParentATURI != "" {
+			childURIs[msg.ParentATURI] = true
+		}
+	}
+	tips := 0
+	for _, msg := range messages {
+		if !childURIs[msg.ATURI] {
+			tips++
+		}
+	}
+	return tips
+}
+
+func computeThreadDepth(messages []db.Message) int {
+	maxDepth := 0
+	byParent := make(map[string][]db.Message)
+	uriMap := make(map[string]db.Message)
+	for _, msg := range messages {
+		uriMap[msg.ATURI] = msg
+		if msg.ParentATURI != "" {
+			byParent[msg.ParentATURI] = append(byParent[msg.ParentATURI], msg)
+		}
+	}
+
+	var computeDepth func(uri string, depth int)
+	computeDepth = func(uri string, depth int) {
+		if depth > maxDepth {
+			maxDepth = depth
+		}
+		for _, child := range byParent[uri] {
+			computeDepth(child.ATURI, depth+1)
+		}
+	}
+
+	for _, msg := range messages {
+		if msg.ParentATURI == "" || msg.ParentATURI == msg.RootATURI {
+			computeDepth(msg.ATURI, 0)
+		}
+	}
+
+	return maxDepth
 }
 
 func buildThreadTree(messages []db.Message) []templates.ThreadNode {

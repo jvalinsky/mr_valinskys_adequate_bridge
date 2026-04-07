@@ -1238,6 +1238,18 @@ const threadContent = `
         <div>
             <h1 class="page-title">Conversation Thread</h1>
             <p class="subtitle mono" title="{{.RootURI}}"><span class="truncate">{{.RootURI}}</span></p>
+            {{if .TangleStats}}
+            <div style="margin-top:12px;padding:10px;background:var(--bg-subtle);border-radius:8px;font-size:0.85rem;">
+                <span style="color:var(--muted);">Tangle:</span>
+                <span style="font-weight:600;">{{.TangleStats.Name}}</span>
+                <span style="color:var(--muted);margin-left:12px;">Messages:</span>
+                <span>{{.TangleStats.MessageCount}}</span>
+                <span style="color:var(--muted);margin-left:12px;">Tips:</span>
+                <span>{{.TangleStats.TipCount}}</span>
+                <span style="color:var(--muted);margin-left:12px;">Depth:</span>
+                <span>{{.TangleStats.Depth}}</span>
+            </div>
+            {{end}}
         </div>
         <a class="button-link" href="/feed">Back to Feed</a>
     </div>
@@ -1714,15 +1726,29 @@ type StateRow struct {
 // ThreadNode is a single message in a recursive thread tree.
 type ThreadNode struct {
 	FeedRow
-	Depth   int
-	Replies []ThreadNode
+	Depth        int
+	Replies      []ThreadNode
+	TangleName   string
+	TangleRoot   string
+	TipCount     int
+	MessageCount int
 }
 
 // ThreadData is the template model for the conversation thread view.
 type ThreadData struct {
-	Chrome  PageChrome
-	RootURI string
-	Nodes   []ThreadNode
+	Chrome      PageChrome
+	RootURI     string
+	Nodes       []ThreadNode
+	TangleStats *TangleStats
+}
+
+// TangleStats holds tangle metadata for thread display
+type TangleStats struct {
+	Name         string
+	Root         string
+	TipCount     int
+	MessageCount int
+	Depth        int
 }
 
 // StateData is the template model for the state page.
