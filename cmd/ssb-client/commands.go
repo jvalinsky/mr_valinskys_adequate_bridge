@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -2253,7 +2254,7 @@ func runRoomLogin(c *cli.Context) error {
 		return err
 	}
 	if !strings.HasSuffix(u.Path, "/login") {
-		u.Path = filepath.Join(u.Path, "login")
+		u.Path = path.Join(u.Path, "login")
 	}
 	q := u.Query()
 	q.Set("ssb-http-auth", "1")
@@ -2276,7 +2277,7 @@ func runRoomLogin(c *cli.Context) error {
 
 	// Check for session cookie
 	for _, cookie := range resp.Cookies() {
-		if cookie.Name == "session" {
+		if cookie.Name == "auth_token" {
 			fmt.Printf("Login successful! Session cookie received: %s\n", cookie.Value)
 			return nil
 		}
