@@ -400,3 +400,12 @@ func (q *Queries) ListBridgedAccountsWithStats(ctx context.Context) ([]ListBridg
 	}
 	return items, nil
 }
+
+const removeBridgedAccount = `-- name: RemoveBridgedAccount :exec
+DELETE FROM bridged_accounts WHERE at_did = ?1
+`
+
+func (q *Queries) RemoveBridgedAccount(ctx context.Context, atDid string) error {
+	_, err := q.db.ExecContext(ctx, removeBridgedAccount, atDid)
+	return err
+}

@@ -45,6 +45,7 @@ type Database interface {
 	GetBridgedAccount(ctx context.Context, atDID string) (*db.BridgedAccount, error)
 	ListPublishedMessagesGlobal(ctx context.Context, limit int) ([]db.Message, error)
 	AddBridgedAccount(ctx context.Context, acc db.BridgedAccount) error
+	RemoveBridgedAccount(ctx context.Context, atDID string) error
 }
 
 // BlobStore defines the blob retrieval surface for the UI.
@@ -127,6 +128,7 @@ func (h *UIHandler) Mount(r chi.Router) {
 	r.Get("/events", h.handleEvents)
 	r.Get("/accounts", h.handleAccounts)
 	r.Post("/accounts", h.handleAccountsAdd)
+	r.Post("/accounts/remove", h.handleAccountsRemove)
 	r.Get("/messages", h.handleMessages)
 	r.Get("/messages/detail", h.handleMessageDetail)
 	r.Get("/messages/thread", h.handleMessageThread)
@@ -166,6 +168,3 @@ func (h *UIHandler) Mount(r chi.Router) {
 		r.Get("/events", h.handleATProtoEvents)
 	})
 }
-
-
-

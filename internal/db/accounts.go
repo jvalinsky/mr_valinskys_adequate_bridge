@@ -232,3 +232,10 @@ func (db *DB) GetActiveBridgedAccountWithStats(ctx context.Context, atDID string
 	acc.LastPublishedAt = parseNullableTime(lastPublishedAt)
 	return &acc, nil
 }
+
+func (db *DB) RemoveBridgedAccount(ctx context.Context, atDID string) error {
+	if err := db.Queries().RemoveBridgedAccount(ctx, atDID); err != nil {
+		return fmt.Errorf("remove bridged account %s: %w", atDID, err)
+	}
+	return nil
+}

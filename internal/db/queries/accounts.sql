@@ -121,3 +121,6 @@ LEFT JOIN (
   GROUP BY at_did
 ) s ON s.at_did = ba.at_did
 WHERE ba.active = 1 AND ba.at_did = :at_did;
+
+-- name: RemoveBridgedAccount :exec
+DELETE FROM bridged_accounts WHERE at_did = :at_did;

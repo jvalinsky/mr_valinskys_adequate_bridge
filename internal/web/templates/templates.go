@@ -357,12 +357,35 @@ const pageLayout = `
         .copy-btn:hover,
         .button:hover,
         .button-link:hover,
+        .button-danger:hover,
         .copy-btn:focus-visible,
         .button:focus-visible,
-        .button-link:focus-visible {
+        .button-link:focus-visible,
+        .button-danger:focus-visible {
             outline: none;
             border-color: var(--brand);
             color: var(--brand-strong);
+        }
+
+        .button-danger {
+            border: 1px solid var(--line);
+            border-radius: 9px;
+            background: #fff;
+            color: var(--ink);
+            font-size: 0.82rem;
+            font-weight: 700;
+            padding: 5px 9px;
+            text-decoration: none;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+
+        .button-danger:hover,
+        .button-danger:focus-visible {
+            outline: none;
+            border-color: var(--brand);
+            color: var(--brand-strong);
+            background: #ffe6e6;
         }
 
         .toolbar {
@@ -905,6 +928,12 @@ const accountsContent = `
                     <td>{{if .LastPublishedAt}}{{.LastPublishedAt}}{{else}}(none){{end}}</td>
                     <td>{{fmtTime .CreatedAt}}</td>
                     <td><a class="button-link" href="{{.MessagesURL}}">Messages</a></td>
+                    <td>
+                        <form method="POST" action="/accounts/remove" onsubmit="return confirm('Remove this bridged account?')">
+                            <input type="hidden" name="atdid" value="{{.ATDID}}">
+                            <button type="submit" class="button-danger">Remove</button>
+                        </form>
+                    </td>
                 </tr>
                 {{else}}
                 <tr><td colspan="10" class="empty">No bridged accounts yet.</td></tr>

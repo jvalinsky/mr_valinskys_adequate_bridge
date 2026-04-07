@@ -53,3 +53,18 @@ func (h *UIHandler) handleAccountsAdd(w http.ResponseWriter, r *http.Request) {
 
 	http.Redirect(w, r, "/accounts", http.StatusSeeOther)
 }
+
+func (h *UIHandler) handleAccountsRemove(w http.ResponseWriter, r *http.Request) {
+	atDID := strings.TrimSpace(r.URL.Query().Get("at_did"))
+	if atDID == "" {
+		http.Error(w, "Missing at_did", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.db.RemoveBridgedAccount(r.Context(), atDID); err != nil {
+		h.writeInternalError(w, "accounts_remove", "Failed to remove account", err)
+		return
+	}
+
+	http.Redirect(w, r, "/accounts", http.StatusSeeOther)
+}
