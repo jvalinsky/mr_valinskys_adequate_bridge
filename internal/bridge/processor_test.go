@@ -1105,7 +1105,7 @@ func TestDependencyResolverDeduplicatesInFlightFetches(t *testing.T) {
 		func(context.Context, string, string, string, string, []byte) error { return nil },
 	)
 
-	ctx := context.Background()
+	ctx := ensureDependencyContext(context.Background(), "did:plc:root", "at://did:plc:root/app.bsky.feed.post/root")
 	targetURI := "at://did:plc:bob/app.bsky.feed.post/shared"
 	errCh := make(chan error, 2)
 	var wg sync.WaitGroup
@@ -1117,8 +1117,9 @@ func TestDependencyResolverDeduplicatesInFlightFetches(t *testing.T) {
 		}()
 	}
 
-	<-fetcher.ready   // G1 has entered FetchRecord and is about to block
-	runtime.Gosched() // yield to let G2 join the inflight call before we release G1
+	<-fetcher.ready                  // G1 has entered FetchRecord and is about to block
+	runtime.Gosched()                // yield to let G2 join the inflight call before we release G1
+	time.Sleep(5 * time.Millisecond) // ensure G2 enters wait state
 	close(waitCh)
 	wg.Wait()
 	close(errCh)
@@ -3242,7 +3243,7 @@ func TestProcessRecordGeneratesReplyTangles(t *testing.T) {
 
 	ctx := context.Background()
 	rootURI := "at://did:plc:alice/app.bsky.feed.post/root"
-	
+
 	// Seed root message
 	if err := database.AddMessage(ctx, db.Message{
 		ATURI:      rootURI,
@@ -3284,7 +3285,7 @@ func TestProcessRecordGeneratesReplyTangles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get reply message: %v", err)
 	}
-	
+
 	var mapped map[string]interface{}
 	if err := json.Unmarshal([]byte(stored.RawSSBJson), &mapped); err != nil {
 		t.Fatalf("unmarshal mapped ssb json: %v", err)
