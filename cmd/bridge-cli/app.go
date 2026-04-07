@@ -170,12 +170,14 @@ func (a *BridgeApp) Init(ctx context.Context) error {
 	}
 
 	if a.cfg.RoomEnable {
+		bridgeFeed := a.ssbRuntime.Node().KeyPair.FeedRef()
 		a.room, err = room.Start(ctx, room.Config{
 			ListenAddr:            a.cfg.RoomListenAddr,
 			HTTPListenAddr:        a.cfg.RoomHTTPAddr,
 			RepoPath:              filepath.Join(a.cfg.RepoPath, "room"),
 			Mode:                  a.cfg.RoomMode,
 			HTTPSDomain:           a.cfg.RoomDomain,
+			BridgeFeed:            &bridgeFeed,
 			AppKey:                a.cfg.AppKey,
 			BridgeAccountLister:   a.db,
 			BridgeAccountDetailer: a.db,

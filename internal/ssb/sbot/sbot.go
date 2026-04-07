@@ -156,6 +156,7 @@ func New(opts Options) (*Sbot, error) {
 		feedRef := opts.KeyPair.FeedRef()
 		roomSrv = room.NewRoomServer(
 			&feedRef,
+			nil, // no separate bridge feed in embedded sbot context
 			roomDB.Members(),
 			roomDB.Aliases(),
 			roomDB.Invites(),

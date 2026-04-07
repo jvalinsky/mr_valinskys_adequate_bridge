@@ -281,10 +281,10 @@ func (h *TunnelHandler) streamEndpoints(ctx context.Context, req *muxrpc.Request
 	defer sink.Close()
 	defer cancel()
 
-	// Filter out the bridge's own feed from endpoints list
+	// Filter out the bridge bot's own feed from endpoints list
 	bridgeFeed := ""
-	if h.server.keyPair != nil {
-		bridgeFeed = h.server.keyPair.String()
+	if h.server.bridgeFeed != nil {
+		bridgeFeed = h.server.bridgeFeed.String()
 	}
 
 	for _, p := range peers {
@@ -294,7 +294,7 @@ func (h *TunnelHandler) streamEndpoints(ctx context.Context, req *muxrpc.Request
 		default:
 		}
 
-		// Skip the bridge's own endpoint
+		// Skip the bridge bot's own endpoint
 		if p.ID.String() == bridgeFeed {
 			continue
 		}
@@ -317,7 +317,7 @@ func (h *TunnelHandler) streamEndpoints(ctx context.Context, req *muxrpc.Request
 			if !ok {
 				return
 			}
-			// Filter out bridge's own endpoint events
+			// Filter out bridge bot's own endpoint events
 			if evt.Info.ID.String() == bridgeFeed {
 				continue
 			}

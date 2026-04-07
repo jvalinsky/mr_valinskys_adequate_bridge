@@ -41,6 +41,7 @@ type Config struct {
 	Mode                  string
 	HTTPSDomain           string
 	KeyPair               *keys.KeyPair
+	BridgeFeed            *refs.FeedRef
 	AppKey                string
 	BridgeAccountLister   ActiveBridgeAccountLister
 	BridgeAccountDetailer ActiveBridgeAccountDetailer
@@ -174,6 +175,7 @@ func (r *Runtime) initHandlers() {
 	feedRef := r.keyPair.FeedRef()
 	roomSrv := roomhandlers.NewRoomServer(
 		&feedRef,
+		r.cfg.BridgeFeed,
 		r.roomDB.Members(),
 		r.roomDB.Aliases(),
 		r.roomDB.Invites(),

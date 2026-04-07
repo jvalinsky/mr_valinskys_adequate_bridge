@@ -15,14 +15,15 @@ import (
 )
 
 type RoomServer struct {
-	keyPair *refs.FeedRef
-	members roomdb.MembersService
-	aliases roomdb.AliasesService
-	invites roomdb.InvitesService
-	denied  roomdb.DeniedKeysService
-	config  roomdb.RoomConfig
-	state   *roomstate.Manager
-	Domain  string
+	keyPair    *refs.FeedRef
+	bridgeFeed *refs.FeedRef
+	members    roomdb.MembersService
+	aliases    roomdb.AliasesService
+	invites    roomdb.InvitesService
+	denied     roomdb.DeniedKeysService
+	config     roomdb.RoomConfig
+	state      *roomstate.Manager
+	Domain     string
 
 	peerRegistry *PeerRegistry
 }
@@ -98,6 +99,7 @@ func (r *PeerRegistry) List() []ListedPeer {
 
 func NewRoomServer(
 	keyPair *refs.FeedRef,
+	bridgeFeed *refs.FeedRef,
 	members roomdb.MembersService,
 	aliases roomdb.AliasesService,
 	invites roomdb.InvitesService,
@@ -108,6 +110,7 @@ func NewRoomServer(
 ) *RoomServer {
 	return &RoomServer{
 		keyPair:      keyPair,
+		bridgeFeed:   bridgeFeed,
 		members:      members,
 		aliases:      aliases,
 		invites:      invites,
@@ -366,10 +369,10 @@ func (h *AliasHandler) streamAttendants(ctx context.Context, req *muxrpc.Request
 	defer sink.Close()
 	defer cancel()
 
-	// Filter out the bridge's own feed from attendants list
+	// Filter out the bridge bot's own feed from attendants list
 	bridgeFeed := ""
-	if h.server.keyPair != nil {
-		bridgeFeed = h.server.keyPair.String()
+	if h.server.bridgeFeed != nil {
+		bridgeFeed = h.server.bridgeFeed.String()
 	}
 
 	state := make([]string, 0, len(peers))
@@ -394,7 +397,7 @@ func (h *AliasHandler) streamAttendants(ctx context.Context, req *muxrpc.Request
 			if !ok {
 				return
 			}
-			// Filter out bridge's own join/leave events
+			// Filter out bridge bot's own join/leave events
 			if evt.ID.String() == bridgeFeed {
 				continue
 			}
