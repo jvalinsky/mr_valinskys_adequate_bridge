@@ -223,7 +223,8 @@ func (r *Runtime) ConnectPeer(ctx context.Context, addr string, pubKey []byte) e
 	if len(pubKey) != 32 {
 		return fmt.Errorf("ssb: invalid public key length: %d", len(pubKey))
 	}
-	return r.sbotNode.Gossip().Connect(ctx, addr, ed25519.PublicKey(pubKey))
+	_, err := r.sbotNode.Gossip().Connect(ctx, addr, ed25519.PublicKey(pubKey))
+	return err
 }
 
 func (r *Runtime) Close() error {

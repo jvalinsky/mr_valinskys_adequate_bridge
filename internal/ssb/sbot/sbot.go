@@ -335,7 +335,12 @@ func (s *Sbot) Shutdown() error {
 }
 
 func (s *Sbot) Connect(ctx context.Context, addr string, remote ed25519.PublicKey) (*network.Peer, error) {
-	return s.netClient.Connect(ctx, addr, remote, s.handlerMux)
+	peer, err := s.netClient.Connect(ctx, addr, remote, s.handlerMux)
+	if err != nil {
+		return nil, err
+	}
+	s.netServer.AddPeer(peer)
+	return peer, nil
 }
 
 func (s *Sbot) Node() *Sbot {
@@ -402,6 +407,10 @@ func (s *Sbot) StateMatrix() *replication.StateMatrix {
 
 func (s *Sbot) Gossip() *gossip.Manager {
 	return s.gossip
+}
+
+func (s *Sbot) NetServer() *network.Server {
+	return s.netServer
 }
 
 func (s *Sbot) BlobStore() *blobs.Store {

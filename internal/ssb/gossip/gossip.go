@@ -117,11 +117,11 @@ func (m *Manager) pingPeers(ctx context.Context) {
 	}
 }
 
-func (m *Manager) Connect(ctx context.Context, addr string, pubKey ed25519.PublicKey) error {
+func (m *Manager) Connect(ctx context.Context, addr string, pubKey ed25519.PublicKey) (*network.Peer, error) {
 	m.logger.Printf("gossip: attempting to connect to %s", addr)
 	peer, err := m.net.Connect(ctx, addr, pubKey, m.mux)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	m.mu.Lock()
@@ -149,7 +149,7 @@ func (m *Manager) Connect(ctx context.Context, addr string, pubKey ed25519.Publi
 		}
 	}()
 
-	return nil
+	return peer, nil
 }
 
 func (m *Manager) reconnect(ctx context.Context) {
@@ -172,7 +172,8 @@ func (m *Manager) reconnect(ctx context.Context) {
 
 	for _, p := range peers {
 		go func(info PeerInfo) {
-			if err := m.Connect(ctx, info.Addr, info.PubKey); err != nil {
+			_, err := m.Connect(ctx, info.Addr, info.PubKey)
+			if err != nil {
 				m.logger.Printf("gossip: failed to connect to %s: %v", info.Addr, err)
 			}
 		}(p)
