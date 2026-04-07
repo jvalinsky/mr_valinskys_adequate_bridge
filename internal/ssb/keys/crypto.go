@@ -2,7 +2,6 @@ package keys
 
 import (
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -10,18 +9,20 @@ import (
 	"strings"
 
 	"golang.org/x/crypto/nacl/secretbox"
+	"golang.org/x/crypto/scrypt"
 )
 
 const (
-	SaltSize   = 32
-	NonceSize  = 24
-	SeedSize   = 32
-	Iterations = 100000
+	SaltSize  = 32
+	NonceSize = 24
+	SeedSize  = 32
 )
 
-var ErrInvalidCiphertext = errors.New("keys: invalid ciphertext")
-var ErrDecryptionFailed = errors.New("keys: decryption failed")
-var ErrInvalidPassphrase = errors.New("keys: invalid passphrase")
+var (
+	ErrInvalidCiphertext = errors.New("keys: invalid ciphertext")
+	ErrDecryptionFailed  = errors.New("keys: decryption failed")
+	ErrInvalidPassphrase = errors.New("keys: invalid passphrase")
+)
 
 func EncryptKeyWithPassword(kp *KeyPair, passphrase string) ([]byte, error) {
 	if passphrase == "" {
@@ -93,18 +94,7 @@ func DecryptKeyWithPassword(data []byte, passphrase string) (*KeyPair, error) {
 }
 
 func deriveKey(passphrase string, salt []byte) ([]byte, error) {
-	passBytes := []byte(passphrase)
-
-	h := sha256.New()
-	h.Write(salt)
-	h.Write(passBytes)
-
-	for i := 1; i < Iterations; i++ {
-		h.Reset()
-		h.Write(h.Sum(nil))
-	}
-
-	return h.Sum(nil), nil
+	return scrypt.Key([]byte(passphrase), salt, 1<<15, 8, 1, 32)
 }
 
 func (kp *KeyPair) SeedString() string {
