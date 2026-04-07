@@ -1,10 +1,12 @@
 package room
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -14,6 +16,30 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomdb"
 )
+
+var (
+	loginLimiter = &rateLimiter{
+		limits: make(map[string]time.Time),
+	}
+)
+
+type rateLimiter struct {
+	mu     sync.Mutex
+	limits map[string]time.Time
+}
+
+func (l *rateLimiter) Allow(remoteAddr string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	host, _, _ := net.SplitHostPort(remoteAddr)
+	last, ok := l.limits[host]
+	if ok && time.Since(last) < 1*time.Second {
+		return false
+	}
+	l.limits[host] = time.Now()
+	return true
+}
 
 type challengeStore struct {
 	mu     sync.Mutex
@@ -27,9 +53,31 @@ type pendingAuth struct {
 	expires time.Time
 }
 
-func newChallengeStore() *challengeStore {
-	return &challengeStore{
+func newChallengeStore(ctx context.Context) *challengeStore {
+	cs := &challengeStore{
 		stored: make(map[string]pendingAuth),
+	}
+	go cs.cleanupLoop(ctx)
+	return cs
+}
+
+func (s *challengeStore) cleanupLoop(ctx context.Context) {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.mu.Lock()
+			now := time.Now()
+			for k, v := range s.stored {
+				if now.After(v.expires) {
+					delete(s.stored, k)
+				}
+			}
+			s.mu.Unlock()
+		}
 	}
 }
 
@@ -111,26 +159,38 @@ func (h *ssbAuthHandler) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Rate limit check
+	if !loginLimiter.Allow(r.RemoteAddr) {
+		http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
+		return
+	}
+
 	// 1. Generate sc
 	sc := make([]byte, 32)
 	if _, err := io.ReadFull(rand.Reader, sc); err != nil {
-		http.Error(w, "Randomness failure", http.StatusInternalServerError)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
 
 	// 2. Find peer connection
 	peer := h.getPeer(*cid)
 	if peer == nil {
-		http.Error(w, "No muxrpc connection for peer", http.StatusForbidden)
+		http.Error(w, "Access Forbidden", http.StatusForbidden)
 		return
 	}
 
 	// 3. Call requestSolution async
 	scB64 := base64.StdEncoding.EncodeToString(sc)
+
+	// Add to store to prevent replay
+	h.store.Add(sc, cc, *cid)
+	defer h.store.Remove(sc, cc)
+
 	var sol []byte
 	err = peer.Async(r.Context(), &sol, muxrpc.TypeBinary, muxrpc.Method{"httpAuth", "requestSolution"}, scB64, ccB64)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Muxrpc error: %v", err), http.StatusForbidden)
+		// Do not leak internal muxrpc errors
+		http.Error(w, "Authentication flow failed", http.StatusForbidden)
 		return
 	}
 
