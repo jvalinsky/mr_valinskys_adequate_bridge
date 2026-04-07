@@ -186,7 +186,7 @@ func (s *Server) handleConn(conn net.Conn) {
 		KeyPair: s.keyPair,
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(s.ctx)
 	defer cancel()
 
 	sc := &statsConn{Conn: shs, p: peer}

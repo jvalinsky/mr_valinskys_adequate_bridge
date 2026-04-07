@@ -10,6 +10,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc/codec"
 )
@@ -122,7 +123,14 @@ func (hm *HandlerMux) HandleConnect(ctx context.Context, edp Endpoint) {
 	hm.mu.RLock()
 	defer hm.mu.RUnlock()
 	for _, h := range hm.handlers {
-		go h.HandleConnect(ctx, edp)
+		go func(h Handler) {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("muxrpc: HandleConnect panic", "recover", r)
+				}
+			}()
+			h.HandleConnect(ctx, edp)
+		}(h)
 	}
 }
 
@@ -327,18 +335,26 @@ func (r *rpc) Produce() []codec.Packet {
 }
 
 func (r *rpc) serve() {
+	defer close(r.done)
+	errCount := 0
 	for {
 		pkt, err := r.packer.NextPacket(r.ctx)
 		if err != nil {
-			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) {
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, context.Canceled) {
 				return
 			}
-			slog.Debug("muxrpc: serve read error", "error", err)
+			errCount++
+			slog.Debug("muxrpc: serve read error", "error", err, "count", errCount)
+			if errCount > 10 {
+				slog.Error("muxrpc: serve too many read errors, terminating", "error", err)
+				return
+			}
+			time.Sleep(time.Duration(errCount) * 10 * time.Millisecond)
 			continue
 		}
+		errCount = 0
 		r.HandlePacket(pkt)
 	}
-	close(r.done)
 }
 
 func (r *rpc) sender() {
