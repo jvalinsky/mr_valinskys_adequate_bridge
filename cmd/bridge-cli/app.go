@@ -63,6 +63,8 @@ type AppConfig struct {
 	RoomHTTPAddr        string
 	RoomMode            string
 	RoomDomain          string
+	RoomTLSCert         string
+	RoomTLSKey          string
 	PLCURL              string
 	AtprotoInsecure     bool
 	MCPListenAddr       string
@@ -176,6 +178,8 @@ func (a *BridgeApp) Init(ctx context.Context) error {
 			RepoPath:              filepath.Join(a.cfg.RepoPath, "room"),
 			Mode:                  a.cfg.RoomMode,
 			HTTPSDomain:           a.cfg.RoomDomain,
+			TLSCertFile:           a.cfg.RoomTLSCert,
+			TLSKeyFile:            a.cfg.RoomTLSKey,
 			AppKey:                a.cfg.AppKey,
 			BridgeAccountLister:   a.db,
 			BridgeAccountDetailer: a.db,

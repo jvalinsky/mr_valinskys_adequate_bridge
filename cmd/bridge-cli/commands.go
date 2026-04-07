@@ -230,6 +230,8 @@ func runStart(c *cli.Context) error {
 		RoomHTTPAddr:        c.String("room-http-listen-addr"),
 		RoomMode:            c.String("room-mode"),
 		RoomDomain:          c.String("room-https-domain"),
+		RoomTLSCert:         c.String("room-tls-cert"),
+		RoomTLSKey:          c.String("room-tls-key"),
 		PLCURL:              c.String("plc-url"),
 		AtprotoInsecure:     c.Bool("atproto-insecure"),
 		MCPListenAddr:       c.String("mcp-listen-addr"),

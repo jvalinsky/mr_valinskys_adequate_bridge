@@ -40,6 +40,8 @@ type Config struct {
 	RepoPath              string
 	Mode                  string
 	HTTPSDomain           string
+	TLSCertFile           string
+	TLSKeyFile            string
 	KeyPair               *keys.KeyPair
 	AppKey                string
 	BridgeAccountLister   ActiveBridgeAccountLister
@@ -213,15 +215,21 @@ func (r *Runtime) initNetwork() error {
 	r.muxrpcAddr = muxrpcListener.Addr().String()
 
 	muxHandler := newServeMux(r.ctx, r.roomDB, r.state, r.keyPair, r.cfg.HTTPSDomain, r.httpAddr, r.muxrpcAddr, r.roomSrv)
+	httpHandler := newBridgeRoomHandlerWithAuth(
+		muxHandler,
+		r.roomDB.RoomConfig(),
+		r.cfg.BridgeAccountLister,
+		r.cfg.BridgeAccountDetailer,
+		r.roomDB.Members(),
+		r.roomDB.AuthTokens(),
+	)
+
+	if r.cfg.TLSCertFile == "" && r.cfg.TLSKeyFile == "" && r.cfg.HTTPSDomain != "" {
+		httpHandler = httpRedirectHandler(r.cfg.HTTPSDomain, httpHandler)
+	}
+
 	r.httpServer = &http.Server{
-		Handler: newBridgeRoomHandlerWithAuth(
-			muxHandler,
-			r.roomDB.RoomConfig(),
-			r.cfg.BridgeAccountLister,
-			r.cfg.BridgeAccountDetailer,
-			r.roomDB.Members(),
-			r.roomDB.AuthTokens(),
-		),
+		Handler:           httpHandler,
 		ReadHeaderTimeout: 15 * time.Second,
 		WriteTimeout:      3 * time.Minute,
 		IdleTimeout:       3 * time.Minute,
@@ -393,7 +401,13 @@ func (r *Runtime) Close() error {
 func (r *Runtime) serveHTTP() {
 	defer r.wg.Done()
 
-	err := r.httpServer.Serve(r.httpListener)
+	var err error
+	if r.cfg.TLSCertFile != "" && r.cfg.TLSKeyFile != "" {
+		r.logger.Printf("event=room_https_start cert=%s", r.cfg.TLSCertFile)
+		err = r.httpServer.ServeTLS(r.httpListener, r.cfg.TLSCertFile, r.cfg.TLSKeyFile)
+	} else {
+		err = r.httpServer.Serve(r.httpListener)
+	}
 	if err != nil && err != http.ErrServerClosed {
 		r.logger.Printf("event=room_http_serve_error err=%v", err)
 	}
@@ -989,4 +1003,26 @@ func joinErrors(errs []error) error {
 	default:
 		return fmt.Errorf("multiple errors: %v", errs)
 	}
+}
+
+func httpRedirectHandler(httpsDomain string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.TLS == nil {
+			host := r.Host
+			if strings.Contains(host, ":") {
+				host = strings.Split(host, ":")[0]
+			}
+			if host == "127.0.0.1" || host == "localhost" || host == "::1" {
+				next.ServeHTTP(w, r)
+				return
+			}
+			newURL := "https://" + host + ":443" + r.URL.Path
+			if r.URL.RawQuery != "" {
+				newURL += "?" + r.URL.RawQuery
+			}
+			http.Redirect(w, r, newURL, http.StatusMovedPermanently)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }

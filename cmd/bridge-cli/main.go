@@ -183,6 +183,14 @@ func main() {
 						Usage: "Room2 HTTPS domain (required for non-loopback room exposure)",
 					},
 					&cli.StringFlag{
+						Name:  "room-tls-cert",
+						Usage: "Room2 TLS certificate file (PEM)",
+					},
+					&cli.StringFlag{
+						Name:  "room-tls-key",
+						Usage: "Room2 TLS private key file (PEM)",
+					},
+					&cli.StringFlag{
 						Name:  "xrpc-host",
 						Usage: "optional ATProto read host for dependency record and blob fetches (defaults to AppView)",
 					},
