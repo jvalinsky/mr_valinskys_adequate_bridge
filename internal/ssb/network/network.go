@@ -172,6 +172,8 @@ func (s *Server) handleConn(conn net.Conn) {
 		return
 	}
 
+	conn.SetReadDeadline(time.Time{})
+
 	remoteFeed, err := GetFeedRefFromAddr(shs.RemoteAddr())
 	if err != nil {
 		fmt.Printf("network: failed to get remote feed ref: %v\n", err)
@@ -184,14 +186,17 @@ func (s *Server) handleConn(conn net.Conn) {
 		KeyPair: s.keyPair,
 	}
 
-	s.addPeer(peer)
-	defer s.removePeer(peer)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	var secretConn muxrpc.Conn = &statsConn{Conn: shs, p: peer}
+	sc := &statsConn{Conn: shs, p: peer}
+	peer.rpc = muxrpc.NewServer(ctx, sc, s.handler, s.newManifest())
+	s.handler.HandleConnect(ctx, peer.rpc)
 
-	_ = muxrpc.NewServer(s.ctx, secretConn, s.handler, s.newManifest())
+	s.AddPeer(peer)
+	defer s.RemovePeer(peer)
 
-	<-s.ctx.Done()
+	<-peer.rpc.Wait()
 }
 
 type secretConnWrapper struct {
@@ -218,13 +223,13 @@ func (p *Peer) RPC() *muxrpc.Server {
 	return p.rpc
 }
 
-func (s *Server) addPeer(p *Peer) {
+func (s *Server) AddPeer(p *Peer) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.peers[p.ID.String()] = p
 }
 
-func (s *Server) removePeer(p *Peer) {
+func (s *Server) RemovePeer(p *Peer) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.peers, p.ID.String())

@@ -181,7 +181,7 @@ func (h *HistoryStreamHandler) writeMessage(ctx context.Context, sink *muxrpc.By
 
 	msg, err := log.Get(seq)
 	if err != nil {
-		return nil
+		return fmt.Errorf("failed to get message at seq %d: %w", seq, err)
 	}
 
 	payload := signedMessagePayload(msg)
@@ -196,7 +196,7 @@ func (h *HistoryStreamHandler) writeMessage(ctx context.Context, sink *muxrpc.By
 
 	data, err := json.Marshal(body)
 	if err != nil {
-		return nil
+		return fmt.Errorf("failed to marshal message: %w", err)
 	}
 	_, err = sink.Write(data)
 	return err

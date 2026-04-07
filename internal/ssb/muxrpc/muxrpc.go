@@ -268,6 +268,7 @@ type rpc struct {
 	nextID  int32
 	out     []codec.Packet
 	sendCh  chan struct{}
+	done    chan struct{}
 }
 
 func NewRPC(ctx context.Context, conn Conn, handler Handler, manifest *Manifest) *rpc {
@@ -279,11 +280,16 @@ func NewRPC(ctx context.Context, conn Conn, handler Handler, manifest *Manifest)
 		streams:  make(map[int32]*Request),
 		nextID:   1,
 		sendCh:   make(chan struct{}, 1),
+		done:     make(chan struct{}),
 	}
 	r.packer = NewPacker(r.conn)
 	go r.serve()
 	go r.sender()
 	return r
+}
+
+func (r *rpc) Wait() <-chan struct{} {
+	return r.done
 }
 
 type Server = rpc
@@ -327,10 +333,12 @@ func (r *rpc) serve() {
 			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) {
 				return
 			}
+			slog.Debug("muxrpc: serve read error", "error", err)
 			continue
 		}
 		r.HandlePacket(pkt)
 	}
+	close(r.done)
 }
 
 func (r *rpc) sender() {
@@ -340,7 +348,9 @@ func (r *rpc) sender() {
 			return
 		case <-r.sendCh:
 			for _, outPkt := range r.Produce() {
-				r.packer.WritePacket(outPkt)
+				if err := r.packer.WritePacket(outPkt); err != nil {
+					slog.Debug("muxrpc: sender write error", "error", err)
+				}
 			}
 		}
 	}

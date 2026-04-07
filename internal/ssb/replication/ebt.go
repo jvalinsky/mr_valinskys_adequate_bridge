@@ -29,7 +29,7 @@ func (n Note) MarshalJSON() ([]byte, error) {
 	}
 	i := n.Seq
 	if i == -1 {
-		i = 0
+		return []byte("-1"), nil
 	}
 	i = i << 1
 	if !n.Receive {
