@@ -1007,7 +1007,7 @@ func joinErrors(errs []error) error {
 
 func httpRedirectHandler(httpsDomain string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.TLS == nil {
+		if r.TLS == nil && r.Header.Get("X-Forwarded-Proto") != "https" {
 			host := r.Host
 			if strings.Contains(host, ":") {
 				host = strings.Split(host, ":")[0]
