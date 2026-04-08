@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"strings"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc"
@@ -389,12 +388,9 @@ func (h *RoomHandler) handleMetadata(ctx context.Context, req *muxrpc.Request) {
 		name = h.server.keyPair.String()
 	}
 
-	membership := "open"
-	switch mode {
-	case roomdb.ModeCommunity:
-		membership = "community"
-	case roomdb.ModeRestricted:
-		membership = "restricted"
+	membership := false
+	if caller, err := h.getCallerFeed(req); err == nil {
+		membership = isInternalMember(h.server, ctx, caller)
 	}
 
 	req.Return(ctx, MetadataResult{
@@ -405,10 +401,10 @@ func (h *RoomHandler) handleMetadata(ctx context.Context, req *muxrpc.Request) {
 }
 
 func (h *RoomHandler) aliasURL(alias string) string {
-	if h.server == nil || h.server.Domain == "" {
-		return "/" + url.PathEscape(alias)
+	if h.server == nil {
+		return buildAliasURL("", alias)
 	}
-	return "https://" + h.server.Domain + "/" + url.PathEscape(alias)
+	return buildAliasURL(h.server.Domain, alias)
 }
 
 func lower(s string) string {

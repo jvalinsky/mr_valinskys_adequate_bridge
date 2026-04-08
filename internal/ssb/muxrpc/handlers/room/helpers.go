@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/url"
 	"regexp"
 	"strings"
 
@@ -113,4 +114,36 @@ func validateAliasRegistration(roomID refs.FeedRef, caller refs.FeedRef, alias s
 		return fmt.Errorf("signature required")
 	}
 	return legacy.Signature(signature).Verify(aliasRegistrationMessage(roomID, caller, alias), caller)
+}
+
+func buildAliasURL(domain string, alias string) string {
+	escaped := url.PathEscape(alias)
+	base := normalizeAliasBaseURL(domain)
+	if base == "" {
+		return "/" + escaped
+	}
+	return base + "/" + escaped
+}
+
+func normalizeAliasBaseURL(raw string) string {
+	trimmed := strings.TrimRight(strings.TrimSpace(raw), "/")
+	if trimmed == "" {
+		return ""
+	}
+	if strings.HasPrefix(trimmed, "http://") || strings.HasPrefix(trimmed, "https://") {
+		return trimmed
+	}
+
+	host := trimmed
+	if parsedHost, _, err := net.SplitHostPort(trimmed); err == nil {
+		host = parsedHost
+	}
+	host = strings.Trim(host, "[]")
+	if host == "localhost" {
+		return "http://" + trimmed
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return "http://" + trimmed
+	}
+	return "https://" + trimmed
 }

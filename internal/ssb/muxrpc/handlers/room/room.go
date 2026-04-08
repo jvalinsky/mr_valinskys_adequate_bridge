@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"strings"
 	"sync"
 
@@ -400,7 +399,7 @@ func (h *AliasHandler) streamAttendants(ctx context.Context, req *muxrpc.Request
 
 type MetadataResult struct {
 	Name       string   `json:"name"`
-	Membership string   `json:"membership"`
+	Membership bool     `json:"membership"`
 	Features   []string `json:"features"`
 }
 
@@ -421,12 +420,9 @@ func (h *AliasHandler) handleMetadata(ctx context.Context, req *muxrpc.Request) 
 		name = h.server.keyPair.String()
 	}
 
-	membership := "open"
-	switch mode {
-	case roomdb.ModeCommunity:
-		membership = "community"
-	case roomdb.ModeRestricted:
-		membership = "restricted"
+	membership := false
+	if caller, err := h.getCallerFeed(req); err == nil {
+		membership = isInternalMember(h.server, ctx, caller)
 	}
 
 	req.Return(ctx, MetadataResult{
@@ -444,8 +440,8 @@ func (h *AliasHandler) getCallerFeed(req *muxrpc.Request) (refs.FeedRef, error) 
 }
 
 func (h *AliasHandler) aliasURL(alias string) string {
-	if h.server == nil || h.server.Domain == "" {
-		return "/" + url.PathEscape(alias)
+	if h.server == nil {
+		return buildAliasURL("", alias)
 	}
-	return "https://" + h.server.Domain + "/" + url.PathEscape(alias)
+	return buildAliasURL(h.server.Domain, alias)
 }

@@ -1543,14 +1543,14 @@ func TestRuntimeRoomMetadataReportsAuthenticatedMembership(t *testing.T) {
 
 	var memberMeta struct {
 		Name       string   `json:"name"`
-		Membership string   `json:"membership"`
+		Membership bool     `json:"membership"`
 		Features   []string `json:"features"`
 	}
 	if err := memberClient.endpoint.Async(ctx, &memberMeta, muxrpc.TypeJSON, muxrpc.Method{"room", "metadata"}); err != nil {
 		t.Fatalf("member metadata: %v", err)
 	}
-	if memberMeta.Membership != "open" {
-		t.Fatalf("expected member metadata membership='open': %+v", memberMeta)
+	if !memberMeta.Membership {
+		t.Fatalf("expected member metadata membership=true for internal member: %+v", memberMeta)
 	}
 	for _, want := range []string{"tunnel", "room2", "httpInvite", "alias"} {
 		if !containsString(memberMeta.Features, want) {
@@ -1560,14 +1560,14 @@ func TestRuntimeRoomMetadataReportsAuthenticatedMembership(t *testing.T) {
 
 	var externalMeta struct {
 		Name       string   `json:"name"`
-		Membership string   `json:"membership"`
+		Membership bool     `json:"membership"`
 		Features   []string `json:"features"`
 	}
 	if err := externalClient.endpoint.Async(ctx, &externalMeta, muxrpc.TypeJSON, muxrpc.Method{"room", "metadata"}); err != nil {
 		t.Fatalf("external metadata: %v", err)
 	}
-	if externalMeta.Membership != "open" {
-		t.Fatalf("expected external metadata membership='open': %+v", externalMeta)
+	if externalMeta.Membership {
+		t.Fatalf("expected external metadata membership=false for non-member: %+v", externalMeta)
 	}
 }
 
@@ -1593,7 +1593,7 @@ func TestRuntimeRoomAttendantsEmitStateJoinAndLeft(t *testing.T) {
 
 	clientOne := connectRuntimeRoomClient(t, ctx, rt, memberOne, nil)
 	var meta struct {
-		Membership string `json:"membership"`
+		Membership bool `json:"membership"`
 	}
 	if err := clientOne.endpoint.Async(ctx, &meta, muxrpc.TypeJSON, muxrpc.Method{"room", "metadata"}); err != nil {
 		t.Fatalf("prime member one connection: %v", err)
@@ -1860,8 +1860,9 @@ func TestRuntimeAliasRegisterEndpointAndRevoke(t *testing.T) {
 	if err := client.endpoint.Async(ctx, &aliasURL, muxrpc.TypeString, muxrpc.Method{"room", "registerAlias"}, alias, signature); err != nil {
 		t.Fatalf("register alias: %v", err)
 	}
-	if aliasURL != "/oak" {
-		t.Fatalf("expected /oak alias URL, got %q", aliasURL)
+	wantAliasURL := "http://" + rt.HTTPAddr() + "/oak"
+	if aliasURL != wantAliasURL {
+		t.Fatalf("expected alias URL %q, got %q", wantAliasURL, aliasURL)
 	}
 
 	aliasMux := newServeMux(ctx, rt.roomDB, rt.state, rt.keyPair, rt.cfg.HTTPSDomain, rt.HTTPAddr(), rt.Addr(), rt.roomSrv)
@@ -1987,6 +1988,47 @@ func TestRuntimeAliasJSONUsesHTTPSDomainHost(t *testing.T) {
 	wantAddr := "net:" + net.JoinHostPort("bridge.example", port) + "~shs:" + base64.StdEncoding.EncodeToString(rt.RoomFeed().PubKey())
 	if payload.MultiserverAddress != wantAddr {
 		t.Fatalf("expected multiserver address %q, got %q", wantAddr, payload.MultiserverAddress)
+	}
+}
+
+func TestRuntimeRegisterAliasURLUsesConfiguredHTTPSDomain(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	rt, err := Start(ctx, Config{
+		ListenAddr:     "0.0.0.0:0",
+		HTTPListenAddr: "127.0.0.1:0",
+		RepoPath:       t.TempDir(),
+		Mode:           "open",
+		HTTPSDomain:    "https://bridge.example:443",
+	}, log.New(io.Discard, "", 0))
+	if err != nil {
+		if strings.Contains(err.Error(), "operation not permitted") {
+			t.Skipf("sandbox does not allow local listen sockets: %v", err)
+		}
+		t.Fatalf("start runtime: %v", err)
+	}
+	defer rt.Close()
+
+	memberKey, err := keys.Generate()
+	if err != nil {
+		t.Fatalf("generate member key: %v", err)
+	}
+	if _, err := rt.roomDB.Members().Add(ctx, memberKey.FeedRef(), roomdb.RoleMember); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+
+	client := connectRuntimeRoomClient(t, ctx, rt, memberKey, nil)
+	alias := "oakhttps"
+	registrationMsg := []byte("=room-alias-registration:" + rt.RoomFeed().String() + ":" + memberKey.FeedRef().String() + ":" + alias)
+	signature := ed25519.Sign(memberKey.Private(), registrationMsg)
+
+	var aliasURL string
+	if err := client.endpoint.Async(ctx, &aliasURL, muxrpc.TypeString, muxrpc.Method{"room", "registerAlias"}, alias, signature); err != nil {
+		t.Fatalf("register alias: %v", err)
+	}
+	if aliasURL != "https://bridge.example:443/oakhttps" {
+		t.Fatalf("expected configured https alias URL, got %q", aliasURL)
 	}
 }
 

@@ -433,7 +433,7 @@ func (c *roomConn) Close() error {
 
 type roomMetadata struct {
 	Name       string   `json:"name"`
-	Membership string   `json:"membership"`
+	Membership bool     `json:"membership"`
 	Features   []string `json:"features"`
 }
 

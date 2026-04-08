@@ -213,6 +213,9 @@ func (r *Runtime) initNetwork() error {
 	}
 	r.muxrpcListener = muxrpcListener
 	r.muxrpcAddr = muxrpcListener.Addr().String()
+	if r.roomSrv != nil && strings.TrimSpace(r.roomSrv.Domain) == "" {
+		r.roomSrv.Domain = r.httpAddr
+	}
 
 	muxHandler := newServeMux(r.ctx, r.roomDB, r.state, r.keyPair, r.cfg.HTTPSDomain, r.httpAddr, r.muxrpcAddr, r.roomSrv)
 	httpHandler := newBridgeRoomHandlerWithAuth(
