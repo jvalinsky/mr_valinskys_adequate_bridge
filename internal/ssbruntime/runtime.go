@@ -191,6 +191,10 @@ func (r *Runtime) BlobStore() feedlog.BlobStore {
 	return r.blobStore
 }
 
+func (r *Runtime) ReceiveLog() feedlog.Log {
+	return r.receiveLog
+}
+
 func (r *Runtime) GetPeers() []handlers.PeerStatus {
 	if r.sbotNode == nil {
 		return nil

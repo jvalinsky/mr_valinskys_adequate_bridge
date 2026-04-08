@@ -238,6 +238,10 @@ func runStart(c *cli.Context) error {
 		MetricsListenAddr:   c.String("metrics-listen-addr"),
 		MaxMsgsPerDIDPerMin: c.Int("max-msgs-per-did-per-min"),
 		BridgedPeerSyncIntv: c.Duration("bridged-room-peer-sync-interval"),
+		ReverseSyncEnable:   c.Bool("reverse-sync-enable"),
+		ReverseCredentialsFile: c.String("reverse-credentials-file"),
+		ReverseSyncScanInterval: c.Duration("reverse-sync-scan-interval"),
+		ReverseSyncBatchSize: c.Int("reverse-sync-batch-size"),
 	}
 
 	app := NewBridgeApp(cfg, logRuntime.Logger("bridge"))
@@ -553,6 +557,19 @@ func runServeUI(c *cli.Context) error {
 
 	manager := bots.NewManager([]byte(botSeed), nil, nil, nil)
 	ui := handlers.NewUIHandler(database, uiLogger, atpClient, blobStore, ssbStatus, manager).WithATProto(database, indexer)
+	if reverseCreds, err := bridge.LoadReverseCredentials(c.String("reverse-credentials-file")); err != nil {
+		return err
+	} else {
+		reverseProcessor := bridge.NewReverseProcessor(bridge.ReverseProcessorConfig{
+			DB:           database,
+			Writer:       &bridge.ATProtoReverseWriter{HTTPClient: httpClient, Insecure: c.Bool("atproto-insecure")},
+			HostResolver: bridge.NewDefaultReverseHostResolver(c.String("plc-url"), httpClient),
+			Logger:       uiLogger,
+			Credentials:  reverseCreds,
+			Enabled:      c.Bool("reverse-sync-enable"),
+		})
+		ui = ui.WithReverseSync(reverseProcessor)
+	}
 	if roomOps != nil {
 		ui = ui.WithRoomOps(roomOps)
 	}

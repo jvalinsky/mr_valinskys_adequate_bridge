@@ -240,6 +240,13 @@ func setBridgeStateBestEffort(ctx context.Context, database *db.DB, key, value s
 	}
 }
 
+func boolToBridgeState(v bool) string {
+	if v {
+		return "1"
+	}
+	return "0"
+}
+
 // runRoomTunnelBootstrap connects the bridge sbot to the embedded room server
 // and periodically re-announces on the room tunnel. It polls for readiness
 // instead of using fixed sleeps, and retries the full sequence on failure.

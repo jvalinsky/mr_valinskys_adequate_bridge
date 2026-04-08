@@ -70,6 +70,18 @@ type RepoCreateRecord_Output struct {
 	ValidationStatus *string              `json:"validationStatus,omitempty"`
 }
 
+type RepoDeleteRecord_Input struct {
+	Collection string  `json:"collection"`
+	Repo       string  `json:"repo"`
+	Rkey       string  `json:"rkey"`
+	SwapCommit *string `json:"swapCommit,omitempty"`
+	SwapRecord *string `json:"swapRecord,omitempty"`
+}
+
+type RepoDeleteRecord_Output struct {
+	Commit *RepoDefs_CommitMeta `json:"commit,omitempty"`
+}
+
 type RepoGetRecord_Output struct {
 	Cid   *string                     `json:"cid,omitempty"`
 	Uri   string                      `json:"uri"`
@@ -158,6 +170,14 @@ func ServerCreateAccount(ctx context.Context, client lexutil.LexClient, input *S
 func RepoCreateRecord(ctx context.Context, client lexutil.LexClient, input *RepoCreateRecord_Input) (*RepoCreateRecord_Output, error) {
 	var out RepoCreateRecord_Output
 	if err := client.LexDo(ctx, lexutil.Procedure, "application/json", "com.atproto.repo.createRecord", nil, input, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func RepoDeleteRecord(ctx context.Context, client lexutil.LexClient, input *RepoDeleteRecord_Input) (*RepoDeleteRecord_Output, error) {
+	var out RepoDeleteRecord_Output
+	if err := client.LexDo(ctx, lexutil.Procedure, "application/json", "com.atproto.repo.deleteRecord", nil, input, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

@@ -422,6 +422,18 @@ func (p *Processor) ProcessDeletedRecord(ctx context.Context, atDID, atURI, atCI
 func (p *Processor) ProcessRecord(ctx context.Context, atDID, atURI, atCID, collection string, recordJSON []byte) error {
 	ctx = ensureDependencyContext(ctx, atDID, atURI)
 
+	existing, err := p.db.GetMessage(ctx, atURI)
+	if err != nil {
+		return fmt.Errorf("load existing message %s: %w", atURI, err)
+	}
+	if existing != nil &&
+		strings.TrimSpace(existing.SSBMsgRef) != "" &&
+		strings.TrimSpace(existing.ATCID) != "" &&
+		strings.TrimSpace(existing.ATCID) == strings.TrimSpace(atCID) {
+		p.logger.Printf("event=publish_skip_duplicate did=%s at_uri=%s record_type=%s at_cid=%s", atDID, atURI, collection, atCID)
+		return nil
+	}
+
 	mapped, err := p.mapMappedRecord(ctx, atDID, collection, recordJSON, false)
 	if err != nil {
 		return fmt.Errorf("map record: %w", err)

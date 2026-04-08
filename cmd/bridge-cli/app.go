@@ -36,6 +36,7 @@ type BridgeApp struct {
 	ssbRuntime      *ssbruntime.Runtime
 	publisher       *publishqueue.WorkerPublisher
 	processor       *bridge.Processor
+	reverseProcessor *bridge.ReverseProcessor
 	indexer         *atindex.Service
 	firehose        *firehose.Client
 	room            *room.Runtime
@@ -72,6 +73,10 @@ type AppConfig struct {
 	MetricsListenAddr   string
 	MaxMsgsPerDIDPerMin int
 	BridgedPeerSyncIntv time.Duration
+	ReverseSyncEnable   bool
+	ReverseCredentialsFile string
+	ReverseSyncScanInterval time.Duration
+	ReverseSyncBatchSize int
 }
 
 func (a *BridgeApp) MCPServer() *server.MCPServer {
@@ -161,6 +166,22 @@ func (a *BridgeApp) Init(ctx context.Context) error {
 		bridge.WithFeedResolver(a.ssbRuntime),
 		bridge.WithMaxMessagesPerMinute(a.cfg.MaxMsgsPerDIDPerMin),
 	)
+
+	reverseCreds, err := bridge.LoadReverseCredentials(a.cfg.ReverseCredentialsFile)
+	if err != nil {
+		return err
+	}
+	a.reverseProcessor = bridge.NewReverseProcessor(bridge.ReverseProcessorConfig{
+		DB:           a.db,
+		ReceiveLog:   a.ssbRuntime.ReceiveLog(),
+		Writer:       &bridge.ATProtoReverseWriter{HTTPClient: httpClient, Insecure: a.cfg.AtprotoInsecure},
+		HostResolver: bridge.NewDefaultReverseHostResolver(a.cfg.PLCURL, httpClient),
+		Logger:       a.logger,
+		Credentials:  reverseCreds,
+		Enabled:      a.cfg.ReverseSyncEnable,
+	})
+	setBridgeStateBestEffort(ctx, a.db, "reverse_sync_enabled", boolToBridgeState(a.cfg.ReverseSyncEnable), a.logger)
+	setBridgeStateBestEffort(ctx, a.db, "reverse_sync_credentials_file", a.cfg.ReverseCredentialsFile, a.logger)
 
 	if a.cfg.FirehoseEnable {
 		firehoseOpts := []firehose.ClientOption{}
@@ -308,6 +329,9 @@ func (a *BridgeApp) Start(ctx context.Context) error {
 	go runRetryScheduler(ctx, a.processor, a.logger)
 	go runDeferredResolverScheduler(ctx, a.processor, a.logger)
 	go runDeferredExpiryScheduler(ctx, a.processor, a.logger)
+	if a.reverseProcessor != nil && a.cfg.ReverseSyncEnable {
+		go a.reverseProcessor.Run(ctx, a.cfg.ReverseSyncScanInterval, a.cfg.ReverseSyncBatchSize)
+	}
 	go runATProtoTrackScheduler(ctx, a.db, a.indexer, a.logger)
 	go runRuntimeHeartbeatScheduler(ctx, a.db, a.logger, 10*time.Second)
 	a.processor.StartRateLimiterCleanup(ctx, 5*time.Minute, 10*time.Minute)

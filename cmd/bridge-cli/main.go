@@ -233,6 +233,25 @@ func main() {
 						Value: 300,
 						Usage: "Maximum messages per DID per minute (0 disables rate limiting)",
 					},
+					&cli.BoolFlag{
+						Name:  "reverse-sync-enable",
+						Usage: "enable allowlisted SSB-to-ATProto reverse sync",
+					},
+					&cli.StringFlag{
+						Name:    "reverse-credentials-file",
+						EnvVars: []string{"BRIDGE_REVERSE_CREDENTIALS_FILE"},
+						Usage:   "JSON file mapping AT DIDs to identifier/pds_host/password_env credentials for reverse sync",
+					},
+					&cli.DurationFlag{
+						Name:  "reverse-sync-scan-interval",
+						Value: 5 * time.Second,
+						Usage: "interval between reverse-sync receive-log scans",
+					},
+					&cli.IntFlag{
+						Name:  "reverse-sync-batch-size",
+						Value: 100,
+						Usage: "maximum receive-log entries to inspect per reverse-sync batch",
+					},
 				},
 				Action: runStart,
 			},
@@ -370,6 +389,21 @@ func main() {
 					&cli.BoolFlag{
 						Name:  "atproto-insecure",
 						Usage: "disable TLS verification for ATProto/XRPC connections (local/test stacks only)",
+					},
+					&cli.BoolFlag{
+						Name:  "reverse-sync-enable",
+						Usage: "show reverse sync as enabled in the admin UI and allow manual retries",
+					},
+					&cli.StringFlag{
+						Name:    "reverse-credentials-file",
+						EnvVars: []string{"BRIDGE_REVERSE_CREDENTIALS_FILE"},
+						Usage:   "JSON file mapping AT DIDs to reverse-sync credentials for UI status and retries",
+					},
+					&cli.StringFlag{
+						Name:    "plc-url",
+						Value:   "https://plc.directory",
+						EnvVars: []string{"BRIDGE_PLC_URL"},
+						Usage:   "ATProto PLC directory URL used to resolve PDS hosts for reverse sync",
 					},
 				},
 				Action: runServeUI,

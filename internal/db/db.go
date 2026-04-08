@@ -138,6 +138,10 @@ func Open(dbPath string) (*DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
+	if strings.HasPrefix(strings.TrimSpace(dbPath), ":memory:") {
+		conn.SetMaxOpenConns(1)
+		conn.SetMaxIdleConns(1)
+	}
 
 	if err := conn.Ping(); err != nil {
 		return nil, fmt.Errorf("failed to ping database: %w", err)

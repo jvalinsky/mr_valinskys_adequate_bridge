@@ -96,6 +96,28 @@ func (db *DB) GetMessage(ctx context.Context, atURI string) (*Message, error) {
 	return &msg, nil
 }
 
+func (db *DB) GetMessageBySSBRef(ctx context.Context, ssbMsgRef string) (*Message, error) {
+	row := db.conn.QueryRowContext(
+		ctx,
+		messageSelectColumns+`
+		 FROM messages
+		 WHERE ssb_msg_ref = ?
+		 ORDER BY COALESCE(published_at, created_at) DESC, created_at DESC, at_uri DESC
+		 LIMIT 1`,
+		strings.TrimSpace(ssbMsgRef),
+	)
+
+	msg, err := scanMessageRow(row)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get message by ssb ref %s: %w", ssbMsgRef, err)
+	}
+
+	return &msg, nil
+}
+
 func (db *DB) CountMessages(ctx context.Context) (int, error) {
 	count, err := db.Queries().CountMessages(ctx)
 	return int(count), err
