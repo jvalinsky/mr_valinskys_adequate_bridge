@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/bridge"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
@@ -98,10 +99,11 @@ type UIHandler struct {
 	atpClient    PDSClientInterface
 	blobStore    BlobStore
 	ssbStatus    SSBStatusProvider
-	atprotoStore    ATProtoDebugStore
-	atprotoSvc      ATProtoService
-	roomOps         RoomOpsProvider
-	feedIDProvider  FeedIDProvider
+	atprotoStore   ATProtoDebugStore
+	atprotoSvc     ATProtoService
+	roomOps        RoomOpsProvider
+	feedIDProvider FeedIDProvider
+	reverseSync    bridge.ReverseSyncStatusProvider
 }
 
 // NewUIHandler creates a UIHandler bound to database and feed ID provider.
@@ -129,6 +131,12 @@ func (h *UIHandler) WithRoomOps(provider RoomOpsProvider) *UIHandler {
 	return h
 }
 
+// WithReverseSync attaches reverse-sync admin controls to the UI handler.
+func (h *UIHandler) WithReverseSync(provider bridge.ReverseSyncStatusProvider) *UIHandler {
+	h.reverseSync = provider
+	return h
+}
+
 // Mount registers admin UI routes on r.
 func (h *UIHandler) Mount(r chi.Router) {
 	r.Get("/metrics", promhttp.Handler().ServeHTTP)
@@ -152,6 +160,10 @@ func (h *UIHandler) Mount(r chi.Router) {
 	r.Get("/feed", h.handleFeed)
 	r.Get("/blobs/view", h.handleBlobView)
 	r.Get("/connections", h.handleConnections)
+	r.Get("/reverse", h.handleReverse)
+	r.Post("/reverse/mappings", h.handleReverseMappingUpsert)
+	r.Post("/reverse/mappings/remove", h.handleReverseMappingRemove)
+	r.Post("/reverse/events/retry", h.handleReverseEventRetry)
 	r.Post("/connections/add", h.handleConnectionAdd)
 	r.Post("/connections/connect", h.handleConnectionConnect)
 	r.Get("/room", h.handleRoomOverview)

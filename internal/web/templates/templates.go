@@ -606,6 +606,7 @@ const pageLayout = `
                 <a href="/blobs" class="{{navClass .Chrome.ActiveNav "blobs"}}" {{navCurrent .Chrome.ActiveNav "blobs"}}>Blobs</a>
                 <a href="/room" class="{{navClass .Chrome.ActiveNav "room"}}" {{navCurrent .Chrome.ActiveNav "room"}}>Room</a>
                 <a href="/connections" class="{{navClass .Chrome.ActiveNav "connections"}}" {{navCurrent .Chrome.ActiveNav "connections"}}>Connections</a>
+                <a href="/reverse" class="{{navClass .Chrome.ActiveNav "reverse"}}" {{navCurrent .Chrome.ActiveNav "reverse"}}>Reverse Sync</a>
                 <a href="/state" class="{{navClass .Chrome.ActiveNav "state"}}" {{navCurrent .Chrome.ActiveNav "state"}}>State</a>
              </nav>
 
@@ -1510,6 +1511,140 @@ const stateContent = `
 {{end}}
 `
 
+const reverseContent = `
+{{define "content"}}
+<section class="section section-pad">
+    <h1 class="page-title">Reverse Sync</h1>
+    <p class="subtitle">Manage the SSB allowlist and inspect the durable SSB-to-ATProto queue.</p>
+</section>
+
+<section class="section section-pad">
+    <div class="metric-grid">
+        <div class="metric-card {{if .Enabled}}tone-success{{else}}tone-warning{{end}}">
+            <span class="metric-label">Runtime</span>
+            <span class="metric-value">{{if .Enabled}}enabled{{else}}disabled{{end}}</span>
+        </div>
+        <div class="metric-card">
+            <span class="metric-label">Mappings</span>
+            <span class="metric-value">{{len .Mappings}}</span>
+        </div>
+        <div class="metric-card">
+            <span class="metric-label">Queue Rows</span>
+            <span class="metric-value">{{len .Events}}</span>
+        </div>
+    </div>
+</section>
+
+<section class="section section-pad" style="max-width:960px">
+    <h2 class="page-title" style="font-size:1.2rem">Add Or Update Mapping</h2>
+    <form action="/reverse/mappings" method="POST" style="display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));align-items:end">
+        <label>
+            <span class="metric-label">SSB Feed</span>
+            <input type="text" name="ssb_feed_id" placeholder="@alice.ed25519" style="width:100%;padding:12px;border:1px solid var(--line);border-radius:8px">
+        </label>
+        <label>
+            <span class="metric-label">AT DID</span>
+            <input type="text" name="at_did" placeholder="did:plc:example" style="width:100%;padding:12px;border:1px solid var(--line);border-radius:8px">
+        </label>
+        <label><input type="checkbox" name="active" value="true" checked> Active</label>
+        <label><input type="checkbox" name="allow_posts" value="true" checked> Posts</label>
+        <label><input type="checkbox" name="allow_replies" value="true" checked> Replies</label>
+        <label><input type="checkbox" name="allow_follows" value="true" checked> Follows</label>
+        <div><button type="submit" class="button-link tone-success" style="padding:12px 24px">Save Mapping</button></div>
+    </form>
+</section>
+
+<section class="section">
+    <div class="section-pad"><h2 class="page-title" style="font-size:1.2rem">Allowlisted Feeds</h2></div>
+    <div class="table-wrap">
+        <table>
+            <thead><tr><th>SSB Feed</th><th>AT DID</th><th>Scope</th><th>Credentials</th><th>Updated</th><th>Disable</th></tr></thead>
+            <tbody>
+                {{range .Mappings}}
+                <tr>
+                    <td class="mono"><span class="truncate" title="{{.SSBFeedID}}">{{.SSBFeedID}}</span></td>
+                    <td class="mono"><span class="truncate" title="{{.ATDID}}">{{.ATDID}}</span></td>
+                    <td>{{if .AllowPosts}}post{{end}}{{if .AllowReplies}} {{if .AllowPosts}}/{{end}}reply{{end}}{{if .AllowFollows}} {{if or .AllowPosts .AllowReplies}}/{{end}}follow{{end}}</td>
+                    <td><span class="state-pill {{.CredentialClass}}">{{.CredentialStatus}}</span></td>
+                    <td>{{fmtTime .UpdatedAt}}</td>
+                    <td>
+                        {{if .Active}}
+                        <form action="/reverse/mappings/remove" method="POST">
+                            <input type="hidden" name="ssb_feed_id" value="{{.SSBFeedID}}">
+                            <button type="submit" class="button-link">Disable</button>
+                        </form>
+                        {{else}}
+                        <span class="state-pill state-deleted">inactive</span>
+                        {{end}}
+                    </td>
+                </tr>
+                {{else}}
+                <tr><td colspan="6" class="empty">No reverse mappings yet.</td></tr>
+                {{end}}
+            </tbody>
+        </table>
+    </div>
+</section>
+
+<section class="section section-pad">
+    <h2 class="page-title" style="font-size:1.2rem">Queue Filters</h2>
+    <form action="/reverse" method="GET" style="display:grid;gap:16px;grid-template-columns:2fr 1fr 1fr auto;align-items:end">
+        <label>
+            <span class="metric-label">Search</span>
+            <input type="text" name="q" value="{{.Filters.Search}}" placeholder="msg ref, feed, DID, AT URI" style="width:100%;padding:12px;border:1px solid var(--line);border-radius:8px">
+        </label>
+        <label>
+            <span class="metric-label">State</span>
+            <select name="state" style="width:100%;padding:12px;border:1px solid var(--line);border-radius:8px">
+                {{range .StateOptions}}<option value="{{.Value}}" {{if .Selected}}selected{{end}}>{{.Label}}</option>{{end}}
+            </select>
+        </label>
+        <label>
+            <span class="metric-label">Action</span>
+            <select name="action" style="width:100%;padding:12px;border:1px solid var(--line);border-radius:8px">
+                {{range .ActionOptions}}<option value="{{.Value}}" {{if .Selected}}selected{{end}}>{{.Label}}</option>{{end}}
+            </select>
+        </label>
+        <div><button type="submit" class="button-link" style="padding:12px 24px">Apply</button></div>
+    </form>
+</section>
+
+<section class="section">
+    <div class="section-pad"><h2 class="page-title" style="font-size:1.2rem">Reverse Event Queue</h2></div>
+    <div class="table-wrap">
+        <table>
+            <thead><tr><th>Seq</th><th>Source</th><th>Author</th><th>Action</th><th>State</th><th>Target</th><th>Result</th><th>Issue</th><th>Attempts</th><th>Retry</th></tr></thead>
+            <tbody>
+                {{range .Events}}
+                <tr>
+                    <td class="mono">{{.ReceiveLogSeq}}</td>
+                    <td class="mono"><span class="truncate" title="{{.SourceSSBMsgRef}}">{{.SourceSSBMsgRef}}</span></td>
+                    <td class="mono"><span class="truncate" title="{{.SourceSSBAuthor}}">{{.SourceSSBAuthor}}</span></td>
+                    <td>{{.Action}}</td>
+                    <td><span class="state-pill {{.StateClass}}">{{.State}}</span></td>
+                    <td class="mono"><span class="truncate" title="{{if .TargetATURI}}{{.TargetATURI}}{{else}}{{if .TargetATDID}}{{.TargetATDID}}{{else}}{{.TargetSSBFeedID}}{{end}}{{end}}">{{if .TargetATURI}}{{.TargetATURI}}{{else}}{{if .TargetATDID}}{{.TargetATDID}}{{else}}{{.TargetSSBFeedID}}{{end}}{{end}}</span></td>
+                    <td class="mono"><span class="truncate" title="{{.ResultATURI}}">{{if .ResultATURI}}{{.ResultATURI}}{{else}}-{{end}}</span></td>
+                    <td>{{if .Issue}}<span class="truncate" title="{{.Issue}}">{{.Issue}}</span>{{else}}-{{end}}</td>
+                    <td>{{.Attempts}}</td>
+                    <td>
+                        {{if .Retryable}}
+                        <form action="/reverse/events/retry" method="POST">
+                            <input type="hidden" name="source_ssb_msg_ref" value="{{.SourceSSBMsgRef}}">
+                            <button type="submit" class="button-link">Retry</button>
+                        </form>
+                        {{else}}-{{end}}
+                    </td>
+                </tr>
+                {{else}}
+                <tr><td colspan="10" class="empty">No reverse events matched the current filters.</td></tr>
+                {{end}}
+            </tbody>
+        </table>
+    </div>
+</section>
+{{end}}
+`
+
 // PageChrome controls global page shell behavior.
 type PageChrome struct {
 	ActiveNav   string
@@ -1822,6 +1957,52 @@ type StateData struct {
 	HeartbeatAge      string
 }
 
+type ReverseMappingRow struct {
+	SSBFeedID        string
+	ATDID            string
+	Active           bool
+	AllowPosts       bool
+	AllowReplies     bool
+	AllowFollows     bool
+	CredentialStatus string
+	CredentialClass  string
+	UpdatedAt        time.Time
+}
+
+type ReverseEventRow struct {
+	SourceSSBMsgRef string
+	SourceSSBAuthor string
+	ATDID           string
+	Action          string
+	State           string
+	StateClass      string
+	Attempts        int
+	ReceiveLogSeq   int64
+	TargetSSBFeedID string
+	TargetATDID     string
+	TargetATURI     string
+	ResultATURI     string
+	Issue           string
+	UpdatedAt       time.Time
+	Retryable       bool
+}
+
+type ReverseFilterState struct {
+	State  string
+	Action string
+	Search string
+}
+
+type ReverseData struct {
+	Chrome        PageChrome
+	Enabled       bool
+	Mappings      []ReverseMappingRow
+	Events        []ReverseEventRow
+	Filters       ReverseFilterState
+	StateOptions  []FilterOption
+	ActionOptions []FilterOption
+}
+
 // PostData is the template model for the compose post page.
 type PostData struct {
 	Chrome         PageChrome
@@ -1941,6 +2122,11 @@ func RenderState(w io.Writer, data StateData) error {
 	return stateTemplate.Execute(w, data)
 }
 
+// RenderReverse renders the reverse-sync admin page.
+func RenderReverse(w io.Writer, data ReverseData) error {
+	return reverseTemplate.Execute(w, data)
+}
+
 // RenderPost renders the compose post page.
 func RenderPost(w io.Writer, data PostData) error {
 	return postTemplate.Execute(w, data)
@@ -1965,6 +2151,7 @@ var (
 	feedTemplate          = mustPageTemplate("feed", feedContent)
 	blobsTemplate         = mustPageTemplate("blobs", blobsContent)
 	stateTemplate         = mustPageTemplate("state", stateContent)
+	reverseTemplate       = mustPageTemplate("reverse", reverseContent)
 	postTemplate          = mustPageTemplate("post", postContent)
 	connectionsTemplate   = mustPageTemplate("connections", connectionsContent)
 	threadTemplate        = mustPageTemplate("thread", threadContent)
