@@ -316,6 +316,19 @@ func announceRoomPeer(ctx context.Context, endpoint muxrpc.Endpoint) error {
 	return nil
 }
 
+func leaveRoomPeer(ctx context.Context, endpoint muxrpc.Endpoint) error {
+	var left bool
+	syncCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := endpoint.Sync(syncCtx, &left, muxrpc.TypeJSON, muxrpc.Method{"tunnel", "leave"}); err != nil {
+		return err
+	}
+	if !left {
+		return fmt.Errorf("room tunnel leave returned false")
+	}
+	return nil
+}
+
 func waitForRetry(ctx context.Context, delay time.Duration) bool {
 	timer := time.NewTimer(delay)
 	defer timer.Stop()

@@ -72,6 +72,18 @@ func (m *Manager) GetFeedID(atDID string) (refs.FeedRef, error) {
 	return kp.FeedRef(), nil
 }
 
+// GetKeyPair returns the deterministic keypair for an ATProto DID.
+func (m *Manager) GetKeyPair(atDID string) (*keys.KeyPair, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	kp, err := m.deriveKeyPair(atDID)
+	if err != nil {
+		return nil, err
+	}
+	return kp, nil
+}
+
 func (m *Manager) deriveKeyPair(atDID string) (*keys.KeyPair, error) {
 	if atDID == "" {
 		return nil, fmt.Errorf("bots: DID must not be empty")

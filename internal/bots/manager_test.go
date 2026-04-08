@@ -85,6 +85,25 @@ func TestGetFeedID(t *testing.T) {
 	}
 }
 
+func TestGetKeyPair(t *testing.T) {
+	masterSeed := []byte("test_master_seed_for_bridge_bot_manager")
+	manager := NewManager(masterSeed, nil, nil, nil)
+
+	atDID := "did:plc:keypair123"
+	kp1, err := manager.GetKeyPair(atDID)
+	if err != nil {
+		t.Fatalf("failed to get keypair: %v", err)
+	}
+	kp2, err := manager.GetKeyPair(atDID)
+	if err != nil {
+		t.Fatalf("failed to get keypair second time: %v", err)
+	}
+
+	if kp1.FeedRef().String() != kp2.FeedRef().String() {
+		t.Fatalf("expected deterministic keypair feed, got %s vs %s", kp1.FeedRef().String(), kp2.FeedRef().String())
+	}
+}
+
 func TestGetPublisher(t *testing.T) {
 	masterSeed := []byte("test_master_seed_for_bridge_bot_manager")
 	rxLog := &mockLog{}

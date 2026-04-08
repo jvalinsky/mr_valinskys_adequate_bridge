@@ -39,6 +39,7 @@ type BridgeApp struct {
 	indexer         *atindex.Service
 	firehose        *firehose.Client
 	room            *room.Runtime
+	bridgedPeers    bridgedRoomPeerSessionManager
 	logger          *log.Logger
 	mcpServer       *server.MCPServer
 	followerTracker *bridge.FollowerTracker
@@ -70,6 +71,7 @@ type AppConfig struct {
 	MCPListenAddr       string
 	MetricsListenAddr   string
 	MaxMsgsPerDIDPerMin int
+	BridgedPeerSyncIntv time.Duration
 }
 
 func (a *BridgeApp) MCPServer() *server.MCPServer {
@@ -189,6 +191,18 @@ func (a *BridgeApp) Init(ctx context.Context) error {
 			return fmt.Errorf("start room runtime: %w", err)
 		}
 
+		a.bridgedPeers, err = newBridgedRoomPeerManager(bridgedRoomPeerManagerConfig{
+			AccountLister: a.db,
+			RoomRuntime:   a.room,
+			Store:         a.ssbRuntime.Node().Store(),
+			BotSeed:       a.cfg.BotSeed,
+			AppKey:        a.cfg.AppKey,
+			SyncInterval:  a.cfg.BridgedPeerSyncIntv,
+		}, a.logger)
+		if err != nil {
+			return fmt.Errorf("init bridged room peer manager: %w", err)
+		}
+
 		a.initFollowerTracker(ctx)
 	}
 
@@ -283,6 +297,12 @@ func (a *BridgeApp) Start(ctx context.Context) error {
 
 	if a.room != nil {
 		go runRoomTunnelBootstrap(ctx, a.ssbRuntime, a.room, a.logger)
+		if a.bridgedPeers != nil {
+			a.bridgedPeers.Start(ctx)
+			if err := a.bridgedPeers.Reconcile(ctx); err != nil {
+				a.logger.Printf("event=bridged_room_peer_reconcile_failed err=%v", err)
+			}
+		}
 	}
 
 	go runRetryScheduler(ctx, a.processor, a.logger)
@@ -436,6 +456,12 @@ func (a *BridgeApp) Stop() error {
 
 	if a.db != nil {
 		setBridgeStateBestEffort(context.Background(), a.db, bridgeRuntimeStatusKey, "stopping", a.logger)
+	}
+
+	if a.bridgedPeers != nil {
+		if err := a.bridgedPeers.Stop(); err != nil {
+			errs = append(errs, fmt.Errorf("stop bridged room peers: %w", err))
+		}
 	}
 
 	if a.room != nil {

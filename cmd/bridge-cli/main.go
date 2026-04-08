@@ -190,6 +190,11 @@ func main() {
 						Name:  "room-tls-key",
 						Usage: "Room2 TLS private key file (PEM)",
 					},
+					&cli.DurationFlag{
+						Name:  "bridged-room-peer-sync-interval",
+						Value: 30 * time.Second,
+						Usage: "reconcile/re-announce interval for per-bridged-DID room peer sessions",
+					},
 					&cli.StringFlag{
 						Name:  "xrpc-host",
 						Usage: "optional ATProto read host for dependency record and blob fetches (defaults to AppView)",

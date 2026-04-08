@@ -237,6 +237,7 @@ func runStart(c *cli.Context) error {
 		MCPListenAddr:       c.String("mcp-listen-addr"),
 		MetricsListenAddr:   c.String("metrics-listen-addr"),
 		MaxMsgsPerDIDPerMin: c.Int("max-msgs-per-did-per-min"),
+		BridgedPeerSyncIntv: c.Duration("bridged-room-peer-sync-interval"),
 	}
 
 	app := NewBridgeApp(cfg, logRuntime.Logger("bridge"))
