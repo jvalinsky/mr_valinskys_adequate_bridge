@@ -2,6 +2,7 @@ package bendy
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 	"time"
 
@@ -16,7 +17,7 @@ func TestBendyMessageEncoding(t *testing.T) {
 	}
 
 	pub := kp.Public()
-	author := bfe.EncodeFeed("ed25519", pub[:])
+	author := bfe.EncodeFeed("bendybutt-v1", pub[:])
 	content := map[string]interface{}{
 		"type":  "post",
 		"text":  "hello world",
@@ -26,6 +27,23 @@ func TestBendyMessageEncoding(t *testing.T) {
 	msg, err := CreateMessage(author, 1, nil, time.Now().Unix(), content, kp)
 	if err != nil {
 		t.Fatalf("failed to create message: %v", err)
+	}
+	if !bytes.Equal(msg.Previous, bfe.EncodeNil()) {
+		t.Fatalf("expected sequence-1 previous to be BFE nil, got %v", msg.Previous)
+	}
+	topSig, err := bfe.DecodeSignature(msg.Signature)
+	if err != nil {
+		t.Fatalf("expected top-level signature to be BFE encoded: %v", err)
+	}
+	if len(topSig) == 0 {
+		t.Fatalf("expected non-empty top-level signature")
+	}
+	contentSig, ok := msg.ContentSection[1].([]byte)
+	if !ok {
+		t.Fatalf("expected content signature bytes, got %T", msg.ContentSection[1])
+	}
+	if _, err := bfe.DecodeSignature(contentSig); err != nil {
+		t.Fatalf("expected content signature to be BFE encoded: %v", err)
 	}
 
 	// 1. Verify self-consistency
@@ -57,6 +75,34 @@ func TestBendyMessageEncoding(t *testing.T) {
 	err = decoded.Verify()
 	if err != nil {
 		t.Errorf("verification of decoded message failed: %v", err)
+	}
+}
+
+func TestBendyValidateRejectsNonBendyAuthorAndPreviousFormats(t *testing.T) {
+	kp, err := keys.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub := kp.Public()
+
+	classicAuthor := bfe.EncodeFeed("ed25519", pub[:])
+	msg, err := CreateMessage(classicAuthor, 1, nil, time.Now().Unix(), map[string]interface{}{"type": "post"}, kp)
+	if err == nil || !errors.Is(err, ErrInvalidAuthor) {
+		t.Fatalf("expected ErrInvalidAuthor for classic author format, got %v", err)
+	}
+
+	bendyAuthor := bfe.EncodeFeed("bendybutt-v1", pub[:])
+	badPrev := bfe.EncodeMessage("sha256", make([]byte, 32))
+	msg = &Message{
+		Author:         bendyAuthor,
+		Sequence:       2,
+		Previous:       badPrev,
+		Timestamp:      time.Now().Unix(),
+		ContentSection: []interface{}{map[string]interface{}{"type": []byte("post")}, bfe.EncodeSignature(make([]byte, 64))},
+		Signature:      bfe.EncodeSignature(make([]byte, 64)),
+	}
+	if err := msg.Validate(); !errors.Is(err, ErrInvalidPrevious) {
+		t.Fatalf("expected ErrInvalidPrevious for non-bendy previous, got %v", err)
 	}
 }
 

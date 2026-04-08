@@ -24,6 +24,10 @@ var (
 	ErrMessageTooLarge  = errors.New("bendy: message too large")
 	ErrInvalidContent   = errors.New("bendy: invalid content section")
 	ErrInvalidSignature = errors.New("bendy: invalid signature")
+
+	bendySignPrefix        = []byte("bendybutt")
+	bendyFeedFormatCode    = bfe.FeedFormatCodes["bendybutt-v1"]
+	bendyMessageFormatCode = bfe.MessageFormatCodes["bendybutt-v1"]
 )
 
 type Message struct {
@@ -40,24 +44,34 @@ func (m *Message) Validate() error {
 		return ErrInvalidSequence
 	}
 
-	if len(m.Author) != 34 || m.Author[0] != bfe.TypeFeed {
+	if len(m.Author) != 34 || m.Author[0] != bfe.TypeFeed || m.Author[1] != bendyFeedFormatCode {
 		return ErrInvalidAuthor
 	}
 
-	if len(m.Previous) == 0 {
-	} else if len(m.Previous) != 34 || m.Previous[0] != bfe.TypeMessage {
-		return ErrInvalidPrevious
+	if m.Sequence == 1 {
+		if !isBFENil(m.Previous) {
+			return ErrInvalidPrevious
+		}
+	} else {
+		if len(m.Previous) != 34 || m.Previous[0] != bfe.TypeMessage || m.Previous[1] != bendyMessageFormatCode {
+			return ErrInvalidPrevious
+		}
 	}
 
 	if m.Timestamp < 0 {
 		return ErrInvalidTimestamp
 	}
 
-	if len(m.ContentSection) < 2 {
+	if len(m.ContentSection) != 2 {
 		return ErrInvalidContent
 	}
 
 	return nil
+}
+
+func isBFENil(v []byte) bool {
+	nilBFE := bfe.EncodeNil()
+	return len(v) == len(nilBFE) && v[0] == nilBFE[0] && v[1] == nilBFE[1]
 }
 
 func (m *Message) ToBencode() interface{} {
@@ -89,19 +103,34 @@ func (m *Message) Key() ([]byte, error) {
 }
 
 func (m *Message) Sign(kp *keys.KeyPair) ([]byte, error) {
+	if len(m.ContentSection) != 2 {
+		return nil, ErrInvalidContent
+	}
+
 	contentBytes, err := bencode.Encode(m.ContentSection[0])
 	if err != nil {
 		return nil, err
 	}
 
-	prefix := []byte("bendybutt-v1")
-	msgToSign := make([]byte, 0, len(prefix)+len(contentBytes))
-	msgToSign = append(msgToSign, prefix...)
+	msgToSign := make([]byte, 0, len(bendySignPrefix)+len(contentBytes))
+	msgToSign = append(msgToSign, bendySignPrefix...)
 	msgToSign = append(msgToSign, contentBytes...)
+	contentSig := ed25519.Sign(kp.Private(), msgToSign)
+	m.ContentSection[1] = bfe.EncodeSignature(contentSig)
 
-	sig := ed25519.Sign(kp.Private(), msgToSign)
-	m.Signature = sig
-	return sig, nil
+	payloadBytes, err := bencode.Encode([]interface{}{
+		m.Author,
+		m.Sequence,
+		m.Previous,
+		m.Timestamp,
+		m.ContentSection,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	m.Signature = bfe.EncodeSignature(ed25519.Sign(kp.Private(), payloadBytes))
+	return m.Signature, nil
 }
 
 func (m *Message) Verify() error {
@@ -109,27 +138,49 @@ func (m *Message) Verify() error {
 		return err
 	}
 
-	if len(m.Signature) != ed25519.SignatureSize {
-		return ErrInvalidSignature
-	}
-
 	if len(m.Author) < 3 {
 		return ErrInvalidAuthor
 	}
 
 	authorPubKey := m.Author[2:34]
+	contentSigField := asBytes(m.ContentSection[1])
+	if contentSigField == nil {
+		return ErrInvalidSignature
+	}
+	contentSig, err := bfe.DecodeSignature(contentSigField)
+	if err != nil {
+		return ErrInvalidSignature
+	}
 
 	contentBytes, err := bencode.Encode(m.ContentSection[0])
 	if err != nil {
 		return err
 	}
 
-	prefix := []byte("bendybutt-v1")
-	msgToVerify := make([]byte, 0, len(prefix)+len(contentBytes))
-	msgToVerify = append(msgToVerify, prefix...)
+	msgToVerify := make([]byte, 0, len(bendySignPrefix)+len(contentBytes))
+	msgToVerify = append(msgToVerify, bendySignPrefix...)
 	msgToVerify = append(msgToVerify, contentBytes...)
 
-	if !ed25519.Verify(authorPubKey, msgToVerify, m.Signature) {
+	if !ed25519.Verify(authorPubKey, msgToVerify, contentSig) {
+		return ErrInvalidSignature
+	}
+
+	payloadSig, err := bfe.DecodeSignature(m.Signature)
+	if err != nil {
+		return ErrInvalidSignature
+	}
+	payloadBytes, err := bencode.Encode([]interface{}{
+		m.Author,
+		m.Sequence,
+		m.Previous,
+		m.Timestamp,
+		m.ContentSection,
+	})
+	if err != nil {
+		return err
+	}
+
+	if !ed25519.Verify(authorPubKey, payloadBytes, payloadSig) {
 		return ErrInvalidSignature
 	}
 
@@ -259,7 +310,11 @@ func (m *Message) Encode() ([]byte, error) {
 func CreateMessage(author []byte, sequence int64, previous []byte, timestamp int64, content map[string]interface{}, kp *keys.KeyPair) (*Message, error) {
 	contentBFE := encodeContentToBFE(content)
 
-	contentSection := []interface{}{contentBFE, nil}
+	if sequence == 1 && len(previous) == 0 {
+		previous = bfe.EncodeNil()
+	}
+
+	contentSection := []interface{}{contentBFE, bfe.EncodeSignature(make([]byte, ed25519.SignatureSize))}
 
 	msg := &Message{
 		Author:         author,
@@ -273,12 +328,9 @@ func CreateMessage(author []byte, sequence int64, previous []byte, timestamp int
 		return nil, err
 	}
 
-	sig, err := msg.Sign(kp)
-	if err != nil {
+	if _, err := msg.Sign(kp); err != nil {
 		return nil, err
 	}
-
-	msg.ContentSection[1] = sig
 
 	return msg, nil
 }
