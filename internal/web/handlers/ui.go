@@ -77,6 +77,7 @@ type ATProtoDebugStore interface {
 type ATProtoService interface {
 	TrackRepo(ctx context.Context, did, reason string) error
 	UntrackRepo(ctx context.Context, did string) error
+	RequestResync(ctx context.Context, did, reason string) error
 	GetRepoInfo(ctx context.Context, did string) (*db.ATProtoRepo, error)
 	GetRecord(ctx context.Context, atURI string) (*db.ATProtoRecord, error)
 	ListRecords(ctx context.Context, did, collection, cursor string, limit int) ([]db.ATProtoRecord, error)
@@ -137,6 +138,7 @@ func (h *UIHandler) Mount(r chi.Router) {
 	r.Get("/accounts", h.handleAccounts)
 	r.Post("/accounts", h.handleAccountsAdd)
 	r.Post("/accounts/remove", h.handleAccountsRemove)
+	r.Post("/accounts/backfill", h.handleAccountsBackfill)
 	r.Get("/messages", h.handleMessages)
 	r.Get("/messages/detail", h.handleMessageDetail)
 	r.Get("/messages/thread", h.handleMessageThread)

@@ -904,39 +904,52 @@ const accountsContent = `
             <thead>
                 <tr>
                     <th>AT DID</th>
-                    <th>SSB Feed ID</th>
-                    <th>Status</th>
+                    <th style="min-width:140px">Status</th>
                     <th>Total</th>
                     <th>Published</th>
                     <th>Failed</th>
                     <th>Deferred</th>
                     <th>Last Published</th>
                     <th>Created</th>
-                    <th>Pivot</th>
+                    <th>Actions</th>
                 </tr>
             </thead>
             <tbody>
                 {{range .Accounts}}
                 <tr>
-                    <td class="mono"><span class="truncate" title="{{.ATDID}}">{{.ATDID}}</span></td>
-                    <td class="mono"><span class="truncate" title="{{.SSBFeedID}}">{{.SSBFeedID}}</span></td>
-                    <td>{{if .Active}}active{{else}}inactive{{end}}</td>
+                    <td class="mono">
+                        <span class="truncate" title="{{.ATDID}}">{{.ATDID}}</span>
+                        <div style="font-size:0.7rem;color:var(--muted);margin-top:2px">{{.SSBFeedID}}</div>
+                    </td>
+                    <td>
+                        <div class="status-badge {{.SyncStateClass}}">{{.SyncStateLabel}}</div>
+                        {{if .LastError}}
+                        <div class="issue-text" style="font-size:0.7rem;margin-top:4px" title="{{.LastError}}">
+                            Error: {{.LastError}}
+                        </div>
+                        {{end}}
+                    </td>
                     <td>{{.TotalMessages}}</td>
                     <td>{{.PublishedMessages}}</td>
-                    <td>{{.FailedMessages}}</td>
-                    <td>{{.DeferredMessages}}</td>
+                    <td class="{{if gt .FailedMessages 0}}tone-danger{{end}}">{{.FailedMessages}}</td>
+                    <td class="{{if gt .DeferredMessages 0}}tone-warning{{end}}">{{.DeferredMessages}}</td>
                     <td>{{if .LastPublishedAt}}{{.LastPublishedAt}}{{else}}(none){{end}}</td>
-                    <td>{{fmtTime .CreatedAt}}</td>
-                    <td><a class="button-link" href="{{.MessagesURL}}">Messages</a></td>
+                    <td style="font-size:0.8rem;white-space:nowrap">{{fmtTime .CreatedAt}}</td>
                     <td>
-                        <form method="POST" action="/accounts/remove" onsubmit="return confirm('Remove this bridged account?')">
-                            <input type="hidden" name="atdid" value="{{.ATDID}}">
-                            <button type="submit" class="button-danger">Remove</button>
-                        </form>
+                        <div style="display:flex;gap:6px;align-items:center">
+                            <a class="button-link" href="{{.MessagesURL}}">Messages</a>
+                            <form method="POST" action="/accounts/backfill?at_did={{.ATDID}}" style="margin:0">
+                                <button type="submit" class="button-link tone-success" title="Force immediate backfill/resync">Backfill</button>
+                            </form>
+                            <form method="POST" action="/accounts/remove" onsubmit="return confirm('Remove this bridged account?')" style="margin:0">
+                                <input type="hidden" name="at_did" value="{{.ATDID}}">
+                                <button type="submit" class="button-link tone-danger">Remove</button>
+                            </form>
+                        </div>
                     </td>
                 </tr>
                 {{else}}
-                <tr><td colspan="10" class="empty">No bridged accounts yet.</td></tr>
+                <tr><td colspan="9" class="empty">No bridged accounts yet.</td></tr>
                 {{end}}
             </tbody>
         </table>
@@ -1572,6 +1585,10 @@ type AccountRow struct {
 	FailedMessages    int
 	DeferredMessages  int
 	LastPublishedAt   string
+	SyncState         string
+	SyncStateLabel    string
+	SyncStateClass    string
+	LastError         string
 	CreatedAt         time.Time
 	MessagesURL       string
 }

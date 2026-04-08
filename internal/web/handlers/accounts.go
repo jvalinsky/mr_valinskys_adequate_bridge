@@ -61,11 +61,46 @@ func (h *UIHandler) handleAccountsAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Proactively trigger tracking if service is available
+	if h.atprotoSvc != nil {
+		if err := h.atprotoSvc.TrackRepo(r.Context(), atDID, "admin_ui_add"); err != nil {
+			h.logger.Printf("event=accounts_add_track_failed did=%s err=%v", atDID, err)
+		}
+	}
+
+	http.Redirect(w, r, "/accounts", http.StatusSeeOther)
+}
+
+func (h *UIHandler) handleAccountsBackfill(w http.ResponseWriter, r *http.Request) {
+	atDID := strings.TrimSpace(r.URL.Query().Get("at_did"))
+	if atDID == "" {
+		http.Error(w, "Missing at_did", http.StatusBadRequest)
+		return
+	}
+
+	if h.atprotoSvc == nil {
+		http.Error(w, "Indexing service not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	if err := h.atprotoSvc.TrackRepo(r.Context(), atDID, "admin_ui_manual"); err != nil {
+		h.writeInternalError(w, "accounts_backfill", "Failed to track repo", err)
+		return
+	}
+
+	if err := h.atprotoSvc.RequestResync(r.Context(), atDID, "admin_ui_manual"); err != nil {
+		h.writeInternalError(w, "accounts_backfill", "Failed to request resync", err)
+		return
+	}
+
 	http.Redirect(w, r, "/accounts", http.StatusSeeOther)
 }
 
 func (h *UIHandler) handleAccountsRemove(w http.ResponseWriter, r *http.Request) {
-	atDID := strings.TrimSpace(r.URL.Query().Get("at_did"))
+	atDID := strings.TrimSpace(r.FormValue("at_did"))
+	if atDID == "" {
+		atDID = strings.TrimSpace(r.URL.Query().Get("at_did"))
+	}
 	if atDID == "" {
 		http.Error(w, "Missing at_did", http.StatusBadRequest)
 		return

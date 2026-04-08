@@ -217,6 +217,7 @@ func (h *clientUIHandler) Mount(r chi.Router) {
 	r.Post("/blobs/upload", h.handleBlobsUpload)
 	r.Get("/blobs/{hash}", h.handleBlobsGet)
 	r.Get("/room", h.handleRoom)
+	r.Post("/room", h.handleRoom)
 	r.Get("/messages", h.handleMessages)
 	r.Get("/message/{feedId}/{seq}", h.handleMessageDetail)
 	r.Get("/replication", h.handleReplication)
@@ -1121,7 +1122,23 @@ func (h *clientUIHandler) consumeInvite(ctx context.Context, inviteCode string) 
 		} else {
 			return fmt.Errorf("no token found in invite URL")
 		}
-		roomHTTPAddr = parsedURL.Scheme + "://" + parsedURL.Host
+
+		host := parsedURL.Hostname()
+		port := parsedURL.Port()
+		if host == "localhost" || host == "127.0.0.1" {
+			// In E2E demo, the bridge is known as 'bridge' inside the container
+			host = "bridge"
+		}
+		if port == "" {
+			if parsedURL.Scheme == "https" {
+				roomHTTPAddr = "https://" + host
+			} else {
+				roomHTTPAddr = "http://" + host
+			}
+		} else {
+			roomHTTPAddr = parsedURL.Scheme + "://" + host + ":" + port
+		}
+		h.slog.Info("consuming invite", "invite_url", inviteCode, "target_http_addr", roomHTTPAddr)
 	} else {
 		return fmt.Errorf("invite code must be a full URL (e.g., http://127.0.0.1:8976/join?token=xxx)")
 	}

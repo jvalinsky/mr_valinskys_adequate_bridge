@@ -20,8 +20,11 @@ SELECT
   COALESCE(s.published_messages, 0),
   COALESCE(s.failed_messages, 0),
   COALESCE(s.deferred_messages, 0),
-  s.last_published_at
+  s.last_published_at,
+  COALESCE(ar.sync_state, 'pending'),
+  COALESCE(ar.last_error, '')
 FROM bridged_accounts ba
+LEFT JOIN atproto_repos ar ON ar.did = ba.at_did
 LEFT JOIN (
   SELECT
     at_did,
@@ -51,7 +54,7 @@ func scanBridgedAccountStats(row scannable) (BridgedAccountStats, error) {
 	err := row.Scan(
 		&acc.ATDID, &acc.SSBFeedID, &acc.CreatedAt, &acc.Active,
 		&acc.TotalMessages, &acc.PublishedMessages, &acc.FailedMessages, &acc.DeferredMessages,
-		&lastPublishedAt,
+		&lastPublishedAt, &acc.SyncState, &acc.LastError,
 	)
 	if err != nil {
 		return acc, err
@@ -221,7 +224,7 @@ func (db *DB) GetActiveBridgedAccountWithStats(ctx context.Context, atDID string
 	err := row.Scan(
 		&acc.ATDID, &acc.SSBFeedID, &acc.CreatedAt, &acc.Active,
 		&acc.TotalMessages, &acc.PublishedMessages, &acc.FailedMessages, &acc.DeferredMessages,
-		&lastPublishedAt,
+		&lastPublishedAt, &acc.SyncState, &acc.LastError,
 	)
 	if err != nil {
 		if err == sql.ErrNoRows {

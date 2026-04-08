@@ -39,6 +39,8 @@ type BridgedAccountStats struct {
 	FailedMessages    int
 	DeferredMessages  int
 	LastPublishedAt   *time.Time
+	SyncState         string
+	LastError         string
 }
 
 // Message stores one bridged record and publish lifecycle metadata.
