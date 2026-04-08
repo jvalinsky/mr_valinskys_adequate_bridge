@@ -124,7 +124,7 @@ func (s *Service) TrackRepo(ctx context.Context, did, reason string) error {
 		if err := s.db.UpsertATProtoRepo(ctx, *repoInfo); err != nil {
 			return err
 		}
-		s.enqueue(did)
+		s.enqueue(ctx, did)
 		return nil
 	}
 
@@ -142,7 +142,7 @@ func (s *Service) TrackRepo(ctx context.Context, did, reason string) error {
 		return err
 	}
 	if shouldQueueTrack(repoInfo.SyncState) {
-		s.enqueue(did)
+		s.enqueue(ctx, did)
 	}
 	return nil
 }
@@ -183,7 +183,7 @@ func (s *Service) RequestResync(ctx context.Context, did, reason string) error {
 	if err := s.db.UpsertATProtoRepo(ctx, *repoInfo); err != nil {
 		return err
 	}
-	s.enqueue(did)
+	s.enqueue(ctx, did)
 	return nil
 }
 
@@ -713,7 +713,7 @@ func (s *Service) markDesynchronized(ctx context.Context, repoInfo *db.ATProtoRe
 	if err := s.bufferCommit(ctx, evt, repoInfo.Generation); err != nil {
 		return err
 	}
-	s.enqueue(repoInfo.DID)
+	s.enqueue(ctx, repoInfo.DID)
 	return nil
 }
 
@@ -731,11 +731,15 @@ func (s *Service) bufferCommit(ctx context.Context, evt *atproto.SyncSubscribeRe
 	}); err != nil {
 		return err
 	}
-	s.enqueue(evt.Repo)
+	s.enqueue(ctx, evt.Repo)
 	return nil
 }
 
-func (s *Service) enqueue(did string) {
+func (s *Service) enqueue(ctx context.Context, did string) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	s.queueMu.Lock()
 	if _, ok := s.queued[did]; ok {
 		s.queueMu.Unlock()
@@ -746,8 +750,20 @@ func (s *Service) enqueue(did string) {
 
 	select {
 	case s.queue <- did:
+	case <-ctx.Done():
+		s.queueMu.Lock()
+		delete(s.queued, did)
+		s.queueMu.Unlock()
+		s.logger.Printf("event=atindex_enqueue_dropped did=%s", did)
 	default:
-		go func() { s.queue <- did }()
+		select {
+		case s.queue <- did:
+		case <-ctx.Done():
+			s.queueMu.Lock()
+			delete(s.queued, did)
+			s.queueMu.Unlock()
+			s.logger.Printf("event=atindex_enqueue_dropped did=%s", did)
+		}
 	}
 }
 

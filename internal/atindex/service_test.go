@@ -1096,7 +1096,7 @@ func TestStartProcessesQueue(t *testing.T) {
 	service.Start(workerCtx)
 
 	// Enqueue the DID.
-	service.enqueue("did:plc:worker")
+	service.enqueue(workerCtx, "did:plc:worker")
 
 	// Wait for backfill to complete.
 	time.Sleep(500 * time.Millisecond)
@@ -1172,9 +1172,9 @@ func TestWorkerContinuesAfterError(t *testing.T) {
 	service.Start(workerCtx)
 
 	// Enqueue both DIDs.
-	service.enqueue("did:plc:fail1")
+	service.enqueue(workerCtx, "did:plc:fail1")
 	time.Sleep(100 * time.Millisecond) // Let fail1 get picked up
-	service.enqueue("did:plc:success2")
+	service.enqueue(workerCtx, "did:plc:success2")
 
 	// Wait for both to be processed.
 	time.Sleep(1 * time.Second)
@@ -1263,5 +1263,57 @@ func TestIsKnownSyncState(t *testing.T) {
 
 	if isKnownSyncState("unknown_state") {
 		t.Error("isKnownSyncState('unknown_state') should be false")
+	}
+}
+
+func TestEnqueueCancelledContextRemovesQueuedMarker(t *testing.T) {
+	t.Parallel()
+
+	database := openServiceTestDB(t)
+	defer database.Close()
+
+	service := New(database, nil, nil, "wss://relay.example.test", log.New(io.Discard, "", 0))
+	service.queue = make(chan string, 1)
+	service.queue <- "filled"
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		service.enqueue(ctx, "did:plc:drop")
+		close(done)
+	}()
+
+	time.Sleep(25 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("enqueue did not unblock after context cancellation")
+	}
+
+	if service.isQueued("did:plc:drop") {
+		t.Fatalf("did remained queued after canceled enqueue")
+	}
+}
+
+func TestEnqueueDedupesDuplicateDIDs(t *testing.T) {
+	t.Parallel()
+
+	database := openServiceTestDB(t)
+	defer database.Close()
+
+	service := New(database, nil, nil, "wss://relay.example.test", log.New(io.Discard, "", 0))
+	service.queue = make(chan string, 8)
+
+	ctx := context.Background()
+	service.enqueue(ctx, "did:plc:dup")
+	service.enqueue(ctx, "did:plc:dup")
+
+	if got := len(service.queue); got != 1 {
+		t.Fatalf("expected single queued DID, got queue len=%d", got)
+	}
+	if !service.isQueued("did:plc:dup") {
+		t.Fatalf("expected DID to be marked queued")
 	}
 }

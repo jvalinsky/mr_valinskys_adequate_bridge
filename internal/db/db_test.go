@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -4092,7 +4093,7 @@ func TestDirectMessageCRUD(t *testing.T) {
 		IsOutbound:       false,
 	}
 
-	err := db.SaveDM(msg)
+	err := db.SaveDM(ctx, msg)
 	if err != nil {
 		t.Fatalf("SaveDM: %v", err)
 	}
@@ -4148,6 +4149,42 @@ func TestDirectMessageCRUD(t *testing.T) {
 	}
 	if retrieved.Plaintext != "decrypted content" {
 		t.Errorf("expected Plaintext='decrypted content', got %q", retrieved.Plaintext)
+	}
+}
+
+func TestSaveDMNilMessage(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+
+	err := db.SaveDM(context.Background(), nil)
+	if err == nil {
+		t.Fatalf("expected nil-message error")
+	}
+	if !strings.Contains(err.Error(), "message is nil") {
+		t.Fatalf("expected nil-message error text, got %v", err)
+	}
+}
+
+func TestSaveDMRespectsCanceledContext(t *testing.T) {
+	db := openTestDB(t)
+	defer db.Close()
+
+	msg := &DirectMessage{
+		SSBMsgKey:     "%ctx-canceled.ed25519",
+		SenderFeed:    "@sender.test.ed25519",
+		RecipientFeed: "@recipient.test.ed25519",
+		CreatedAt:     time.Now().Unix(),
+		ReceivedAt:    time.Now().Unix(),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := db.SaveDM(ctx, msg)
+	if err == nil {
+		t.Fatalf("expected context cancellation error")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context canceled error, got %v", err)
 	}
 }
 

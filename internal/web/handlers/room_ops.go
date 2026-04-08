@@ -9,14 +9,12 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"reflect"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil"
-	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc"
 	roomhandlers "github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc/handlers/room"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomdb"
@@ -137,6 +135,23 @@ func (p *SQLiteRoomOpsProvider) GetRoomPeers(ctx context.Context) ([]PeerStatus,
 	if p == nil {
 		return nil, nil
 	}
+	if p.roomServer != nil {
+		registry := p.roomServer.PeerRegistry()
+		if registry == nil {
+			// Fall back to status client below.
+		} else {
+			peers := registry.List()
+			if len(peers) > 0 {
+				res := make([]PeerStatus, 0, len(peers))
+				for _, peer := range peers {
+					res = append(res, PeerStatus{
+						Feed: peer.Feed.String(),
+					})
+				}
+				return res, nil
+			}
+		}
+	}
 	if p.statusClient != nil {
 		status, err := p.statusClient.status(ctx)
 		if err == nil && status.LivePeers > 0 {
@@ -144,36 +159,10 @@ func (p *SQLiteRoomOpsProvider) GetRoomPeers(ctx context.Context) ([]PeerStatus,
 			for i := 0; i < status.LivePeers; i++ {
 				res = append(res, PeerStatus{
 					Feed: "room-peer",
-					Addr: "room",
 				})
 			}
 			return res, nil
 		}
-	}
-	if p.roomServer != nil {
-		registry := p.roomServer.PeerRegistry()
-		if registry == nil {
-			return nil, nil
-		}
-		registryMap := reflect.ValueOf(registry).Elem().FieldByName("peers")
-		if !registryMap.IsValid() {
-			return nil, nil
-		}
-		peersMap, ok := registryMap.Interface().(map[string]*muxrpc.Server)
-		if !ok {
-			return nil, nil
-		}
-		res := make([]PeerStatus, 0, len(peersMap))
-		for feed := range peersMap {
-			ref, err := refs.ParseFeedRef(feed)
-			if err != nil {
-				continue
-			}
-			res = append(res, PeerStatus{
-				Feed: ref.String(),
-			})
-		}
-		return res, nil
 	}
 	return nil, nil
 }

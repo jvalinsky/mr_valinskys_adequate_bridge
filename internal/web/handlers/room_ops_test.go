@@ -1,8 +1,13 @@
 package handlers
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	roomhandlers "github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc/handlers/room"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomdb"
 )
 
@@ -75,5 +80,92 @@ func TestParseRoomMemberRole(t *testing.T) {
 func TestOpenSQLiteRoomOpsProviderRequiresRoomSQLite(t *testing.T) {
 	if _, err := OpenSQLiteRoomOpsProvider(t.TempDir(), "", roomdb.RoleAdmin, nil); err == nil {
 		t.Fatalf("expected missing sqlite error")
+	}
+}
+
+func TestGetRoomPeersPrefersLocalRegistry(t *testing.T) {
+	t.Parallel()
+
+	statusSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"livePeers":3}`))
+	}))
+	defer statusSrv.Close()
+
+	provider := &SQLiteRoomOpsProvider{
+		statusClient: &roomStatusClient{
+			baseURL: statusSrv.URL,
+			client:  statusSrv.Client(),
+		},
+	}
+
+	roomServer := roomhandlers.NewRoomServer(nil, nil, nil, nil, nil, nil, nil, "")
+	feedRef, err := refs.ParseFeedRef("@paeusVttag54yJmEQsH1eAe3K4xpVnnPvE3u26g136I=.ed25519")
+	if err != nil {
+		t.Fatalf("parse feed ref: %v", err)
+	}
+	roomServer.PeerRegistry().Register(*feedRef, nil)
+	provider.SetRoomServer(roomServer)
+
+	peers, err := provider.GetRoomPeers(context.Background())
+	if err != nil {
+		t.Fatalf("GetRoomPeers: %v", err)
+	}
+	if len(peers) != 1 {
+		t.Fatalf("expected 1 local peer, got %d", len(peers))
+	}
+	if peers[0].Feed != feedRef.String() {
+		t.Fatalf("expected feed %q, got %q", feedRef.String(), peers[0].Feed)
+	}
+	if peers[0].Addr != "" {
+		t.Fatalf("expected empty addr for local registry peer, got %q", peers[0].Addr)
+	}
+}
+
+func TestGetRoomPeersFallsBackToStatusClient(t *testing.T) {
+	t.Parallel()
+
+	statusSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/room/status":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"livePeers":2}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer statusSrv.Close()
+
+	provider := &SQLiteRoomOpsProvider{
+		statusClient: &roomStatusClient{
+			baseURL: statusSrv.URL,
+			client:  statusSrv.Client(),
+		},
+	}
+
+	peers, err := provider.GetRoomPeers(context.Background())
+	if err != nil {
+		t.Fatalf("GetRoomPeers: %v", err)
+	}
+	if len(peers) != 2 {
+		t.Fatalf("expected 2 placeholder peers, got %d", len(peers))
+	}
+	for i, peer := range peers {
+		if peer.Feed != "room-peer" || peer.Addr != "" {
+			t.Fatalf("unexpected placeholder at %d: %#v", i, peer)
+		}
+	}
+}
+
+func TestGetRoomPeersNilProviderIsSafe(t *testing.T) {
+	t.Parallel()
+
+	var provider *SQLiteRoomOpsProvider
+	peers, err := provider.GetRoomPeers(context.Background())
+	if err != nil {
+		t.Fatalf("GetRoomPeers: %v", err)
+	}
+	if peers != nil {
+		t.Fatalf("expected nil peers for nil provider")
 	}
 }

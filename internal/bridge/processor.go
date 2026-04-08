@@ -33,6 +33,8 @@ var supportedCollections = map[string]struct{}{
 	mapper.RecordTypeThreadgate: {},
 }
 
+const deferReasonMissingRequiredFieldsAfterSanitize = "missing_required_fields_after_sanitize"
+
 // Database defines the persistence surface required by the bridge processor.
 type Database interface {
 	GetBridgedAccount(ctx context.Context, atDID string) (*db.BridgedAccount, error)
@@ -392,23 +394,12 @@ func (p *Processor) ProcessDeletedRecord(ctx context.Context, atDID, atURI, atCI
 	}
 	msg.RawSSBJson = string(rawDeleteJSON)
 
-	unresolved := mapper.UnresolvedATProtoRefs(mapped)
-	if len(unresolved) > 0 {
-		p.markDeferred(&msg, strings.Join(unresolved, ";"), now)
-	} else {
-		msg.MessageState = db.MessageStatePending
-	}
-	if len(unresolved) == 0 && p.publisher != nil {
-		p.markPublishAttempt(&msg, now)
-		ssbMsgRef, publishErr := p.publisher.Publish(ctx, atDID, mapped)
-		if publishErr != nil {
-			p.markPublishFailed(&msg, publishErr)
-			p.logger.Printf("event=delete_publish_failed did=%s at_uri=%s seq=%d err=%v", atDID, atURI, seq, publishErr)
-		} else {
-			publishedAt := time.Now().UTC()
-			p.markPublished(&msg, ssbMsgRef, publishedAt)
-			p.logger.Printf("event=deleted did=%s at_uri=%s seq=%d ssb_msg_ref=%s", atDID, atURI, seq, ssbMsgRef)
-		}
+	outcome := p.applyMappedMessageLifecycle(ctx, &msg, mapped, nil, true)
+	switch outcome.State {
+	case db.MessageStateFailed:
+		p.logger.Printf("event=delete_publish_failed did=%s at_uri=%s seq=%d err=%v", atDID, atURI, seq, outcome.PublishErr)
+	case db.MessageStatePublished:
+		p.logger.Printf("event=deleted did=%s at_uri=%s seq=%d ssb_msg_ref=%s", atDID, atURI, seq, outcome.PublishedRef)
 	}
 
 	if err := p.db.AddMessage(ctx, msg); err != nil {
@@ -464,49 +455,18 @@ func (p *Processor) ProcessRecord(ctx context.Context, atDID, atURI, atCID, coll
 		msg.ParentATURI = parent
 	}
 
-	unresolved := mapper.UnresolvedATProtoRefs(mapped)
-	if len(unresolved) > 0 {
-		now := time.Now().UTC()
-		p.markDeferred(&msg, strings.Join(unresolved, ";"), now)
-		if blobErr != nil {
-			msg.PublishError = annotateBlobFallback(msg.PublishError, blobErr)
-		}
-		p.logger.Printf("event=publish_deferred did=%s at_uri=%s record_type=%s unresolved=%q", atDID, atURI, collection, msg.DeferReason)
-	} else if p.publisher != nil {
-		// Strip internal bridge fields before publishing to avoid crashing
-		// Planetary's strict Codable decoders during FFI batch processing.
-		mapper.SanitizeForPublish(mapped)
-		if !mapper.ReadyForPublish(mapped) {
-			// Required fields missing (e.g. contact without target, vote without link).
-			// Keep as deferred rather than publishing a malformed message.
-			now := time.Now().UTC()
-			p.markDeferred(&msg, "missing_required_fields_after_sanitize", now)
+	outcome := p.applyMappedMessageLifecycle(ctx, &msg, mapped, blobErr, true)
+	switch outcome.State {
+	case db.MessageStateDeferred:
+		if msg.DeferReason == deferReasonMissingRequiredFieldsAfterSanitize {
 			p.logger.Printf("event=publish_deferred_incomplete did=%s at_uri=%s record_type=%s", atDID, atURI, collection)
 		} else {
-			rawSSBJSON, marshalErr := json.Marshal(mapped)
-			if marshalErr == nil {
-				msg.RawSSBJson = string(rawSSBJSON)
-			}
-			attemptedAt := time.Now().UTC()
-			p.markPublishAttempt(&msg, attemptedAt)
-			ssbMsgRef, publishErr := p.publisher.Publish(ctx, atDID, mapped)
-			if publishErr != nil {
-				p.markPublishFailed(&msg, publishErr)
-				if blobErr != nil {
-					msg.PublishError = annotateBlobFallback(msg.PublishError, blobErr)
-				}
-				p.logger.Printf("event=publish_failed did=%s at_uri=%s record_type=%s err=%v", atDID, atURI, collection, publishErr)
-			} else {
-				now := time.Now().UTC()
-				p.markPublished(&msg, ssbMsgRef, now)
-				if blobErr != nil {
-					msg.PublishError = annotateBlobFallback("", blobErr)
-				}
-				p.logger.Printf("event=published did=%s at_uri=%s record_type=%s ssb_msg_ref=%s", atDID, atURI, collection, ssbMsgRef)
-			}
+			p.logger.Printf("event=publish_deferred did=%s at_uri=%s record_type=%s unresolved=%q", atDID, atURI, collection, msg.DeferReason)
 		}
-	} else if blobErr != nil {
-		msg.PublishError = annotateBlobFallback("", blobErr)
+	case db.MessageStateFailed:
+		p.logger.Printf("event=publish_failed did=%s at_uri=%s record_type=%s err=%v", atDID, atURI, collection, outcome.PublishErr)
+	case db.MessageStatePublished:
+		p.logger.Printf("event=published did=%s at_uri=%s record_type=%s ssb_msg_ref=%s", atDID, atURI, collection, outcome.PublishedRef)
 	}
 
 	if err := p.db.AddMessage(ctx, msg); err != nil {
@@ -687,8 +647,6 @@ func (p *Processor) resolveDeferredMessage(ctx context.Context, msg db.Message) 
 	if err != nil {
 		return db.MessageStateFailed, fmt.Errorf("map deferred record: %w", err)
 	}
-	unresolved := mapper.UnresolvedATProtoRefs(mapped)
-
 	var blobErr error
 	if msg.DeletedAt == nil {
 		blobErr = p.tryBlobBridge(ctx, msg.ATDID, msg.ATURI, msg.Type, mapped, []byte(msg.RawATJson))
@@ -718,68 +676,37 @@ func (p *Processor) resolveDeferredMessage(ctx context.Context, msg db.Message) 
 		DeletedReason:      msg.DeletedReason,
 	}
 
-	if len(unresolved) > 0 {
-		p.markDeferred(&update, strings.Join(unresolved, ";"), now)
-		if blobErr != nil {
-			update.PublishError = annotateBlobFallback(update.PublishError, blobErr)
+	outcome := p.applyMappedMessageLifecycle(ctx, &update, mapped, blobErr, true)
+
+	switch outcome.State {
+	case db.MessageStateDeferred:
+		errMsg := "persist deferred unresolved"
+		if update.DeferReason == deferReasonMissingRequiredFieldsAfterSanitize {
+			errMsg = "persist deferred incomplete"
 		}
 		if err := p.db.AddMessage(ctx, update); err != nil {
-			return db.MessageStateDeferred, fmt.Errorf("persist deferred unresolved: %w", err)
+			return db.MessageStateDeferred, fmt.Errorf("%s: %w", errMsg, err)
 		}
 		return db.MessageStateDeferred, nil
-	}
-
-	if p.publisher == nil {
-		update.MessageState = db.MessageStatePending
-		if blobErr != nil {
-			update.PublishError = annotateBlobFallback(update.PublishError, blobErr)
-		}
+	case db.MessageStatePending:
 		if err := p.db.AddMessage(ctx, update); err != nil {
 			return db.MessageStatePending, fmt.Errorf("persist deferred pending: %w", err)
 		}
 		return db.MessageStatePending, nil
-	}
-
-	// Strip internal bridge fields and validate before publishing.
-	mapper.SanitizeForPublish(mapped)
-	if !mapper.ReadyForPublish(mapped) {
-		p.markDeferred(&update, "missing_required_fields_after_sanitize", now)
-		if err := p.db.AddMessage(ctx, update); err != nil {
-			return db.MessageStateDeferred, fmt.Errorf("persist deferred incomplete: %w", err)
-		}
-		return db.MessageStateDeferred, nil
-	}
-
-	rawSSBJSON, marshalErr := json.Marshal(mapped)
-	if marshalErr == nil {
-		update.RawSSBJson = string(rawSSBJSON)
-	}
-
-	p.markPublishAttempt(&update, now)
-	update.DeferReason = ""
-
-	ssbMsgRef, publishErr := p.publisher.Publish(ctx, msg.ATDID, mapped)
-	if publishErr != nil {
-		p.markPublishFailed(&update, publishErr)
-		if blobErr != nil {
-			update.PublishError = annotateBlobFallback(update.PublishError, blobErr)
-		}
+	case db.MessageStateFailed:
 		if err := p.db.AddMessage(ctx, update); err != nil {
 			return db.MessageStateFailed, fmt.Errorf("persist deferred publish failure: %w", err)
 		}
-		return db.MessageStateFailed, publishErr
+		return db.MessageStateFailed, outcome.PublishErr
+	case db.MessageStatePublished:
+		if err := p.db.AddMessage(ctx, update); err != nil {
+			return db.MessageStatePublished, fmt.Errorf("persist deferred publish success: %w", err)
+		}
+		p.logger.Printf("event=deferred_published did=%s at_uri=%s ssb_msg_ref=%s", msg.ATDID, msg.ATURI, outcome.PublishedRef)
+		return db.MessageStatePublished, nil
+	default:
+		return update.MessageState, fmt.Errorf("unexpected deferred lifecycle state: %s", outcome.State)
 	}
-
-	publishedAt := time.Now().UTC()
-	p.markPublished(&update, ssbMsgRef, publishedAt)
-	if blobErr != nil {
-		update.PublishError = annotateBlobFallback("", blobErr)
-	}
-	if err := p.db.AddMessage(ctx, update); err != nil {
-		return db.MessageStatePublished, fmt.Errorf("persist deferred publish success: %w", err)
-	}
-	p.logger.Printf("event=deferred_published did=%s at_uri=%s ssb_msg_ref=%s", msg.ATDID, msg.ATURI, ssbMsgRef)
-	return db.MessageStatePublished, nil
 }
 
 // RetryFailedMessages retries previously failed unpublished records.

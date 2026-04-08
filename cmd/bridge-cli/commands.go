@@ -2,9 +2,9 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -25,6 +25,16 @@ import (
 	websecurity "github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/web/security"
 	"github.com/urfave/cli/v2"
 )
+
+type bridgeAppLifecycle interface {
+	Init(ctx context.Context) error
+	Start(ctx context.Context) error
+	Stop() error
+}
+
+var newBridgeAppForRunStart = func(cfg AppConfig, logger *log.Logger) bridgeAppLifecycle {
+	return NewBridgeApp(cfg, logger)
+}
 
 func runAccountList(ctx context.Context, dbPath string) error {
 	database, err := db.Open(dbPath)
@@ -204,47 +214,12 @@ func runStart(c *cli.Context) error {
 	level := parseSlogLevel(c.String("log-level"))
 	logRuntime.SetupDefaultSlogger(level)
 
-	hmacKey, err := parseHMACKey(c.String("hmac-key"))
+	cfg, err := buildAppConfigFromCLI(c, appModeStart)
 	if err != nil {
 		return err
 	}
 
-	repoPath, err := resolveSharedRepoPath(c)
-	if err != nil {
-		return err
-	}
-
-	cfg := AppConfig{
-		DBPath:              dbPath,
-		RepoPath:            repoPath,
-		BotSeed:             botSeed,
-		HMACKey:             hmacKey,
-		AppKey:              c.String("app-key"),
-		SSBListenAddr:       c.String("ssb-listen-addr"),
-		PublishWorkers:      c.Int("publish-workers"),
-		FirehoseEnable:      c.Bool("firehose-enable"),
-		RelayURL:            relayURL,
-		XRPCReadHost:        c.String("xrpc-host"),
-		RoomEnable:          c.Bool("room-enable"),
-		RoomListenAddr:      c.String("room-listen-addr"),
-		RoomHTTPAddr:        c.String("room-http-listen-addr"),
-		RoomMode:            c.String("room-mode"),
-		RoomDomain:          c.String("room-https-domain"),
-		RoomTLSCert:         c.String("room-tls-cert"),
-		RoomTLSKey:          c.String("room-tls-key"),
-		PLCURL:              c.String("plc-url"),
-		AtprotoInsecure:     c.Bool("atproto-insecure"),
-		MCPListenAddr:       c.String("mcp-listen-addr"),
-		MetricsListenAddr:   c.String("metrics-listen-addr"),
-		MaxMsgsPerDIDPerMin: c.Int("max-msgs-per-did-per-min"),
-		BridgedPeerSyncIntv: c.Duration("bridged-room-peer-sync-interval"),
-		ReverseSyncEnable:   c.Bool("reverse-sync-enable"),
-		ReverseCredentialsFile: c.String("reverse-credentials-file"),
-		ReverseSyncScanInterval: c.Duration("reverse-sync-scan-interval"),
-		ReverseSyncBatchSize: c.Int("reverse-sync-batch-size"),
-	}
-
-	app := NewBridgeApp(cfg, logRuntime.Logger("bridge"))
+	app := newBridgeAppForRunStart(cfg, logRuntime.Logger("bridge"))
 	if err := app.Init(c.Context); err != nil {
 		return err
 	}
@@ -252,12 +227,7 @@ func runStart(c *cli.Context) error {
 	ctx, stop := signal.NotifyContext(c.Context, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if err := app.Start(ctx); err != nil {
-		return err
-	}
-
-	<-ctx.Done()
-	return app.Stop()
+	return startBridgeAppLifecycle(ctx, app)
 }
 
 func runBackfill(c *cli.Context) error {
@@ -267,26 +237,9 @@ func runBackfill(c *cli.Context) error {
 	}
 	defer shutdownLogRuntime(logRuntime)
 
-	hmacKey, err := parseHMACKey(c.String("hmac-key"))
+	cfg, err := buildAppConfigFromCLI(c, appModeBackfill)
 	if err != nil {
 		return err
-	}
-
-	repoPath, err := resolveSharedRepoPath(c)
-	if err != nil {
-		return err
-	}
-
-	cfg := AppConfig{
-		DBPath:          dbPath,
-		RepoPath:        repoPath,
-		BotSeed:         botSeed,
-		HMACKey:         hmacKey,
-		AppKey:          c.String("app-key"),
-		PublishWorkers:  c.Int("publish-workers"),
-		XRPCReadHost:    c.String("xrpc-host"),
-		PLCURL:          c.String("plc-url"),
-		AtprotoInsecure: c.Bool("atproto-insecure"),
 	}
 
 	app := NewBridgeApp(cfg, logRuntime.Logger("bridge"))
@@ -388,25 +341,9 @@ func runRetryFailures(c *cli.Context) error {
 	}
 	defer shutdownLogRuntime(logRuntime)
 
-	hmacKey, err := parseHMACKey(c.String("hmac-key"))
+	cfg, err := buildAppConfigFromCLI(c, appModeRetry)
 	if err != nil {
 		return err
-	}
-
-	repoPath, err := resolveSharedRepoPath(c)
-	if err != nil {
-		return err
-	}
-
-	cfg := AppConfig{
-		DBPath:          dbPath,
-		RepoPath:        repoPath,
-		BotSeed:         botSeed,
-		HMACKey:         hmacKey,
-		AppKey:          c.String("app-key"),
-		PublishWorkers:  c.Int("publish-workers"),
-		PLCURL:          c.String("plc-url"),
-		AtprotoInsecure: c.Bool("atproto-insecure"),
 	}
 
 	app := NewBridgeApp(cfg, logRuntime.Logger("bridge"))
@@ -496,12 +433,7 @@ func runServeUI(c *cli.Context) error {
 	}
 	roomHTTPBaseURL := strings.TrimSpace(c.String("room-http-base-url"))
 
-	httpClient := &http.Client{Timeout: 30 * time.Second}
-	if c.Bool("atproto-insecure") {
-		httpClient.Transport = &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		}
-	}
+	httpClient := newATProtoHTTPClient(c.Bool("atproto-insecure"))
 	indexer := atindex.New(
 		database,
 		backfill.DIDPDSResolver{PLCURL: c.String("plc-url"), HTTPClient: httpClient},
@@ -603,6 +535,19 @@ func runServeUI(c *cli.Context) error {
 		}
 		return nil
 	}
+}
+
+func startBridgeAppLifecycle(ctx context.Context, app bridgeAppLifecycle) error {
+	if err := app.Start(ctx); err != nil {
+		stopErr := app.Stop()
+		if stopErr != nil {
+			return errors.Join(err, stopErr)
+		}
+		return err
+	}
+
+	<-ctx.Done()
+	return app.Stop()
 }
 
 func waitForIndexedRepoState(ctx context.Context, indexer *atindex.Service, did string, timeout time.Duration) (*db.ATProtoRepo, error) {

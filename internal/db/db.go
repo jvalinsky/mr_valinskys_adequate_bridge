@@ -541,8 +541,11 @@ type DirectMessage struct {
 	IsOutbound       bool
 }
 
-func (db *DB) SaveDM(msg *DirectMessage) error {
-	_, err := db.conn.ExecContext(context.Background(), `
+func (db *DB) SaveDM(ctx context.Context, msg *DirectMessage) error {
+	if msg == nil {
+		return fmt.Errorf("save dm: message is nil")
+	}
+	_, err := db.conn.ExecContext(ctx, `
 		INSERT OR REPLACE INTO direct_messages (
 			ssb_msg_key, ssb_msg_seq, sender_feed, recipient_feed,
 			encrypted_content, plaintext, decrypted_at, created_at, received_at, is_outbound

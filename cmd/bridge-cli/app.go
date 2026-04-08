@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"log"
@@ -124,12 +123,7 @@ func (a *BridgeApp) Init(ctx context.Context) error {
 		return err
 	}
 
-	httpClient := &http.Client{Timeout: 30 * time.Second}
-	if a.cfg.AtprotoInsecure {
-		httpClient.Transport = &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-		}
-	}
+	httpClient := newATProtoHTTPClient(a.cfg.AtprotoInsecure)
 
 	xrpcClient := &xrpc.Client{
 		Host:   xrpcHost,

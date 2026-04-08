@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"log"
 	"os"
@@ -17,6 +18,27 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/mapper"
 )
+
+type fakeBridgeLifecycle struct {
+	startErr   error
+	stopErr    error
+	startCalls int
+	stopCalls  int
+}
+
+func (f *fakeBridgeLifecycle) Init(_ context.Context) error {
+	return nil
+}
+
+func (f *fakeBridgeLifecycle) Start(_ context.Context) error {
+	f.startCalls++
+	return f.startErr
+}
+
+func (f *fakeBridgeLifecycle) Stop() error {
+	f.stopCalls++
+	return f.stopErr
+}
 
 func TestAccountCommands(t *testing.T) {
 	tempDir := t.TempDir()
@@ -197,6 +219,65 @@ func TestWaitForReplayCursorAlreadyMet(t *testing.T) {
 	err = waitForReplayCursor(ctx, database, 50, time.Second)
 	if err != nil {
 		t.Errorf("expected no error when cursor already met, got %v", err)
+	}
+}
+
+func TestStartBridgeAppLifecycleStopsOnStartError(t *testing.T) {
+	t.Parallel()
+
+	startErr := errors.New("start failed")
+	fake := &fakeBridgeLifecycle{startErr: startErr}
+
+	err := startBridgeAppLifecycle(context.Background(), fake)
+	if !errors.Is(err, startErr) {
+		t.Fatalf("expected start error, got %v", err)
+	}
+	if fake.startCalls != 1 {
+		t.Fatalf("expected start to be called once, got %d", fake.startCalls)
+	}
+	if fake.stopCalls != 1 {
+		t.Fatalf("expected stop to be called once, got %d", fake.stopCalls)
+	}
+}
+
+func TestStartBridgeAppLifecycleJoinsStartAndStopErrors(t *testing.T) {
+	t.Parallel()
+
+	startErr := errors.New("start failed")
+	stopErr := errors.New("stop failed")
+	fake := &fakeBridgeLifecycle{startErr: startErr, stopErr: stopErr}
+
+	err := startBridgeAppLifecycle(context.Background(), fake)
+	if !errors.Is(err, startErr) {
+		t.Fatalf("expected joined error to include start err, got %v", err)
+	}
+	if !errors.Is(err, stopErr) {
+		t.Fatalf("expected joined error to include stop err, got %v", err)
+	}
+	if fake.stopCalls != 1 {
+		t.Fatalf("expected stop to be called once, got %d", fake.stopCalls)
+	}
+}
+
+func TestStartBridgeAppLifecycleDoesNotDoubleStop(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeBridgeLifecycle{}
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+
+	err := startBridgeAppLifecycle(ctx, fake)
+	if err != nil {
+		t.Fatalf("unexpected lifecycle error: %v", err)
+	}
+	if fake.startCalls != 1 {
+		t.Fatalf("expected start to be called once, got %d", fake.startCalls)
+	}
+	if fake.stopCalls != 1 {
+		t.Fatalf("expected stop to be called once, got %d", fake.stopCalls)
 	}
 }
 
