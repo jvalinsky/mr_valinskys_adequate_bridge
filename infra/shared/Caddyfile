@@ -1,0 +1,17 @@
+https://plc.directory {
+	tls internal
+	reverse_proxy plc:2582
+}
+
+http://plc.directory {
+	reverse_proxy plc:2582
+}
+
+https://pds.test {
+	tls internal
+	reverse_proxy pds:80
+}
+
+http://pds.test {
+	reverse_proxy pds:80
+}

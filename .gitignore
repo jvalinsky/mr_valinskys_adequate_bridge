@@ -15,6 +15,7 @@ bin/
 .ssb-bridge/
 .ssb-bridge-mcp-test/
 .ssb-client-test/
+.ssb-client/
 
 # Compiled binaries
 /e2e-seed

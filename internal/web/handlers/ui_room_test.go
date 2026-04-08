@@ -20,7 +20,7 @@ func TestRoomOverviewWithoutProviderShowsDegradedState(t *testing.T) {
 	defer database.Close()
 
 	router := chi.NewRouter()
-	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).Mount(router)
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).Mount(router)
 
 	req := httptest.NewRequest(http.MethodGet, "/room", nil)
 	rr := httptest.NewRecorder()
@@ -63,7 +63,7 @@ func TestRoomOverviewWithProviderRendersCounts(t *testing.T) {
 		HealthDetail:          "Room runtime is running.",
 	}
 
-	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).WithRoomOps(provider).Mount(router)
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).WithRoomOps(provider).Mount(router)
 
 	req := httptest.NewRequest(http.MethodGet, "/room", nil)
 	rr := httptest.NewRecorder()
@@ -91,7 +91,7 @@ func TestRoomInviteCreateRedirectIncludesJoinURL(t *testing.T) {
 	}
 	provider.joinURL = "http://127.0.0.1:8976/join?token=token-123"
 
-	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).WithRoomOps(provider).Mount(router)
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).WithRoomOps(provider).Mount(router)
 
 	req := httptest.NewRequest(http.MethodPost, "/room/invites/create", nil)
 	rr := httptest.NewRecorder()
@@ -117,7 +117,7 @@ func TestRoomMemberRoleSetPolicyErrorRedirects(t *testing.T) {
 	provider.memberRoleSetFn = func(ctx context.Context, memberID int64, role roomdb.Role) error {
 		return fmt.Errorf("member role updates are blocked")
 	}
-	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).WithRoomOps(provider).Mount(router)
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).WithRoomOps(provider).Mount(router)
 
 	req := httptest.NewRequest(http.MethodPost, "/room/members/role", strings.NewReader("member_id=12&role=moderator"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -277,7 +277,7 @@ func TestRoomMembersPage(t *testing.T) {
 			{ID: 1, FeedID: "@alice.test.ed25519", Role: "admin"},
 		},
 	}
-	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).WithRoomOps(provider).Mount(router)
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).WithRoomOps(provider).Mount(router)
 
 	req := httptest.NewRequest(http.MethodGet, "/room/members", nil)
 	rr := httptest.NewRecorder()
@@ -301,7 +301,7 @@ func TestRoomMembersListError(t *testing.T) {
 		overview: RoomOverview{Available: true},
 	}
 	provider.overviewErr = fmt.Errorf("room unavailable")
-	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).WithRoomOps(provider).Mount(router)
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).WithRoomOps(provider).Mount(router)
 
 	req := httptest.NewRequest(http.MethodGet, "/room/members", nil)
 	rr := httptest.NewRecorder()
@@ -322,7 +322,7 @@ func TestRoomAliasesPage(t *testing.T) {
 			{Name: "#test:example.com", OwnerFeed: "@owner.test.ed25519"},
 		},
 	}
-	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).WithRoomOps(provider).Mount(router)
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).WithRoomOps(provider).Mount(router)
 
 	req := httptest.NewRequest(http.MethodGet, "/room/aliases", nil)
 	rr := httptest.NewRecorder()
@@ -343,7 +343,7 @@ func TestRoomInvitesPage(t *testing.T) {
 			{ID: 1, Status: "active", Active: true},
 		},
 	}
-	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).WithRoomOps(provider).Mount(router)
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).WithRoomOps(provider).Mount(router)
 
 	// Invites are on the aliases/invites page
 	req := httptest.NewRequest(http.MethodGet, "/room/aliases", nil)
@@ -365,7 +365,7 @@ func TestRoomDeniedPage(t *testing.T) {
 			{ID: 1, FeedID: "@bad.test.ed25519"},
 		},
 	}
-	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).WithRoomOps(provider).Mount(router)
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).WithRoomOps(provider).Mount(router)
 
 	// Denied is on the moderation page
 	req := httptest.NewRequest(http.MethodGet, "/room/moderation", nil)
@@ -387,7 +387,7 @@ func TestRoomAttendantsPage(t *testing.T) {
 			{FeedID: "@attendant.test.ed25519", Active: true},
 		},
 	}
-	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).WithRoomOps(provider).Mount(router)
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).WithRoomOps(provider).Mount(router)
 
 	req := httptest.NewRequest(http.MethodGet, "/room/attendants", nil)
 	rr := httptest.NewRecorder()
@@ -412,7 +412,7 @@ func TestRoomMemberRemove(t *testing.T) {
 		}
 		return nil
 	}
-	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).WithRoomOps(provider).Mount(router)
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).WithRoomOps(provider).Mount(router)
 
 	req := httptest.NewRequest(http.MethodPost, "/room/members/remove", strings.NewReader("member_id=42"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -438,7 +438,7 @@ func TestRoomInviteRevoke(t *testing.T) {
 		revoked = true
 		return nil
 	}
-	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).WithRoomOps(provider).Mount(router)
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).WithRoomOps(provider).Mount(router)
 
 	req := httptest.NewRequest(http.MethodPost, "/room/invites/revoke", strings.NewReader("invite_id=5"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -464,7 +464,7 @@ func TestRoomAliasRevoke(t *testing.T) {
 		revoked = true
 		return nil
 	}
-	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).WithRoomOps(provider).Mount(router)
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).WithRoomOps(provider).Mount(router)
 
 	req := httptest.NewRequest(http.MethodPost, "/room/aliases/revoke", strings.NewReader("alias=%23test%3Aexample.com"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -490,7 +490,7 @@ func TestRoomDeniedAdd(t *testing.T) {
 		added = true
 		return nil
 	}
-	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).WithRoomOps(provider).Mount(router)
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).WithRoomOps(provider).Mount(router)
 
 	form := url.Values{}
 	form.Set("feed_id", "@paeusVttag54yJmEQsH1eAe3K4xpVnnPvE3u26g136I=.ed25519")
@@ -522,7 +522,7 @@ func TestRoomDeniedRemove(t *testing.T) {
 		removed = true
 		return nil
 	}
-	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).WithRoomOps(provider).Mount(router)
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).WithRoomOps(provider).Mount(router)
 
 	req := httptest.NewRequest(http.MethodPost, "/room/denied/remove", strings.NewReader("denied_id=3"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")

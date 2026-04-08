@@ -20,6 +20,7 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/atindex"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/mapper"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 	appbsky "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/appbsky"
 )
 
@@ -45,6 +46,12 @@ func (m *mockSSBStatus) GetEBTState() map[string]map[string]int64 {
 }
 func (m *mockSSBStatus) ConnectPeer(ctx context.Context, addr string, pubKey []byte) error {
 	return nil
+}
+
+type mockFeedIDProvider struct{}
+
+func (m *mockFeedIDProvider) GetFeedID(atDID string) (refs.FeedRef, error) {
+	return refs.FeedRef{}, nil
 }
 
 func TestHandleConnections(t *testing.T) {
@@ -251,7 +258,7 @@ func TestATProtoAPIRequiresConfiguration(t *testing.T) {
 	defer database.Close()
 
 	router := chi.NewRouter()
-	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).Mount(router)
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).Mount(router)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/atproto/health", nil)
 	rr := httptest.NewRecorder()
@@ -322,7 +329,7 @@ func TestATProtoAPIReadEndpoints(t *testing.T) {
 
 	indexer := atindex.New(database, nil, nil, "wss://relay.example.test", nil)
 	router := chi.NewRouter()
-	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).WithATProto(database, indexer).Mount(router)
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).WithATProto(database, indexer).Mount(router)
 
 	t.Run("health", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, "/api/atproto/health", nil)
@@ -429,7 +436,7 @@ func TestATProtoAPITrackAndUntrackRepo(t *testing.T) {
 
 	indexer := atindex.New(database, nil, nil, "wss://relay.example.test", nil)
 	router := chi.NewRouter()
-	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).WithATProto(database, indexer).Mount(router)
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).WithATProto(database, indexer).Mount(router)
 
 	trackBody := bytes.NewBufferString(`{"did":"did:plc:trackme","reason":"ui_test"}`)
 	trackReq := httptest.NewRequest(http.MethodPost, "/api/atproto/repos/track", trackBody)
@@ -766,7 +773,7 @@ func TestHealthzReturns200WhenLive(t *testing.T) {
 	}
 
 	router := chi.NewRouter()
-	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).Mount(router)
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).Mount(router)
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
@@ -785,7 +792,7 @@ func TestHealthzReturns503WhenNotLive(t *testing.T) {
 
 	// No bridge state set — status is empty.
 	router := chi.NewRouter()
-	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).Mount(router)
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).Mount(router)
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
@@ -809,7 +816,7 @@ func TestHealthzReturns503WhenHeartbeatStale(t *testing.T) {
 	}
 
 	router := chi.NewRouter()
-	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).Mount(router)
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).Mount(router)
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
@@ -833,7 +840,7 @@ func fetchUI(t *testing.T, database *db.DB, path string) string {
 	t.Helper()
 
 	router := chi.NewRouter()
-	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).Mount(router)
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).Mount(router)
 
 	req := httptest.NewRequest(http.MethodGet, path, nil)
 	rr := httptest.NewRecorder()
@@ -851,7 +858,7 @@ func fetchUIPost(t *testing.T, database *db.DB, path string, formData url.Values
 	t.Helper()
 
 	router := chi.NewRouter()
-	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).Mount(router)
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).Mount(router)
 
 	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(formData.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -1019,9 +1026,16 @@ func (e *erroringDB) ResetMessageForRetry(ctx context.Context, atURI string) err
 	return nil
 }
 
+func (e *erroringDB) RemoveBridgedAccount(ctx context.Context, atDID string) error {
+	if e.failMethod == "RemoveBridgedAccount" {
+		return fmt.Errorf("forced error")
+	}
+	return nil
+}
+
 func TestHandlersHandleErrors(t *testing.T) {
 	errDB := &erroringDB{}
-	handler := NewUIHandler(errDB, nil, nil, nil, &mockSSBStatus{})
+	handler := NewUIHandler(errDB, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{})
 	router := chi.NewRouter()
 	handler.Mount(router)
 
@@ -1137,7 +1151,7 @@ func TestMessagesPageHandlesBadLimit(t *testing.T) {
 	defer database.Close()
 
 	router := chi.NewRouter()
-	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).Mount(router)
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).Mount(router)
 	req := httptest.NewRequest(http.MethodGet, "/messages?limit=abc", nil)
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
@@ -1152,7 +1166,7 @@ func TestMessageDetailHandlesUnknownURI(t *testing.T) {
 	defer database.Close()
 
 	router := chi.NewRouter()
-	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).Mount(router)
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).Mount(router)
 	req := httptest.NewRequest(http.MethodGet, "/messages/detail?at_uri=at://unknown", nil)
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
@@ -1376,7 +1390,7 @@ func TestHandleMessagesEdgeCases(t *testing.T) {
 	defer database.Close()
 
 	router := chi.NewRouter()
-	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).Mount(router)
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).Mount(router)
 
 	t.Run("invalid cursor type", func(t *testing.T) {
 		// cursor=abc is invalid base64/JSON for db.DecodeMessageListCursor but handled gracefully by the UI
@@ -1956,6 +1970,9 @@ func (m *mockDatabase) AddKnownPeer(ctx context.Context, p db.KnownPeer) error {
 func (m *mockDatabase) AddBridgedAccount(ctx context.Context, acc db.BridgedAccount) error {
 	return m.err
 }
+func (m *mockDatabase) RemoveBridgedAccount(ctx context.Context, atDID string) error {
+	return m.err
+}
 
 type mockPDSClient struct {
 	err            error
@@ -2024,7 +2041,7 @@ func TestHandleBlobView(t *testing.T) {
 		},
 	}
 
-	handler := NewUIHandler(database, nil, nil, mockStore, &mockSSBStatus{})
+	handler := NewUIHandler(database, nil, nil, mockStore, &mockSSBStatus{}, &mockFeedIDProvider{})
 	router := chi.NewRouter()
 	handler.Mount(router)
 
@@ -2045,7 +2062,7 @@ func TestHandleBlobViewMissingRef(t *testing.T) {
 	database := openTestDB(t)
 	defer database.Close()
 
-	handler := NewUIHandler(database, nil, nil, nil, &mockSSBStatus{})
+	handler := NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{})
 	router := chi.NewRouter()
 	handler.Mount(router)
 
@@ -2062,7 +2079,7 @@ func TestHandleBlobViewNotFound(t *testing.T) {
 	database := openTestDB(t)
 	defer database.Close()
 
-	handler := NewUIHandler(database, nil, nil, nil, &mockSSBStatus{})
+	handler := NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{})
 	router := chi.NewRouter()
 	handler.Mount(router)
 
@@ -2091,7 +2108,7 @@ func TestHandleBlobViewNoStore(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	handler := NewUIHandler(database, nil, nil, nil, &mockSSBStatus{})
+	handler := NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{})
 	router := chi.NewRouter()
 	handler.Mount(router)
 
@@ -2117,7 +2134,7 @@ func TestHandlePostActionSuccess(t *testing.T) {
 
 	atp := &mockPDSClient{}
 	router := chi.NewRouter()
-	NewUIHandler(database, nil, atp, nil, &mockSSBStatus{}).Mount(router)
+	NewUIHandler(database, nil, atp, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).Mount(router)
 
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
@@ -2154,7 +2171,7 @@ func TestHandlePostActionShortImageUpload(t *testing.T) {
 
 	atp := &mockPDSClient{}
 	router := chi.NewRouter()
-	NewUIHandler(database, nil, atp, nil, &mockSSBStatus{}).Mount(router)
+	NewUIHandler(database, nil, atp, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).Mount(router)
 
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
@@ -2202,7 +2219,7 @@ func TestHandlePostActionShortImageUpload(t *testing.T) {
 
 func TestUIHandlerInternalErrors(t *testing.T) {
 	m := &mockDatabase{err: fmt.Errorf("db boom")}
-	h := NewUIHandler(m, nil, nil, nil, &mockSSBStatus{})
+	h := NewUIHandler(m, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{})
 	router := chi.NewRouter()
 	h.Mount(router)
 
@@ -2230,7 +2247,7 @@ func TestUIHandlerInternalErrors(t *testing.T) {
 
 func TestHealthzInternalError(t *testing.T) {
 	m := &mockDatabase{err: fmt.Errorf("db boom")}
-	h := NewUIHandler(m, nil, nil, nil, &mockSSBStatus{})
+	h := NewUIHandler(m, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{})
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rr := httptest.NewRecorder()
 	h.handleHealthz(rr, req)
@@ -2240,7 +2257,7 @@ func TestHealthzInternalError(t *testing.T) {
 }
 
 func TestMessageDetailBadRequest(t *testing.T) {
-	h := NewUIHandler(&mockDatabase{}, nil, nil, nil, &mockSSBStatus{})
+	h := NewUIHandler(&mockDatabase{}, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{})
 	req := httptest.NewRequest(http.MethodGet, "/messages/detail", nil) // missing at_uri
 	rr := httptest.NewRecorder()
 	h.handleMessageDetail(rr, req)
@@ -2251,7 +2268,7 @@ func TestMessageDetailBadRequest(t *testing.T) {
 
 func TestUIHandlerHandleMessageDetailNotFound(t *testing.T) {
 	m := &mockDatabase{} // returns nil, nil for GetMessage
-	h := NewUIHandler(m, nil, nil, nil, &mockSSBStatus{})
+	h := NewUIHandler(m, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{})
 	req := httptest.NewRequest(http.MethodGet, "/messages/detail?at_uri=at://none", nil)
 	rr := httptest.NewRecorder()
 	h.handleMessageDetail(rr, req)
@@ -2261,7 +2278,7 @@ func TestUIHandlerHandleMessageDetailNotFound(t *testing.T) {
 }
 
 func TestUIHandlerHandleMessagesInvalidLimit(t *testing.T) {
-	h := NewUIHandler(&mockDatabase{}, nil, nil, nil, &mockSSBStatus{})
+	h := NewUIHandler(&mockDatabase{}, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{})
 	req := httptest.NewRequest(http.MethodGet, "/messages?limit=abc", nil)
 	rr := httptest.NewRecorder()
 	h.handleMessages(rr, req)
@@ -2448,6 +2465,9 @@ func (m *granularMockDatabase) AddKnownPeer(ctx context.Context, p db.KnownPeer)
 func (m *granularMockDatabase) AddBridgedAccount(ctx context.Context, acc db.BridgedAccount) error {
 	return m.err
 }
+func (m *granularMockDatabase) RemoveBridgedAccount(ctx context.Context, atDID string) error {
+	return m.err
+}
 
 func TestUIHandlerDashboardAllErrors(t *testing.T) {
 	errBoom := fmt.Errorf("boom")
@@ -2499,7 +2519,7 @@ func TestUIHandlerDashboardAllErrors(t *testing.T) {
 			case "ListTopIssueAccounts":
 				m.listTopIssueAccountsErr = errBoom
 			}
-			h := NewUIHandler(m, nil, nil, nil, &mockSSBStatus{})
+			h := NewUIHandler(m, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{})
 			req := httptest.NewRequest(http.MethodGet, "/", nil)
 			rr := httptest.NewRecorder()
 			h.handleDashboard(rr, req)
@@ -2520,7 +2540,7 @@ func TestUIHandlerMoreErrors(t *testing.T) {
 
 	t.Run("handleMessages_ListMessagesPageError", func(t *testing.T) {
 		m := &granularMockDatabase{listMessagesPageErr: errBoom}
-		h := NewUIHandler(m, nil, nil, nil, &mockSSBStatus{})
+		h := NewUIHandler(m, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{})
 		req := httptest.NewRequest(http.MethodGet, "/messages", nil)
 		rr := httptest.NewRecorder()
 		h.handleMessages(rr, req)
@@ -2531,7 +2551,7 @@ func TestUIHandlerMoreErrors(t *testing.T) {
 
 	t.Run("handleMessages_ListMessageTypesError", func(t *testing.T) {
 		m := &granularMockDatabase{listMessageTypesErr: errBoom}
-		h := NewUIHandler(m, nil, nil, nil, &mockSSBStatus{})
+		h := NewUIHandler(m, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{})
 		req := httptest.NewRequest(http.MethodGet, "/messages", nil)
 		rr := httptest.NewRecorder()
 		h.handleMessages(rr, req)
@@ -2542,7 +2562,7 @@ func TestUIHandlerMoreErrors(t *testing.T) {
 
 	t.Run("handleAccounts_Error", func(t *testing.T) {
 		m := &granularMockDatabase{listBridgedAccountsWithStatsErr: errBoom}
-		h := NewUIHandler(m, nil, nil, nil, &mockSSBStatus{})
+		h := NewUIHandler(m, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{})
 		req := httptest.NewRequest(http.MethodGet, "/accounts", nil)
 		rr := httptest.NewRecorder()
 		h.handleAccounts(rr, req)
@@ -2553,7 +2573,7 @@ func TestUIHandlerMoreErrors(t *testing.T) {
 
 	t.Run("handleFailures_Error", func(t *testing.T) {
 		m := &granularMockDatabase{getPublishFailuresErr: errBoom}
-		h := NewUIHandler(m, nil, nil, nil, &mockSSBStatus{})
+		h := NewUIHandler(m, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{})
 		req := httptest.NewRequest(http.MethodGet, "/failures", nil)
 		rr := httptest.NewRecorder()
 		h.handleFailures(rr, req)
@@ -2564,7 +2584,7 @@ func TestUIHandlerMoreErrors(t *testing.T) {
 
 	t.Run("handleBlobs_Error", func(t *testing.T) {
 		m := &granularMockDatabase{getRecentBlobsErr: errBoom}
-		h := NewUIHandler(m, nil, nil, nil, &mockSSBStatus{})
+		h := NewUIHandler(m, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{})
 		req := httptest.NewRequest(http.MethodGet, "/blobs", nil)
 		rr := httptest.NewRecorder()
 		h.handleBlobs(rr, req)
@@ -2575,7 +2595,7 @@ func TestUIHandlerMoreErrors(t *testing.T) {
 
 	t.Run("handleState_Error", func(t *testing.T) {
 		m := &granularMockDatabase{getAllBridgeStateErr: errBoom}
-		h := NewUIHandler(m, nil, nil, nil, &mockSSBStatus{})
+		h := NewUIHandler(m, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{})
 		req := httptest.NewRequest(http.MethodGet, "/state", nil)
 		rr := httptest.NewRecorder()
 		h.handleState(rr, req)
@@ -2722,7 +2742,7 @@ func TestHandlePost(t *testing.T) {
 	}
 
 	router := chi.NewRouter()
-	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).Mount(router)
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).Mount(router)
 
 	req := httptest.NewRequest(http.MethodGet, "/post", nil)
 	rr := httptest.NewRecorder()
@@ -2755,7 +2775,7 @@ func TestHandleMessageRetry(t *testing.T) {
 	}
 
 	router := chi.NewRouter()
-	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).Mount(router)
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).Mount(router)
 
 	req := httptest.NewRequest(http.MethodPost, "/messages/retry?at_uri=at://did:plc:alice/app.bsky.feed.post/retry1", nil)
 	rr := httptest.NewRecorder()
@@ -2779,7 +2799,7 @@ func TestHandleMessageRetryMissingURI(t *testing.T) {
 	defer database.Close()
 
 	router := chi.NewRouter()
-	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).Mount(router)
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).Mount(router)
 
 	req := httptest.NewRequest(http.MethodPost, "/messages/retry", nil)
 	rr := httptest.NewRecorder()
@@ -2795,7 +2815,7 @@ func TestHandlePostActionMissingDID(t *testing.T) {
 	defer database.Close()
 
 	router := chi.NewRouter()
-	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).Mount(router)
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).Mount(router)
 
 	req := httptest.NewRequest(http.MethodPost, "/post", strings.NewReader("text=hello"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -2819,7 +2839,7 @@ func TestHandlePostActionMissingText(t *testing.T) {
 	})
 
 	router := chi.NewRouter()
-	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).Mount(router)
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).Mount(router)
 
 	req := httptest.NewRequest(http.MethodPost, "/post", strings.NewReader("at_did=did:plc:alice"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -2836,7 +2856,7 @@ func TestHandlePostActionInvalidAccount(t *testing.T) {
 	defer database.Close()
 
 	router := chi.NewRouter()
-	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).Mount(router)
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).Mount(router)
 
 	req := httptest.NewRequest(http.MethodPost, "/post", strings.NewReader("at_did=did:plc:invalid&text=hello"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -2860,7 +2880,7 @@ func TestHandleAccountsPage(t *testing.T) {
 	})
 
 	router := chi.NewRouter()
-	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).Mount(router)
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).Mount(router)
 
 	req := httptest.NewRequest(http.MethodGet, "/accounts", nil)
 	rr := httptest.NewRecorder()
@@ -2879,15 +2899,15 @@ func TestHandleAccountsAddMissingFields(t *testing.T) {
 	defer database.Close()
 
 	router := chi.NewRouter()
-	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).Mount(router)
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).Mount(router)
 
-	req := httptest.NewRequest(http.MethodPost, "/accounts", strings.NewReader("at_did=did:plc:test"))
+	req := httptest.NewRequest(http.MethodPost, "/accounts", strings.NewReader("at_did="))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rr := httptest.NewRecorder()
 	router.ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", rr.Code)
+		t.Fatalf("expected 400 for empty at_did, got %d", rr.Code)
 	}
 }
 
@@ -2896,11 +2916,10 @@ func TestHandleAccountsAddSuccess(t *testing.T) {
 	defer database.Close()
 
 	router := chi.NewRouter()
-	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).Mount(router)
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).Mount(router)
 
 	form := url.Values{}
 	form.Set("at_did", "did:plc:newaccount")
-	form.Set("ssb_feed_id", "@newaccount.test.ed25519")
 
 	req := httptest.NewRequest(http.MethodPost, "/accounts", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -2933,7 +2952,7 @@ func TestSendDashboardStats(t *testing.T) {
 		Active:    true,
 	})
 
-	handler := NewUIHandler(database, nil, nil, nil, &mockSSBStatus{})
+	handler := NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{})
 
 	rr := &flushingResponseRecorder{ResponseRecorder: httptest.NewRecorder()}
 
@@ -2984,7 +3003,7 @@ func TestHandleFailuresRetry(t *testing.T) {
 	})
 
 	router := chi.NewRouter()
-	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).Mount(router)
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).Mount(router)
 
 	req := httptest.NewRequest(http.MethodPost, "/failures/retry", nil)
 	rr := httptest.NewRecorder()
@@ -3004,7 +3023,7 @@ func TestHandleConnectionAdd(t *testing.T) {
 	defer database.Close()
 
 	router := chi.NewRouter()
-	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).Mount(router)
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).Mount(router)
 
 	t.Run("missing_fields", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/connections/add", nil)
@@ -3071,7 +3090,7 @@ func TestHandleConnectionConnect(t *testing.T) {
 	defer database.Close()
 
 	router := chi.NewRouter()
-	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}).Mount(router)
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).Mount(router)
 
 	t.Run("missing_fields", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/connections/connect", nil)

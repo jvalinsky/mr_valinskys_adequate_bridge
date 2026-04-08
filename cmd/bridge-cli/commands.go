@@ -550,7 +550,8 @@ func runServeUI(c *cli.Context) error {
 		r.Use(websecurity.BasicAuthMiddleware(authUser, authPass))
 	}
 
-	ui := handlers.NewUIHandler(database, uiLogger, atpClient, blobStore, ssbStatus).WithATProto(database, indexer)
+	manager := bots.NewManager([]byte(botSeed), nil, nil, nil)
+	ui := handlers.NewUIHandler(database, uiLogger, atpClient, blobStore, ssbStatus, manager).WithATProto(database, indexer)
 	if roomOps != nil {
 		ui = ui.WithRoomOps(roomOps)
 	}

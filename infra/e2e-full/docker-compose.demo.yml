@@ -1,0 +1,115 @@
+services:
+  # ── PLC Proxy port overrides for demo ────────────────────────────
+  plc-proxy:
+    ports:
+      - "2582:2582"
+      - "80:80"
+      - "443:443"
+
+  # ── Bridge ───────────────────────────────────────────────────────
+  bridge:
+    build:
+      context: ../..
+      dockerfile: infra/e2e-tildefriends/Dockerfile.bridge
+    entrypoint: ["/bin/bash", "/scripts/bridge_entrypoint.sh"]
+    environment:
+      DB_PATH: /data/bridge.sqlite
+      REPO_PATH: /data/ssb-repo
+      BOT_SEED: e2e-full-seed
+      ROOM_MUXRPC_ADDR: "0.0.0.0:8989"
+      ROOM_HTTP_ADDR: "0.0.0.0:8976"
+      ROOM_MODE: open
+      ROOM_HTTPS_DOMAIN: bridge
+      BRIDGE_FIREHOSE_ENABLE: "1"
+      BRIDGE_RELAY_URL: "ws://pds:80/xrpc/com.atproto.sync.subscribeRepos"
+      BRIDGE_PLC_URL: "http://plc:2582"
+      BRIDGE_ATPROTO_INSECURE: "1"
+      BRIDGE_CLEAN_START: "1"
+      BRIDGE_MODE: firehose
+    ports:
+      - "8976:8976"
+      - "8989:8989"
+    volumes:
+      - bridge-data:/data
+      - ../shared/bridge_entrypoint.sh:/scripts/bridge_entrypoint.sh:ro
+    depends_on:
+      relay:
+        condition: service_healthy
+      pds:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:8976/healthz"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    networks:
+      - atproto-network
+
+  # ── Seeder ───────────────────────────────────────────────────────
+  seeder:
+    build:
+      context: ../..
+      dockerfile: infra/e2e-tildefriends/Dockerfile.bridge
+    entrypoint: ["/bin/bash", "/scripts/seeder_entrypoint.sh"]
+    environment:
+      PDS_HOST: "http://pds:80"
+      BOT_SEED: e2e-full-seed
+    volumes:
+      - bridge-data:/data
+      - ./seeder_entrypoint.sh:/scripts/seeder_entrypoint.sh:ro
+    depends_on:
+      bridge:
+        condition: service_healthy
+      pds:
+        condition: service_healthy
+    networks:
+      - atproto-network
+
+  # ── Go SSB Client ────────────────────────────────────────────────
+  ssb-client:
+    build:
+      context: ../..
+      dockerfile: infra/e2e-full/Dockerfile.ssbclient
+    command: ["--http-listen-addr", "0.0.0.0:8080", "--listen-addr", "0.0.0.0:8008", "--repo-path", "/data", "serve"]
+    ports:
+      - "8081:8080"
+      - "8009:8008"
+    environment:
+      ROOM_HTTP_ADDR: "http://bridge:8976"
+    volumes:
+      - ssb-client-data:/data
+    depends_on:
+      bridge:
+        condition: service_healthy
+    networks:
+      - atproto-network
+
+  # ── Admin UI ──────────────────────────────────────────────────────
+  bridge-admin-ui:
+    build:
+      context: ../..
+      dockerfile: infra/e2e-tildefriends/Dockerfile.bridge
+    depends_on:
+      bridge:
+        condition: service_started
+    environment:
+      DB_PATH: /data/bridge.sqlite
+      REPO_PATH: /data/ssb-repo
+      BRIDGE_UI_AUTH_PASS: e2e-password
+      BRIDGE_PDS_ADMIN_PASSWORD: password
+    ports:
+      - "8080:8080"
+    volumes:
+      - bridge-data:/data
+    command: ["--db", "/data/bridge.sqlite", "serve-ui", "--listen-addr", "0.0.0.0:8080", "--repo-path", "/data/ssb-repo", "--ui-auth-user", "admin", "--ui-auth-pass-env", "BRIDGE_UI_AUTH_PASS", "--pds-host", "http://pds:80", "--pds-password", "password", "--atproto-insecure"]
+    networks:
+      - atproto-network
+
+volumes:
+  bridge-data:
+  ssb-client-data:
+
+networks:
+  atproto-network:
+    external: true
+    name: mvab-e2e-full_atproto-network

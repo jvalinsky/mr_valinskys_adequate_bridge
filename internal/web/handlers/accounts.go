@@ -33,16 +33,26 @@ func (h *UIHandler) handleAccounts(w http.ResponseWriter, r *http.Request) {
 
 func (h *UIHandler) handleAccountsAdd(w http.ResponseWriter, r *http.Request) {
 	atDID := strings.TrimSpace(r.FormValue("at_did"))
-	ssbFeedID := strings.TrimSpace(r.FormValue("ssb_feed_id"))
 
-	if atDID == "" || ssbFeedID == "" {
-		http.Error(w, "Missing at_did or ssb_feed_id", http.StatusBadRequest)
+	if atDID == "" {
+		http.Error(w, "Missing at_did", http.StatusBadRequest)
+		return
+	}
+
+	if h.feedIDProvider == nil {
+		h.writeInternalError(w, "accounts_add", "Feed ID provider not configured", nil)
+		return
+	}
+
+	feedRef, err := h.feedIDProvider.GetFeedID(atDID)
+	if err != nil {
+		h.writeInternalError(w, "accounts_add", "Failed to derive feed ID", err)
 		return
 	}
 
 	acc := db.BridgedAccount{
 		ATDID:     atDID,
-		SSBFeedID: ssbFeedID,
+		SSBFeedID: feedRef.Ref(),
 		Active:    true,
 	}
 

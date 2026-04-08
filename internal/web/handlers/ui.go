@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -60,6 +61,11 @@ type SSBStatusProvider interface {
 	ConnectPeer(ctx context.Context, addr string, pubKey []byte) error
 }
 
+// FeedIDProvider provides deterministic SSB Feed ID derivation from ATProto DIDs.
+type FeedIDProvider interface {
+	GetFeedID(atDID string) (refs.FeedRef, error)
+}
+
 // ATProtoDebugStore provides direct read access to indexer state persisted in SQLite.
 type ATProtoDebugStore interface {
 	GetATProtoSource(ctx context.Context, sourceKey string) (*db.ATProtoSource, error)
@@ -91,19 +97,21 @@ type UIHandler struct {
 	atpClient    PDSClientInterface
 	blobStore    BlobStore
 	ssbStatus    SSBStatusProvider
-	atprotoStore ATProtoDebugStore
-	atprotoSvc   ATProtoService
-	roomOps      RoomOpsProvider
+	atprotoStore    ATProtoDebugStore
+	atprotoSvc      ATProtoService
+	roomOps         RoomOpsProvider
+	feedIDProvider  FeedIDProvider
 }
 
-// NewUIHandler creates a UIHandler bound to database.
-func NewUIHandler(database Database, logger *log.Logger, atpClient PDSClientInterface, blobStore BlobStore, ssbStatus SSBStatusProvider) *UIHandler {
+// NewUIHandler creates a UIHandler bound to database and feed ID provider.
+func NewUIHandler(database Database, logger *log.Logger, atpClient PDSClientInterface, blobStore BlobStore, ssbStatus SSBStatusProvider, feedIDProvider FeedIDProvider) *UIHandler {
 	return &UIHandler{
-		db:        database,
-		logger:    logutil.Ensure(logger),
-		atpClient: atpClient,
-		blobStore: blobStore,
-		ssbStatus: ssbStatus,
+		db:             database,
+		logger:         logutil.Ensure(logger),
+		atpClient:      atpClient,
+		blobStore:      blobStore,
+		ssbStatus:      ssbStatus,
+		feedIDProvider: feedIDProvider,
 	}
 }
 
