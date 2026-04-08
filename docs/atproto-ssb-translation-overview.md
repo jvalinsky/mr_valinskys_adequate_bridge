@@ -1,6 +1,6 @@
 # ATProto to SSB Translation Overview
 
-See also: [docs index](./README.md), [identity mapping](./atproto-ssb-identity-mapping.md), [record translation](./atproto-ssb-record-translation.md).
+See also: [docs index](./README.md), [identity mapping](./atproto-ssb-identity-mapping.md), [record translation](./atproto-ssb-record-translation.md), [reverse sync](./reverse-sync.md).
 
 This bridge does not do one single "ATProto to SSB" conversion. The codebase keeps three distinct mappings:
 
@@ -9,6 +9,20 @@ This bridge does not do one single "ATProto to SSB" conversion. The codebase kee
 | ATProto DID (`did:plc:...`) | SSB feed ref (`@...`) | [`internal/bots/manager.go`](../internal/bots/manager.go), [`internal/ssbruntime/runtime.go`](../internal/ssbruntime/runtime.go) | Every bridged ATProto account publishes as a deterministic SSB bot identity. |
 | AT URI (`at://did/.../collection/rkey`) | SSB message ref (`%...`) | [`internal/bridge/processor.go`](../internal/bridge/processor.go), [`internal/db/schema.sql`](../internal/db/schema.sql) | Replies, likes, quotes, and similar edges must point at already-published SSB messages. |
 | AT blob CID | SSB blob ref (`&...`) | [`internal/blobbridge/bridge.go`](../internal/blobbridge/bridge.go) | Media is mirrored separately from account and message identity. |
+
+This page covers the forward ATProto-to-SSB path only. The optional SSB-to-ATProto path is documented separately in [docs/reverse-sync.md](./reverse-sync.md).
+
+The forward processor currently accepts:
+- `app.bsky.feed.post`
+- `app.bsky.feed.like`
+- `app.bsky.graph.follow`
+- `app.bsky.graph.block`
+- `app.bsky.actor.profile`
+- `app.bsky.graph.list`
+- `app.bsky.graph.listitem`
+- `app.bsky.feed.threadgate`
+
+Standalone `app.bsky.feed.repost` records are not in the supported collection set. Quoted posts are handled as post embeds inside `app.bsky.feed.post`.
 
 ## The important split
 
@@ -51,3 +65,4 @@ Handles do not participate in bridge identity resolution. The only handle-orient
 - [Documentation Index](./README.md)
 - [ATProto to SSB Identity Mapping](./atproto-ssb-identity-mapping.md)
 - [Bridge Operator Runbook](./runbook.md)
+- [SSB to ATProto Reverse Sync](./reverse-sync.md)

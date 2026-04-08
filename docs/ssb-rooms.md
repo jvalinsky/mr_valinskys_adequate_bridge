@@ -479,7 +479,7 @@ func (s *RoomServer) OnConnect(ctx context.Context, conn net.Conn, pk refs.FeedR
 
 - **[SSB Protocol Fundamentals](ssb-protocol-fundamentals.md)** - Identity, feeds, messages, signing
 - **[SSB Replication](ssb-replication.md)** - EBT and createHistoryStream protocols
-- **[EBT Replication Debugging](../ebt-replication.md)** - Bridge-specific EBT implementation notes
+- **[EBT Replication Notes](./ebt-replication.md)** - Bridge-specific EBT and room debugging notes
 - [SIP-007: Rooms 2](https://github.com/ssbc/sips/blob/master/007.md)
 - [Room Server Implementation](https://github.com/ssbc/ssb-room-server)
 - [go-ssb-room](https://github.com/ssbc/go-ssb-room)

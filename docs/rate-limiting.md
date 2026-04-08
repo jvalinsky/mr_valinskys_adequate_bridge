@@ -4,7 +4,7 @@ See also: [docs index](./README.md), [runbook](./runbook.md)
 
 ## Overview
 
-The bridge implements per-DID rate limiting to prevent noisy accounts from flooding the bridge with messages. This protects against malicious or misconfigured accounts that could otherwise overwhelm the processor, blob bridge, or SSB runtime with excessive traffic.
+The forward bridge implements per-DID rate limiting to prevent noisy ATProto accounts from flooding the processor. It applies before mapping or persistence, so a rate-limited event does not create or update a `messages` row. Reverse sync is not controlled by this limiter.
 
 ## How It Works
 
@@ -12,7 +12,7 @@ Each bridged DID gets its own token bucket rate limiter using `golang.org/x/time
 
 - **Default limit**: 300 messages per minute (5 msg/sec)
 - **Burst capacity**: Equal to the per-minute limit
-- **Scope**: Applied to all ATProto repository events for a given DID before processing
+- **Scope**: Applied to each incoming ATProto event for a given DID before record mapping starts
 
 ## Configuration
 

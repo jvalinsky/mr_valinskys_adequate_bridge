@@ -2,6 +2,8 @@
 
 See also: [overview](./atproto-ssb-translation-overview.md) and [identity mapping](./atproto-ssb-identity-mapping.md).
 
+This page describes the forward bridge's supported collection set: post, like, follow, block, profile, list, listitem, and threadgate. Standalone reposts are not part of the processor's supported collections today.
+
 ## The bridge translates records in two passes
 
 The code deliberately does not try to emit final SSB refs in a single mapper step.
@@ -27,6 +29,7 @@ This split is necessary because SSB message refs only exist after publish time, 
 | `_atproto_reply_parent` | post reply parent URI | `branch` message ref | reply threading |
 | `_atproto_subject` | like subject URI | `vote.link` message ref | likes |
 | `_atproto_quote_subject` | quoted post URI | mention + markdown link to message ref | quotes |
+| `_atproto_list` | listitem parent list URI | `list` message ref | list membership |
 | `_atproto_contact` | follow/block subject DID | `contact` feed ref | social graph edges |
 | `_atproto_about_did` | author DID on profile record | `about` feed ref | profile/about messages |
 
@@ -87,6 +90,8 @@ That difference mirrors the actual target:
 
 - AT URI placeholder -> needs a published SSB message ref
 - DID placeholder -> needs an SSB feed ref
+
+The mapper does have a `_atproto_repost_subject` placeholder for `app.bsky.feed.repost`, but the forward processor does not currently ingest standalone repost records. In practice the forward path handles quote-post embeds instead.
 
 ## Deferred state is part of normal operation
 

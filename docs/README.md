@@ -1,68 +1,68 @@
 # Documentation Index
 
-This repo contains four documentation areas. For AI agent instructions, see [CLAUDE.md](../CLAUDE.md).
+This index covers the project-owned documentation that tracks the current codebase. Dated files in `docs/investigations/`, `docs/ssbc-*.md`, and `docs/scratchpad/` are snapshots of earlier work, not living operator guides.
 
-## Getting Started
+## Start Here
 
-If you are new to the project or looking to understand how to contribute, start here:
+- [Root README](../README.md) - Project overview, quick start, runtime modes, and main tooling.
+- [Bridge Operator Runbook](./runbook.md) - Runtime procedures, deployment notes, and incident triage.
+- [Contributor Setup Profiles](./agents.md) - Which local or production profile to use for common tasks.
+- [Documentation Guide](./documentation-guide.md) - House style and maintenance rules for docs in this repo.
 
-- [Agent Setup Profiles](./agents.md) - Fast local-vs-production setup matrix for contributors.
-- [Documentation Guide](./documentation-guide.md) - Instructions and style guidelines for updating documentation.
+## Environments and Test Stacks
 
-## Setup and Deployment
+- [Local ATProto Stack](../infra/local-atproto/README.md) - Local PLC, relay, and PDS stack used by development and local E2E.
+- [Docker E2E Stack](../infra/e2e-full/README.md) - Full containerized bridge, reverse bootstrap, admin UI, and Tildefriends coverage.
 
-Use these docs based on environment:
+## Bridge Behavior
 
-- [Bridge Operator Runbook](./runbook.md) - Local Docker workflow plus production operations.
-- [Per-DID Rate Limiting](./rate-limiting.md) - Configuration details for preventing spam.
+- [ATProto to SSB Translation Overview](./atproto-ssb-translation-overview.md) - Forward-bridge model: DID, message, and blob mapping.
+- [ATProto to SSB Identity Mapping](./atproto-ssb-identity-mapping.md) - Deterministic DID-to-feed derivation and account activation policy.
+- [ATProto to SSB Record Translation](./atproto-ssb-record-translation.md) - Placeholder fields, dependency resolution, and deferred records.
+- [SSB to ATProto Reverse Sync](./reverse-sync.md) - Optional reverse path for allowlisted SSB feeds.
+- [Per-DID Rate Limiting](./rate-limiting.md) - Forward-bridge rate limiter behavior and configuration.
 
-## Architecture and Core Logic
+## SSB and Interoperability
 
-### ATProto to SSB Translation
+- [SSB Protocol Fundamentals](./ssb-protocol-fundamentals.md) - Identity, feeds, message format, and signing rules.
+- [SSB Replication](./ssb-replication.md) - SHS, box stream, muxrpc, classic replication, and EBT.
+- [SSB Rooms](./ssb-rooms.md) - Room2 model, tunnel behavior, and room-specific APIs.
+- [SSB Implementation Reference](./ssb-implementations.md) - File map for the repo's SSB implementation.
+- [EBT Replication Notes](./ebt-replication.md) - Bridge-specific EBT and room debugging entrypoints.
 
-The bridge logic has two separate translation layers. The detailed docs for that flow live here:
+## Historical Reports
 
-- [ATProto to SSB Translation Overview](./atproto-ssb-translation-overview.md) - High level overview of translation layers.
-- [ATProto to SSB Identity Mapping](./atproto-ssb-identity-mapping.md) - ATProto account identity (`did:...`) to deterministic SSB feed identity (`@...`).
-- [ATProto to SSB Record Translation](./atproto-ssb-record-translation.md) - ATProto record references (`at://...`) to published SSB message refs (`%...`).
-
-### SSB Protocol implementations
-
-The bridge implements Secure Scuttlebutt protocols including EBT replication, Room2, and message signing. These documents cover the protocol stack with ASCII diagrams and code examples:
-
-- [SSB Protocol Fundamentals](./ssb-protocol-fundamentals.md) - Identity, feeds, messages, and signing.
-- [SSB Replication](./ssb-replication.md) - Secret handshake, box stream, MUXRPC, and EBT.
-- [SSB Rooms](./ssb-rooms.md) - Room2 architecture and tunnel connections.
-- [SSB Implementations](./ssb-implementations.md) - Go code examples from the bridge.
-- [EBT Replication Debugging](./ebt-replication.md) - Bridge-specific EBT debugging notes.
-
-## Scratchpad Index
-
-Development notes and debugging sessions are indexed in [scratchpad/README.md](scratchpad/README.md).
+- [SSBC Compliance Migration Notes](./ssbc-compliance-migration-notes.md) - Migration summary after SIP/SSBC compatibility work.
+- [SSBC / SIP Compliance Review (2026-04-01)](./ssbc-sip-compliance-review-2026-04-01.md) - Dated audit snapshot.
+- [SSBC / SIP Compliance Review (2026-04-06)](./ssbc-sip-compliance-review-2026-04-06.md) - Follow-up audit snapshot.
+- [Investigations](./investigations/planetary-ios-no-sync-2026-04-06.md) - Dated incident write-ups under `docs/investigations/`.
+- [Scratchpad Index](./scratchpad/README.md) - Archived design notes, implementation logs, and partial plans.
 
 ## Code References
 
-### Bridge Core
+### Bridge runtime
 
 - [`cmd/bridge-cli/main.go`](../cmd/bridge-cli/main.go)
-- [`internal/bots/manager.go`](../internal/bots/manager.go)
-- [`internal/ssbruntime/runtime.go`](../internal/ssbruntime/runtime.go)
+- [`cmd/bridge-cli/app.go`](../cmd/bridge-cli/app.go)
+- [`internal/atindex/service.go`](../internal/atindex/service.go)
 - [`internal/bridge/processor.go`](../internal/bridge/processor.go)
-- [`internal/bridge/dependencies.go`](../internal/bridge/dependencies.go)
+- [`internal/bridge/reverse_sync.go`](../internal/bridge/reverse_sync.go)
 - [`internal/mapper/mapper.go`](../internal/mapper/mapper.go)
-- [`internal/config/constants.go`](../internal/config/constants.go) - Rate limiting defaults
 - [`internal/db/schema.sql`](../internal/db/schema.sql)
 
-### SSB Protocol Implementation
+### SSB runtime and room integration
 
-- [`internal/ssb/sbot/feed_manager_adapter.go`](../internal/ssb/sbot/feed_manager_adapter.go)
-- [`internal/ssb/message/legacy/sign.go`](../internal/ssb/message/legacy/sign.go)
+- [`cmd/ssb-client/main.go`](../cmd/ssb-client/main.go)
+- [`cmd/bridge-cli/bridged_room_peers.go`](../cmd/bridge-cli/bridged_room_peers.go)
+- [`cmd/bridge-cli/room_member_ingest.go`](../cmd/bridge-cli/room_member_ingest.go)
+- [`internal/ssbruntime/runtime.go`](../internal/ssbruntime/runtime.go)
+- [`internal/ssb/sbot/sbot.go`](../internal/ssb/sbot/sbot.go)
 - [`internal/ssb/replication/ebt.go`](../internal/ssb/replication/ebt.go)
-- [`internal/ssb/muxrpc/`](../internal/ssb/muxrpc/)
-- [`internal/ssb/secretstream/`](../internal/ssb/secretstream/)
-- [`internal/ssb/network/`](../internal/ssb/network/)
 - [`internal/room/`](../internal/room/)
 
-### Reference Implementations
+### Admin UI and tooling
 
-- [`reference/tildefriends/src/ssb.c`](../reference/tildefriends/src/ssb.c) - Tildefriends SSB implementation
+- [`internal/web/handlers/ui.go`](../internal/web/handlers/ui.go)
+- [`internal/web/handlers/reverse.go`](../internal/web/handlers/reverse.go)
+- [`internal/web/templates/templates.go`](../internal/web/templates/templates.go)
+- [`cmd/room-tunnel-feed-verify/main.go`](../cmd/room-tunnel-feed-verify/main.go)

@@ -605,7 +605,7 @@ func (fma *FeedManagerAdapter) GetMessage(seq int64) (map[string]interface{}, er
 
 - **[SSB Protocol Fundamentals](ssb-protocol-fundamentals.md)** - Identity, feeds, messages, signing
 - **[SSB Rooms](ssb-rooms.md)** - Room2 server protocol and tunnel connections
-- **[EBT Replication Debugging](../ebt-replication.md)** - Bridge-specific EBT implementation notes
+- **[EBT Replication Notes](./ebt-replication.md)** - Bridge-specific EBT and room debugging notes
 - [EBT Reference Implementation](https://github.com/ssbc/epidemic-broadcast-trees)
 - [ssb-ebt](https://github.com/ssbc/ssb-ebt)
 - [Planetary EBT Documentation](https://dev.planetary.social/replication/ebt.html)

@@ -1,201 +1,90 @@
-# Documentation Guide for AI Assistants
+# Documentation Guide
 
-> This guide explains how to update documentation in this project. For AI agent setup instructions, see [CLAUDE.md](../CLAUDE.md) and [Agent Setup Profiles](./agents.md).
+This guide applies to the living docs in this repository: the root [README](../README.md), the files in [`docs/`](./README.md), and the infra READMEs under `infra/`.
 
----
+## Audience and Scope
 
-## Overview
+- `README.md` is the front door. It should give a new contributor or operator a correct picture of what the repository does today.
+- `docs/runbook.md` is for operators and on-call work.
+- Feature docs in `docs/*.md` explain current behavior and design constraints for developers.
+- `infra/*/README.md` explains how a specific local or test stack works.
+- Dated reports in `docs/investigations/`, `docs/ssbc-*.md`, and `docs/scratchpad/` are historical records. Keep the date and scope clear instead of rewriting them into timeless docs.
 
-This project uses a structured documentation system with:
+## Style
 
-1. **Primary docs** — `README.md`, `docs/runbook.md`, `docs/README.md`
-2. **Reference docs** — `docs/atproto-ssb-*.md`, `docs/ssb-*.md`, `docs/rate-limiting.md`
-3. **Scratchpads** — `docs/scratchpad/` — development notes and drafts
+- Write from the code, tests, and command help. Do not document planned behavior as if it already exists.
+- Keep the tone direct. Avoid sales language, filler transitions, and vague claims.
+- Prefer short sections, tables, and explicit notes over long introductions.
+- State when something is partial, optional, disabled by default, deprecated, test-only, or advisory.
+- Use examples that are runnable in this repository. If an example needs secrets or external services, say so.
+- Prefer file references over pasted implementation blocks when the source file is the real point of reference.
 
----
+## When Docs Need Updates
 
-## Key Principles
+| Change in code | Docs to check |
+| --- | --- |
+| CLI command, flag, or default changes | `README.md`, `docs/runbook.md`, related feature docs |
+| Supported record types change | `README.md`, `docs/atproto-ssb-translation-overview.md`, `docs/atproto-ssb-record-translation.md` |
+| Reverse-sync behavior changes | `README.md`, `docs/reverse-sync.md`, `docs/runbook.md` |
+| New local/test stack or compose service | matching `infra/*/README.md`, `README.md`, `docs/README.md` |
+| New package or major subsystem | `README.md`, `docs/README.md`, possibly a new focused doc |
+| Broken or moved file references | every doc that links to the old path |
 
-1. **Source of truth is the code** — Documentation must match what the code actually does
-2. **Cross-link explicitly** — Docs should reference each other using relative links
-3. **Keep scratchpads archival** — Don't delete old scratchpads, mark them as "Historical"
-4. **One doc at a time** — Don't update multiple docs in a single edit pass
+## Update Workflow
 
----
+1. Start from the code or command help.
+2. Identify every user-facing place that makes a claim about that surface area.
+3. Update the primary doc first.
+4. Update secondary docs and indexes in the same change when they would otherwise become stale.
+5. Verify examples, flags, and links before finishing.
 
-## Writing Style & Tone
-
-When writing or updating documentation (whether you are a human or an AI agent), strictly adhere to the following stylistic guidelines:
-
-1. **Avoid LLM-isms & Fluff:** Avoid words commonly overused by AI generators (e.g., *delve, leverage, harness, unleash, embark, paradigm, seamless, robust, tapestry*). Avoid repetitive filler transitions like *it is important to note that, furthermore, consequently, in conclusion*.
-2. **No Marketing Language:** Do not oversell what the bridge does. Avoid adjectives like *groundbreaking, revolutionary, powerful, unprecedented*. Be detailed, thorough, and factual. For example, say "This tool bridges ATProto to SSB" rather than "This tool unleashes the power of decentralized social media."
-3. **Tone Calibration:**
-   - Use an **academic tone** where it makes sense (e.g., deep-dive protocol specifications, architecture decisions, and cryptographic proofs).
-   - Use a **dry, conversational tone** where it makes sense (e.g., quick starts, beginner introductions, and runbook procedures).
-4. **Be Concise When Possible:** Ensure the documentation is detailed where precision is required, but concise in other places. Get straight to the point without verbose introductions.
-5. **Audience Consideration:** Documentation should clearly map to its intended audience. Introductory docs should allow someone with zero prior knowledge to use the tool. Advanced docs should provide deep technical references for senior engineers.
-
----
-
-## When to Update Docs
-
-Update docs when you:
-
-| Action | Doc Impact |
-|--------|-----------|
-| Add/remove/change CLI flag | Update README CLI table, runbook flags section |
-| Add new record type | Update README "Supported Record Types" table |
-| Add new package | Update README "Internal Packages" table |
-| Add new script | Update README "Scripts" table |
-| Add new feature | Create new doc in `docs/` + link from docs/README.md |
-| Change constants | Update docs/README.md code references |
-| Update infra | Update `infra/*/README.md` + link to runbook |
-
----
-
-## Doc Update Workflow
-
-### Step 1: Audit Against Code
-
-Find the source of truth for what you're updating:
-
-| What to Update | Source File(s) |
-|---------------|----------------|
-| CLI commands & flags | `cmd/bridge-cli/main.go` — look for `Name:`, `Usage:`, `Value:` fields |
-| Record types | `internal/mapper/mapper.go` — `RecordType*` constants |
-| Package descriptions | `go doc ./internal/<pkg>` or `// Package` comment |
-| Script inventory | `ls scripts/*.sh` + header comments |
-| Constants | `internal/config/constants.go` |
-| Runbook flags | `cmd/bridge-cli/main.go` flag definitions |
-
-### Step 2: Identify Changes Needed
-
-- Compare doc table/description against source
-- Note any discrepancies: missing entries, outdated descriptions, renamed items
-
-### Step 3: Make the Change
-
-For small changes (typos, link fixes):
-- Edit directly
-
-For substantive changes (new flags, new packages):
-- Create a scratchpad draft first: `docs/scratchpad/NNN-doc-update-<topic>.md`
-- Apply the draft, then verify
-
-### Step 4: Add Cross-Links
-
-When adding new docs or updating major sections, ensure:
-
-1. **Index link** — Add to `docs/README.md` under appropriate section
-2. **See Also footer** — Add "## See Also" section linking to related docs
-3. **From README** — If it's a feature, link from relevant README section
-
-### Step 5: Verify
-
-- Check that all relative links resolve (file exists)
-- For CLI changes: `go run ./cmd/bridge-cli --help` matches docs
-- For packages: `go doc ./internal/<pkg>` works
-
----
-
-## Link Standards
-
-### Good Links
-
-```markdown
-[Rate Limiting](./rate-limiting.md)
-[Bridge Operator Runbook](./runbook.md)
-[CLAUDE.md](../CLAUDE.md)
-[Agent Setup Profiles](./agents.md)
-```
-
-### Avoid
-
-- Absolute paths like `/Users/jack/...`
-- Links to files that don't exist
-- Orphaned docs with no incoming links
-
----
-
-## Required Link Patterns
-
-### New Feature Doc (`docs/rate-limiting.md` example)
-
-```markdown
-# Per-DID Rate Limiting
-
-See also: [docs index](./README.md), [runbook](./runbook.md)
-
-## Overview
-...
-
----
-
-## See Also
-
-- [Bridge Operator Runbook](./runbook.md)
-- [Documentation Index](./README.md)
-```
-
-### Index Doc (`docs/README.md`)
-
-Add new doc to appropriate section:
-
-```markdown
-## ATProto to SSB Bridge
-
-- [New Doc](./new-doc.md)
-- [Existing Doc](./existing-doc.md)
-```
-
-### Infra Doc (`infra/*/README.md`)
-
-Add "See Also" footer:
-
-```markdown
-## See Also
-
-- [Bridge Operator Runbook](../docs/runbook.md)
-```
-
----
-
-## Scratchpad Management
-
-Scratchpads are in `docs/scratchpad/`:
-
-| Status | Meaning |
-|--------|---------|
-| Historical | Completed work, implementation in source |
-| Pending | In progress or not fully implemented |
-| Reference | Draft content incorporated elsewhere |
-
-**Never delete scratchpads** — they're part of the project's decision history.
-
----
-
-## Quick Reference
+For command surfaces, prefer:
 
 ```bash
-# Audit specific doc
-/deciduous update-docs readme
-
-# Audit all docs
-/deciduous update-docs all
-
-# Check links manually
-ls docs/*.md
-
-# Verify CLI matches docs
-go run ./cmd/bridge-cli start --help
+GOFLAGS=-mod=mod go run ./cmd/bridge-cli --help
+GOFLAGS=-mod=mod go run ./cmd/bridge-cli start --help
+GOFLAGS=-mod=mod go run ./cmd/ssb-client --help
 ```
 
----
+## Links and References
 
-## Related Files
+- Use relative links that resolve from the current file.
+- Link to the concrete file that backs the claim when possible.
+- Avoid links to generated or machine-local paths.
+- Keep "See also" sections small and relevant.
 
-- [`.claude/commands/update-docs.md`](../.claude/commands/update-docs.md) — Full audit command
-- [`docs/README.md`](./README.md) — Documentation index
-- [`docs/runbook.md`](./runbook.md) — Operational procedures
-- [`CLAUDE.md`](../CLAUDE.md) — AI agent instructions
-- [`docs/agents.md`](./agents.md) — Setup profile reference
+Examples:
+
+```markdown
+[Bridge Operator Runbook](./runbook.md)
+[Local ATProto Stack](../infra/local-atproto/README.md)
+[`internal/bridge/reverse_sync.go`](../internal/bridge/reverse_sync.go)
+```
+
+## Historical Docs
+
+- Do not delete scratchpads or dated investigations.
+- Do not silently rewrite dated reports to match the current codebase.
+- If a dated report needs context, add a short note that it is historical and point readers to the current doc.
+
+## Verification
+
+Before finishing a docs change:
+
+1. Check command help for every CLI example you touched.
+2. Check that every relative link you added resolves.
+3. Re-read the changed prose for claims that are stronger than the code supports.
+
+Useful commands:
+
+```bash
+rg -n "]\\([^)]*\\)" README.md docs/*.md infra/*/README.md
+GOFLAGS=-mod=mod go run ./cmd/bridge-cli --help
+GOFLAGS=-mod=mod go run ./cmd/ssb-client --help
+```
+
+## Related Docs
+
+- [Documentation Index](./README.md)
+- [Bridge Operator Runbook](./runbook.md)
+- [Contributor Setup Profiles](./agents.md)

@@ -1,170 +1,116 @@
 # Docker E2E Test Infrastructure
 
-Integration testing environment for the ATProto-to-SSB bridge with Tildefriends social hub.
+This stack runs the bridge, a local ATProto environment, a reverse-sync bootstrap step, a standalone admin UI, and a Tildefriends verifier in Docker.
 
-## Overview
+## What the Stack Contains
 
-This stack provisions a complete end-to-end environment including:
-- ATProto stack (PLC, PDS, Relay)
-- Bridge with embedded Room2 server
-- Tildefriends SSB client for replication testing
+The compose file in [`infra/e2e-full/docker-compose.yml`](./docker-compose.yml) includes the shared ATProto services from `infra/shared/docker-compose.atproto.yml` and adds bridge-specific services on top.
 
-## Components
+### Shared ATProto services
 
-| Service | Image | Purpose |
-|---------|-------|---------|
-| `plc` | node:20-alpine | ATProto PLC directory server |
-| `plc-proxy` | caddy:alpine | PLC HTTP proxy with custom domain |
-| `relay_pg` | postgres:16-alpine | Relay database |
-| `relay` | blebbit/relay:latest | ATProto relay for firehose |
-| `relay-seed` | postgres:16-alpine | Seeds relay with PDS |
-| `init-keys` | ghcr.io/haileyok/cocoon:latest | Generates PDS signing keys |
-| `pds` | ghcr.io/haileyok/cocoon:latest | ATProto PDS instance |
-| `bridge` | local build | ATProto-to-SSB bridge with Room2 |
-| `seeder` | local build | Seeds test data into PDS |
-| `test-runner` | tildefriends | Tildefriends SSB client for replication verification |
+- `plc`
+- `plc-proxy`
+- `relay_pg`
+- `relay`
+- `init-keys`
+- `pds`
 
-## Usage
+### Bridge-specific services
 
-### Full E2E Test
+| Service | Purpose |
+| --- | --- |
+| `reverse-bootstrap` | Writes reverse-sync credentials and test env files into the shared bridge volume |
+| `bridge` | Main bridge runtime with room enabled and reverse sync enabled |
+| `seeder` | Publishes test ATProto records into the local PDS |
+| `test-runner` | Connects Tildefriends, verifies replication, and checks reverse-sync side effects |
+| `bridge-admin-ui` | Standalone admin UI bound to `0.0.0.0:8080` with HTTP basic auth |
 
-```bash
-# Run the complete E2E test
-./scripts/e2e_tildefriends.sh
+## Running the Stack
 
-# Or directly with docker compose
-docker compose -f infra/e2e-full/docker-compose.yml up --abort-on-container-exit
-```
-
-### Individual Services
+Fast path:
 
 ```bash
-# Start ATProto stack only
-docker compose -f infra/e2e-full/docker-compose.yml up -d plc plc-proxy relay pds
-
-# Start bridge only
-docker compose -f infra/e2e-full/docker-compose.yml up -d bridge
-
-# Run seeder
-docker compose -f infra/e2e-full/docker-compose.yml run --rm seeder
+./scripts/e2e_full_up.sh
 ```
 
-## Environment Variables
+Direct compose invocation:
 
-### Bridge Configuration
+```bash
+docker compose -f infra/e2e-full/docker-compose.yml up --build -d
+docker compose -f infra/e2e-full/docker-compose.yml wait test-runner
+```
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DB_PATH` | `/data/bridge.sqlite` | SQLite database path |
-| `REPO_PATH` | `/data/ssb-repo` | SSB repository path |
-| `BOT_SEED` | `e2e-full-seed` | Deterministic bot identity seed |
-| `ROOM_MUXRPC_ADDR` | `0.0.0.0:8989` | Room2 MUXRPC listen address |
-| `ROOM_HTTP_ADDR` | `0.0.0.0:8976` | Room2 HTTP listen address |
-| `ROOM_MODE` | `open` | Room mode (open/community) |
-| `BRIDGE_FIREHOSE_ENABLE` | `1` | Enable ATProto firehose |
-| `BRIDGE_RELAY_URL` | `ws://relay:2470/...` | ATProto relay URL |
+If `KEEP_E2E=1` is set, `scripts/e2e_full_up.sh` leaves the stack up for inspection on success.
 
-### Test Runner Configuration
+## Environment and Runtime Defaults
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `BRIDGE_HTTP_ADDR` | `bridge:8976` | Bridge HTTP address |
-| `BRIDGE_MUXRPC_ADDR` | `bridge:8989` | Bridge MUXRPC address |
-| `BRIDGE_DB_PATH` | `/bridge-data/bridge.sqlite` | Bridge DB path |
-| `BRIDGE_REPO_PATH` | `/bridge-data/ssb-repo` | Bridge repo path |
-| `TF_DB_PATH` | `/tf-data/db.sqlite` | Tildefriends DB path |
-| `MAX_WAIT_SECS` | `180` | Max wait time for replication |
-| `POLL_INTERVAL` | `5` | Poll interval in seconds |
+### Bridge
+
+| Variable | Default |
+| --- | --- |
+| `DB_PATH` | `/data/bridge.sqlite` |
+| `REPO_PATH` | `/data/ssb-repo` |
+| `BOT_SEED` | `e2e-full-seed` |
+| `ROOM_MUXRPC_ADDR` | `0.0.0.0:8989` |
+| `ROOM_HTTP_ADDR` | `0.0.0.0:8976` |
+| `ROOM_MODE` | `open` |
+| `BRIDGE_RELAY_URL` | `ws://pds:80/xrpc/com.atproto.sync.subscribeRepos` |
+| `BRIDGE_PLC_URL` | `http://plc:2582` |
+| `BRIDGE_ATPROTO_INSECURE` | `1` |
+| `BRIDGE_REVERSE_SYNC_ENABLE` | `1` |
+| `BRIDGE_REVERSE_CREDENTIALS_FILE` | `/data/reverse-credentials.json` |
+
+### Test runner
+
+| Variable | Default |
+| --- | --- |
+| `BRIDGE_HTTP_ADDR` | `bridge:8976` |
+| `BRIDGE_MUXRPC_ADDR` | `bridge:8989` |
+| `BRIDGE_DB_PATH` | `/bridge-data/bridge.sqlite` |
+| `BRIDGE_REPO_PATH` | `/bridge-data/ssb-repo` |
+| `TF_DB_PATH` | `/tf-data/db.sqlite` |
+| `MAX_WAIT_SECS` | `300` |
+| `POLL_INTERVAL` | `5` |
+
+## What the Test Runner Verifies
+
+The container script in [`infra/e2e-full/test_runner.sh`](./test_runner.sh) checks:
+
+1. room health
+2. seeded forward-bridge records appearing in SQLite and SSB
+3. Tildefriends joining through the room
+4. room tunnel verification and replication results
+5. reverse-sync follow, post, reply, and unfollow side effects
+
+## Useful Files
+
+| File | Purpose |
+| --- | --- |
+| [`docker-compose.yml`](./docker-compose.yml) | Full stack definition |
+| [`atproto_bootstrap.sh`](./atproto_bootstrap.sh) | Reverse bootstrap step used by the compose stack |
+| [`seeder_entrypoint.sh`](./seeder_entrypoint.sh) | Seeds ATProto records |
+| [`test_runner.sh`](./test_runner.sh) | Main verifier |
+| [`../shared/bridge_entrypoint.sh`](../shared/bridge_entrypoint.sh) | Starts the bridge runtime in the container |
 
 ## Debugging
 
-### Debug Scripts
-
-| Script | Purpose |
-|--------|---------|
-| `scripts/debug_ebt_state.sh` | Diagnose EBT state from inside container |
-| `scripts/debug_muxrpc_capture.sh` | Capture raw muxrpc traffic |
-
-### Usage
+Useful commands:
 
 ```bash
-# Debug EBT state
-docker exec -it <bridge-container> /scripts/debug_ebt_state.sh
-
-# Capture muxrpc traffic
-docker exec -it <bridge-container> /scripts/debug_muxrpc_capture.sh
-
-# Check test runner logs
+docker compose -f infra/e2e-full/docker-compose.yml logs bridge
+docker compose -f infra/e2e-full/docker-compose.yml logs bridge-admin-ui
 docker compose -f infra/e2e-full/docker-compose.yml logs test-runner
-
-# Inspect bridge database
-docker exec -it <bridge-container> sqlite3 /data/bridge.sqlite "SELECT * FROM messages LIMIT 5"
+docker exec -it <bridge-container> /scripts/debug_ebt_state.sh
+docker exec -it <bridge-container> /scripts/debug_muxrpc_capture.sh
 ```
 
-## Files
+The admin UI is exposed on `http://127.0.0.1:8080` with:
+- user: `admin`
+- password env in compose: `BRIDGE_UI_AUTH_PASS=e2e-password`
 
-| File | Purpose |
-|------|---------|
-| `docker-compose.yml` | Service definitions and networking |
-| `docker-compose.override.yml` | Local overrides (optional) |
-| `bridge_entrypoint.sh` | Bridge startup script |
-| `seeder_entrypoint.sh` | ATProto data seeder script |
-| `relay_startup.sh` | Relay bootstrap script |
-| `relay_seed.sh` | Relay database seeding |
-| `Caddyfile` | HTTP reverse proxy configuration |
-| `test_runner.sh` | Replication verification script |
+## See Also
 
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    Docker Network (10.42.0.0/24)                │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  ┌──────────┐   ┌──────────────┐   ┌─────────┐   ┌──────────┐ │
-│  │   plc    │──▶│  plc-proxy   │   │  relay  │──▶│relay_pg  │ │
-│  │          │   │ (plc.directory)  │         │   │          │ │
-│  └──────────┘   └──────────────┘   └────┬────┘   └──────────┘ │
-│                                          │                     │
-│                                          ▼                     │
-│  ┌──────────┐   ┌──────────────┐   ┌─────────┐               │
-│  │init-keys │──▶│     pds      │   │relay-   │               │
-│  │          │   │  (pds.test)  │   │  seed   │               │
-│  └──────────┘   └──────────────┘   └─────────┘               │
-│                                          │                     │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  ┌─────────────────────────────────────────────────────────────┐│
-│  │                        bridge                               ││
-│  │  ┌────────────┐  ┌────────────┐  ┌─────────────────────┐ ││
-│  │  │ ATProto    │  │  SSB Log   │  │      Room2          │ ││
-│  │  │ Firehose   │  │  (margo)   │  │  MUXRPC (:8989)    │ ││
-│  │  └────────────┘  └────────────┘  │  HTTP   (:8976)     │ ││
-│  │                                   └─────────────────────┘ ││
-│  └─────────────────────────────────────────────────────────────┘│
-│                                    │                           │
-├─────────────────────────────────────────────────────────────────┤
-│                                    │                           │
-│  ┌────────────────────────────────────────────────────────────┐ │
-│  │                    test-runner (Tildefriends)              │ │
-│  │  Connects to bridge Room2, replicates via EBT, verifies   │ │
-│  │  messages_from_bot count                                   │ │
-│  └────────────────────────────────────────────────────────────┘ │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-## Success Criteria
-
-The test runner verifies:
-1. Tildefriends successfully connects to bridge Room2
-2. EBT replication negotiation completes
-3. Bridged messages are replicated to Tildefriends
-4. `messages_from_bot > 0` in test results
-
-## Related Documentation
-
-- [Bridge Operator Runbook](../../docs/runbook.md) — Operational procedures
-- [EBT Replication Debugging](../../docs/ebt-replication.md)
-- [Tildefriends Source](../../reference/tildefriends/)
-- [E2E Test Script](../../scripts/e2e_tildefriends.sh)
+- [Bridge Operator Runbook](../../docs/runbook.md)
+- [SSB to ATProto Reverse Sync](../../docs/reverse-sync.md)
+- [EBT Replication Notes](../../docs/ebt-replication.md)
+- [Local ATProto Stack](../local-atproto/README.md)

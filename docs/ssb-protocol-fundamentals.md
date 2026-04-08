@@ -366,6 +366,6 @@ func decodeSignature(sigStr string) ([]byte, bool) {
 
 - **[SSB Replication](ssb-replication.md)** - EBT and createHistoryStream protocols
 - **[SSB Rooms](ssb-rooms.md)** - Room2 server protocol and tunnel connections
-- **[EBT Replication Debugging](../ebt-replication.md)** - Bridge-specific EBT implementation notes
+- **[EBT Replication Notes](./ebt-replication.md)** - Bridge-specific EBT and room debugging notes
 - [SSB Specification](https://spec.scuttlebutt.nz/)
 - [Scuttlebutt Protocol Guide](https://ssbc.github.io/scuttlebutt-protocol-guide/)

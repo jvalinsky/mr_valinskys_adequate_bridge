@@ -10,7 +10,7 @@
 | Profile | Use for | Recommended entrypoint |
 |---------|---------|------------------------|
 | Local Docker testing | Integration work, bug repro, and non-production validation | `scripts/local_bridge_e2e.sh` or manual local stack + `bridge-cli` |
-| Full Docker interoperability | Tildefriends + Room2/EBT compatibility checks | `scripts/e2e_tildefriends.sh` |
+| Full Docker interoperability | Tildefriends + Room2/EBT compatibility checks, plus full-stack Docker coverage | `scripts/e2e_tildefriends.sh`, `scripts/e2e_full_up.sh` |
 | NixOS service deployment | Staging/production operations with systemd and reverse proxy | `nix/modules/mr-valinskys-adequate-bridge.nix` |
 
 ## Local Docker Setup (Testing)
@@ -44,13 +44,25 @@ Notes:
 ```bash
 ./scripts/local_atproto_up.sh
 ./scripts/local_atproto_bootstrap.sh /tmp/mvab-local-atproto-live.env
+set -a
 source /tmp/mvab-local-atproto-live.env
+set +a
 ```
 
-2. Start bridge runtime against local ATProto services.
+2. Register at least one source DID with the bridge.
 
 ```bash
 export BRIDGE_BOT_SEED="dev-local-seed"
+
+GOFLAGS=-mod=mod go run ./cmd/bridge-cli \
+  --db bridge-local.sqlite \
+  --bot-seed "${BRIDGE_BOT_SEED}" \
+  account add "${LIVE_ATPROTO_SOURCE_IDENTIFIER}"
+```
+
+3. Start bridge runtime against local ATProto services.
+
+```bash
 GOFLAGS=-mod=mod go run ./cmd/bridge-cli \
   --db bridge-local.sqlite \
   --relay-url "${LIVE_RELAY_URL}" \
@@ -59,12 +71,15 @@ GOFLAGS=-mod=mod go run ./cmd/bridge-cli \
   --repo-path .ssb-bridge-local \
   --xrpc-host "${LIVE_ATPROTO_HOST}" \
   --plc-url "${LIVE_ATPROTO_PLC_URL}" \
+  --atproto-insecure \
   --room-enable \
   --room-listen-addr 127.0.0.1:8989 \
-  --room-http-listen-addr 127.0.0.1:8976
+  --room-http-listen-addr 127.0.0.1:8976 \
+  --mcp-listen-addr "" \
+  --metrics-listen-addr ""
 ```
 
-3. Optional: run the admin UI process locally.
+4. Optional: run the admin UI process locally.
 
 ```bash
 export BRIDGE_UI_PASSWORD="dev-ui-password"
@@ -74,10 +89,11 @@ GOFLAGS=-mod=mod go run ./cmd/bridge-cli \
   --listen-addr 127.0.0.1:8080 \
   --ui-auth-user admin \
   --ui-auth-pass-env BRIDGE_UI_PASSWORD \
-  --repo-path .ssb-bridge-local
+  --repo-path .ssb-bridge-local \
+  --room-http-base-url http://127.0.0.1:8976
 ```
 
-4. Tear down local dependencies.
+5. Tear down local dependencies.
 
 ```bash
 ./scripts/local_atproto_down.sh
@@ -120,9 +136,11 @@ export BRIDGE_UI_PASSWORD="<strong-password>"
 2. Start the bridge runtime (firehose + Room2 + embedded sbot).
 
 ```bash
-bridge-cli start \
+bridge-cli \
   --db bridge.sqlite \
   --relay-url wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos \
+  --bot-seed "$BRIDGE_BOT_SEED" \
+  start \
   --repo-path .ssb-bridge \
   --ssb-listen-addr :8008 \
   --room-enable \
@@ -130,7 +148,8 @@ bridge-cli start \
   --room-http-listen-addr 0.0.0.0:8976 \
   --room-mode community \
   --room-https-domain room.example.com \
-  --publish-workers 4
+  --publish-workers 4 \
+  --mcp-listen-addr 127.0.0.1:8081
 ```
 
 Or use the wrapper:
@@ -146,12 +165,14 @@ scripts/setup_live_bridge.sh start \
 3. Start the admin UI with auth (separate process or alongside).
 
 ```bash
-bridge-cli serve-ui \
+bridge-cli \
   --db bridge.sqlite \
+  serve-ui \
   --listen-addr 0.0.0.0:8080 \
   --ui-auth-user admin \
   --ui-auth-pass-env BRIDGE_UI_PASSWORD \
-  --repo-path .ssb-bridge
+  --repo-path .ssb-bridge \
+  --room-http-base-url http://127.0.0.1:8976
 ```
 
 `--repo-path` on `serve-ui` is required for blob browsing and message detail blob previews.
@@ -198,23 +219,76 @@ Production hardening defaults:
 - Set `room.httpsDomain` whenever room listens on non-loopback.
 - Require UI auth for any non-loopback UI bind.
 - Terminate TLS in Caddy/nginx for public room and admin domains.
+- Keep the live MCP SSE listener on loopback or disable it with `--mcp-listen-addr ""`.
 
 Key runtime flags:
 - `--firehose-enable` (default: true) - set `=false` to run room-only without firehose ingestion
 - `--ssb-listen-addr` (default: `:8008`) - the embedded sbot MUXRPC listener for peer EBT replication
 - `--xrpc-host` - override the ATProto read host for dependency/blob fetches (defaults to AppView)
+- `--mcp-listen-addr` (default: `127.0.0.1:8081`) - live MCP SSE listener; set empty to disable
+- `--metrics-listen-addr` - optional dedicated Prometheus listener
+- `--bridged-room-peer-sync-interval` (default: `30s`) - room peer reconciliation interval for bridged accounts
+- `--reverse-sync-enable` - enable SSB-to-ATProto reverse sync
+- `--reverse-credentials-file` - JSON file mapping AT DIDs to reverse-sync credentials
+- `--reverse-sync-scan-interval` (default: `5s`) - reverse receive-log scan interval
+- `--reverse-sync-batch-size` (default: `100`) - max receive-log entries inspected per reverse batch
 - `--otel-logs-endpoint` - optional OTLP logs endpoint for OpenTelemetry log export
 - `--otel-logs-protocol` (`grpc|http`, default `grpc`) - OTLP transport protocol
 - `--otel-logs-insecure` - disable OTLP transport security when needed for local collectors
 - `--otel-service-name` - override `service.name` resource attribute
 - `--local-log-output` (`text|none`, default `text`) - keep or suppress local stdout logs while OTLP export runs
+- `--log-level` (`debug|info|warn|error`, default `info`) - minimum local log level
 - `--max-msgs-per-did-per-min` (default: 300) - per-DID message rate limit; set to 0 to disable. See [Rate Limiting](./rate-limiting.md) for details.
+
+## Reverse Sync (Optional)
+
+Reverse sync is disabled unless `--reverse-sync-enable` is set. Use it when you want an allowlisted SSB feed to publish posts, replies, or follow changes into ATProto.
+
+1. Create a credentials file keyed by AT DID.
+
+```json
+{
+  "did:plc:example123": {
+    "identifier": "user@example.com",
+    "pds_host": "https://bsky.social",
+    "password_env": "BRIDGE_REVERSE_SOURCE_PASSWORD"
+  }
+}
+```
+
+2. Export the referenced password env vars on the bridge host.
+
+```bash
+export BRIDGE_REVERSE_SOURCE_PASSWORD="<app-password>"
+```
+
+3. Start the bridge with reverse-sync flags.
+
+```bash
+bridge-cli \
+  --db bridge.sqlite \
+  --relay-url wss://bsky.network/xrpc/com.atproto.sync.subscribeRepos \
+  --bot-seed "$BRIDGE_BOT_SEED" \
+  start \
+  --repo-path .ssb-bridge \
+  --reverse-sync-enable \
+  --reverse-credentials-file /run/secrets/reverse-credentials.json
+```
+
+4. Add reverse mappings in the admin UI under `/reverse`.
+
+Notes:
+- `pds_host` may be omitted if PLC lookup is available.
+- The standalone UI can expose reverse-sync status and retry controls when started with `--reverse-sync-enable` and `--reverse-credentials-file`.
+- Reply and unfollow handling depend on existing correlation data in SQLite. See [SSB to ATProto Reverse Sync](./reverse-sync.md) for details.
 
 ## Health Monitoring
 
 ### Endpoints
 - **Room `/healthz`** (port 8976) — HTTP liveness check. Returns `200 ok` if the room HTTP server is accepting connections. Used by Docker health checks.
 - **Admin `/healthz`** (port 8080) — Bridge runtime health. Returns `200 ok` when `bridge_runtime_status=live` and last heartbeat is within 60 seconds. Returns `503` otherwise. Use for reverse proxy or uptime monitoring.
+- **Admin `/metrics`** (port 8080 when `serve-ui` is running) — Prometheus metrics for the UI process and bridge status endpoints.
+- **Dedicated metrics listener** (`--metrics-listen-addr`) — Optional Prometheus listener for the bridge runtime process.
 
 ### Log events to watch
 - `event=firehose_enabled` / `event=firehose_disabled` — firehose mode
@@ -222,6 +296,9 @@ Key runtime flags:
 - `event=room_dial_success` — bridge sbot connected to room
 - `event=publish_failed` / `event=retry_failed` — message publish issues
 - `event=cursor_resume seq=N` — firehose cursor resumed on restart
+- `event=mcp_server_start` — live MCP listener bound
+- `event=metrics_server_start` — dedicated metrics listener bound
+- `event=reverse_sync_batch` / `event=reverse_sync_batch_failed` — reverse-sync scan activity
 
 ## Restart and Resume
 - `start` resumes firehose consumption from `bridge_state.firehose_seq`.
@@ -229,7 +306,7 @@ Key runtime flags:
 - Verify resumed cursor after restart:
 
 ```bash
-bridge-cli stats --db bridge.sqlite
+bridge-cli --db bridge.sqlite stats
 ```
 
 ## Backfill
@@ -239,8 +316,9 @@ Replay historical records for one or more DIDs from their ATProto PDS via `sync.
 ### Backfill specific DIDs
 
 ```bash
-bridge-cli backfill \
+bridge-cli \
   --db bridge.sqlite \
+  backfill \
   --repo-path .ssb-bridge \
   --did did:plc:example1 \
   --did did:plc:example2
@@ -249,8 +327,9 @@ bridge-cli backfill \
 ### Backfill all active accounts
 
 ```bash
-bridge-cli backfill \
+bridge-cli \
   --db bridge.sqlite \
+  backfill \
   --repo-path .ssb-bridge \
   --active-accounts
 ```
@@ -258,8 +337,9 @@ bridge-cli backfill \
 ### Backfill with a time filter
 
 ```bash
-bridge-cli backfill \
+bridge-cli \
   --db bridge.sqlite \
+  backfill \
   --repo-path .ssb-bridge \
   --active-accounts \
   --since "2025-01-01T00:00:00Z"
@@ -268,7 +348,7 @@ bridge-cli backfill \
 Key flags:
 - `--did` — repeatable, target specific DIDs
 - `--active-accounts` — backfill all active accounts from the local DB
-- `--since` — timestamp filter for partial backfill
+- `--since` — parsed and recorded, but currently advisory under the queued atindex backfill path
 - `--xrpc-host` — override PDS host (useful for local/test stacks)
 - `--publish-workers` — parallel publish workers (default 1 for deterministic ordering)
 
@@ -276,14 +356,15 @@ Key flags:
 1. Inspect failure totals.
 
 ```bash
-bridge-cli stats --db bridge.sqlite
+bridge-cli --db bridge.sqlite stats
 ```
 
 2. Drain failed unpublished records.
 
 ```bash
-bridge-cli retry-failures \
+bridge-cli \
   --db bridge.sqlite \
+  retry-failures \
   --repo-path .ssb-bridge \
   --publish-workers 4 \
   --limit 200
@@ -292,16 +373,16 @@ bridge-cli retry-failures \
 3. Target a single DID if needed.
 
 ```bash
-bridge-cli retry-failures --db bridge.sqlite --did did:plc:example --limit 200
+bridge-cli --db bridge.sqlite retry-failures --did did:plc:example --limit 200
 ```
 
 ## Incident Triage
 1. Confirm process health and cursor progression.
-   - `bridge-cli stats --db bridge.sqlite`
+   - `bridge-cli --db bridge.sqlite stats`
    - UI `/state` page (`firehose_seq`).
 2. Check failure queue.
    - UI `/failures` page.
-   - `bridge-cli retry-failures --limit 50` for controlled retry sampling.
+   - `bridge-cli --db bridge.sqlite retry-failures --limit 50` for controlled retry sampling.
 3. Inspect room and bridge logs.
    - Look for `event=publish_failed`, `event=retry_failed`, `event=room_*`.
 4. If publish failures persist after max attempts:
@@ -334,7 +415,7 @@ sudo systemctl start mr-valinskys-adequate-bridge
 4. Re-backfill all active accounts to republish records cleanly.
 
 ```bash
-bridge-cli backfill --db bridge.sqlite --repo-path .ssb-bridge --active-accounts
+bridge-cli --db bridge.sqlite backfill --repo-path .ssb-bridge --active-accounts
 ```
 
 **When to wipe:**
@@ -534,4 +615,5 @@ The testnet profile is additive operator tooling only. It does not change the cu
 
 - [Documentation Index](./README.md)
 - [Per-DID Rate Limiting](./rate-limiting.md)
-- [Agent Setup Profiles](./agents.md)
+- [Contributor Setup Profiles](./agents.md)
+- [SSB to ATProto Reverse Sync](./reverse-sync.md)

@@ -1,79 +1,78 @@
 # Mr Valinsky's Adequate Bridge
 
-An ATProto-to-SSB bridge with an embedded Room2 server.
+Mr Valinsky's Adequate Bridge bridges selected ATProto records into SSB. It can also mirror an allowlisted subset of SSB activity back into ATProto. The repository includes an embedded Room2 server, an admin UI, MCP surfaces, Prometheus hooks, and a standalone `ssb-client` binary used for local SSB work and reverse-sync coverage.
 
-## Introduction
+## Forward Bridge Coverage
 
-This software connects two different decentralized social networks: **ATProto** (used by Bluesky) and **Secure Scuttlebutt (SSB)**. 
+| ATProto collection | SSB output | Notes |
+| --- | --- | --- |
+| `app.bsky.feed.post` | `post` | Handles replies, rich-text mentions, tags, quoted-post embeds, and bridged blobs |
+| `app.bsky.feed.like` | `vote` | Resolves the subject record to a published SSB message ref |
+| `app.bsky.graph.follow` | `contact` | Publishes `following=true` |
+| `app.bsky.graph.block` | `contact` | Publishes `blocking=true` |
+| `app.bsky.actor.profile` | `about` | Maps display name and description; avatar/blob data is mirrored separately |
+| `app.bsky.graph.list` | `list` | Preserves list metadata |
+| `app.bsky.graph.listitem` | `listitem` | Resolves both the target DID and the parent list record |
+| `app.bsky.feed.threadgate` | `threadgate` | Resolves the subject AT URI against the local message table |
 
-Because these networks use entirely different formats for accounts, posts, and media, they cannot naturally communicate. This bridge solves that problem by reading public data from ATProto (like posts and profiles) and automatically translating it into SSB-compatible formats. It then publishes that translated data so that SSB users can see and interact with it.
+Notes:
+- Standalone `app.bsky.feed.repost` events are not in the bridge processor's supported collection set.
+- Quote posts are handled inside `app.bsky.feed.post` embed records, not as standalone repost records.
 
-If you are new to the project, this document provides a high-level overview. For deep technical details on how the translation works, see the [Documentation Index](docs/README.md).
+## Optional Reverse Sync
 
-## What It Does
+Reverse sync is off by default. When enabled, the bridge scans the SSB receive log and can publish:
 
-- Ingests ATProto repository events from the Bluesky firehose (`subscribeRepos`).
-- Maps supported record types to SSB message formats and publishes to SSB feeds.
-- Deterministically derives SSB bot identities from ATProto DIDs using a master seed.
-- Runs an integrated SSB Room2 server for peer discovery and message distribution.
-- Mirrors ATProto blobs (images, media) into the SSB blob store.
-- Provides an admin web UI for monitoring, triage, and operations.
+| SSB message shape | ATProto result | Conditions |
+| --- | --- | --- |
+| `post` | `app.bsky.feed.post` | Source feed must be allowlisted for reverse sync |
+| `post` with `root`/`branch` | `app.bsky.feed.post` reply | Referenced SSB message refs must already map to AT URIs/CIDs |
+| `contact` with `following=true` | `app.bsky.graph.follow` | Target feed must resolve to an AT DID |
+| `contact` with `following=false` and `blocking=false` | Delete previously published follow | Requires an earlier reverse-synced follow record |
 
-## Supported Record Types
+Notes:
+- `contact` messages with `blocking=true` are skipped.
+- Reverse sync requires a feed-to-DID allowlist and per-DID credentials. See [docs/reverse-sync.md](docs/reverse-sync.md).
 
-| ATProto Collection | SSB Type | Description |
-|----|----|----|
-| `app.bsky.feed.post` | `post` | Text posts with mentions and links |
-| `app.bsky.feed.like` | `like` | Likes referencing a subject record |
-| `app.bsky.feed.repost` | `repost` | Reposts referencing a subject record |
-| `app.bsky.graph.follow` | `contact` | Follow relationships |
-| `app.bsky.graph.block` | `block_v2` | Block relationships |
-| `app.bsky.actor.profile` | `about` | Profile name, description, avatar |
+## Main Binaries
+
+| Binary | Role |
+| --- | --- |
+| `bridge-cli` | Main operator entrypoint: accounts, runtime, backfill, retries, admin UI, MCP |
+| `ssb-client` | Standalone SSB node with web UI and JSON API |
+| `atproto-seed` | Test helper that seeds ATProto records for Docker E2E runs |
+| `bridge-demo-init` | Generates a demo SQLite DB and repo for UI work |
+| `room-tunnel-feed-verify` | Tunnel verifier used by room/interop tests |
+
+Other `cmd/` directories are test or utility entrypoints.
 
 ## Quick Start
 
-```bash
-# Build
-GOFLAGS=-mod=mod go build -o bridge-cli ./cmd/bridge-cli
-
-# Add bridged accounts
-./bridge-cli --db bridge.sqlite --bot-seed <seed> account add did:plc:example123
-
-# Start the bridge (firehose + Room2 + admin UI)
-./bridge-cli --db bridge.sqlite --bot-seed <seed> --relay-url wss://bsky.network \
-    start --repo-path .ssb-bridge --firehose-enable --room-enable \
-    --room-listen-addr 127.0.0.1:9898 --room-http-listen-addr 127.0.0.1:9876
-```
-
-See [`docs/runbook.md`](docs/runbook.md) for full operational procedures.
-
-## Setup Modes
-
-Use one of these setup profiles depending on whether you are validating locally or operating a host.
-
-| Mode | Use for | Entry points |
-|------|---------|--------------|
-| Local Docker dependencies + local bridge process | Day-to-day development and integration testing without touching public ATProto services | `scripts/local_atproto_up.sh`, `scripts/local_atproto_bootstrap.sh`, `scripts/local_atproto_down.sh` |
-| Full Docker E2E (bridge + tildefriends) | Full containerized compatibility verification including Room2 replication | `scripts/e2e_tildefriends.sh`, `infra/e2e-full/docker-compose.yml` |
-| NixOS module deployment | Persistent staging/production service management via systemd | `nix/modules/mr-valinskys-adequate-bridge.nix`, `nix/examples/bridge-host.nix` |
-
-### Local Testing Setup (Docker)
-
-Fast path:
+Fast path for local validation:
 
 ```bash
 ./scripts/local_bridge_e2e.sh
 ```
 
-Manual loop:
+Manual local loop:
 
 ```bash
+GOFLAGS=-mod=mod go build -o ./bridge-cli ./cmd/bridge-cli
+
 ./scripts/local_atproto_up.sh
-./scripts/local_atproto_bootstrap.sh /tmp/mvab-local-atproto-live.env
-source /tmp/mvab-local-atproto-live.env
+./scripts/local_atproto_bootstrap.sh /tmp/mvab-local-atproto.env
+set -a
+source /tmp/mvab-local-atproto.env
+set +a
 
 export BRIDGE_BOT_SEED="dev-local-seed"
-GOFLAGS=-mod=mod go run ./cmd/bridge-cli \
+
+./bridge-cli \
+  --db bridge-local.sqlite \
+  --bot-seed "${BRIDGE_BOT_SEED}" \
+  account add "${LIVE_ATPROTO_SOURCE_IDENTIFIER}"
+
+./bridge-cli \
   --db bridge-local.sqlite \
   --relay-url "${LIVE_RELAY_URL}" \
   --bot-seed "${BRIDGE_BOT_SEED}" \
@@ -81,196 +80,217 @@ GOFLAGS=-mod=mod go run ./cmd/bridge-cli \
   --repo-path .ssb-bridge-local \
   --xrpc-host "${LIVE_ATPROTO_HOST}" \
   --plc-url "${LIVE_ATPROTO_PLC_URL}" \
+  --atproto-insecure \
   --room-enable \
   --room-listen-addr 127.0.0.1:8989 \
-  --room-http-listen-addr 127.0.0.1:8976
+  --room-http-listen-addr 127.0.0.1:8976 \
+  --mcp-listen-addr "" \
+  --metrics-listen-addr ""
 ```
 
-Teardown:
+Optional standalone admin UI:
+
+```bash
+export BRIDGE_UI_PASSWORD="dev-ui-password"
+
+./bridge-cli \
+  --db bridge-local.sqlite \
+  serve-ui \
+  --listen-addr 127.0.0.1:8080 \
+  --ui-auth-user admin \
+  --ui-auth-pass-env BRIDGE_UI_PASSWORD \
+  --repo-path .ssb-bridge-local \
+  --room-http-base-url http://127.0.0.1:8976
+```
+
+Tear down the local ATProto stack with:
 
 ```bash
 ./scripts/local_atproto_down.sh
 ```
 
-### NixOS Setup (Production/Staging)
+See [docs/runbook.md](docs/runbook.md) for longer operator procedures and [infra/local-atproto/README.md](infra/local-atproto/README.md) for the local stack details.
 
-Use the NixOS module for managed services and keep external exposure behind TLS/reverse proxy.
+## Runtime Modes
 
-```nix
-services.mr-valinskys-adequate-bridge = {
-  enable = true;
-  environmentFile = "/run/secrets/bridge.env"; # BRIDGE_BOT_SEED + BRIDGE_UI_PASSWORD
-  room = {
-    enable = true;
-    listenAddr = "127.0.0.1:8989";
-    httpListenAddr = "127.0.0.1:8976";
-    mode = "community";
-    httpsDomain = "room.example.com";
-  };
-  ui = {
-    enable = true;
-    listenAddr = "127.0.0.1:8080";
-    authUser = "admin";
-    authPasswordEnvVar = "BRIDGE_UI_PASSWORD";
-    extraArgs = [ "--repo-path" "/var/lib/mr-valinskys-adequate-bridge/.ssb-bridge" ];
-  };
-};
-```
+| Mode | Use for | Entry points |
+| --- | --- | --- |
+| Local ATProto stack + local bridge process | Day-to-day development, bug repro, reverse-sync work, local integration | `scripts/local_atproto_up.sh`, `scripts/local_atproto_bootstrap.sh`, `scripts/local_atproto_down.sh` |
+| Full Docker E2E | Tildefriends/Room2 interoperability and full-stack coverage | `scripts/e2e_tildefriends.sh`, `scripts/e2e_full_up.sh`, `infra/e2e-full/docker-compose.yml` |
+| NixOS module deployment | Staging/production service management | `nix/modules/mr-valinskys-adequate-bridge.nix`, `nix/examples/bridge-host.nix` |
 
-The `ui.extraArgs` `--repo-path` is required for blob browsing in `/blobs/view` routes.
+## CLI Surface
 
-## CLI Commands
+### `bridge-cli`
 
 | Command | Description |
-|---------|-------------|
-| `account list` | List all bridged AT DIDs with activation status |
-| `account add <did>` | Register a new DID for bridging |
-| `account remove <did>` | Deactivate a bridged account |
-| `stats` | Show bridge statistics (message counts, failures, account summaries) |
-| `start` | Start firehose consumer + SSB publisher + Room2 server + admin UI |
-| `backfill` | Replay historical records for DIDs via `sync.getRepo` |
-| `retry-failures` | Retry failed unpublished bridge messages |
-| `serve-ui` | Run only the admin web UI (read-only dashboard mode) |
+| --- | --- |
+| `account list` | List bridged AT DIDs and activation state |
+| `account add <did>` | Register a DID for forward bridging |
+| `account remove <did>` | Deactivate a bridged DID |
+| `stats` | Show bridge, replay, and blob counters |
+| `start` | Start the forward bridge, embedded sbot, Room2 runtime, and optional reverse sync |
+| `backfill` | Queue `sync.getRepo` backfills through the ATProto indexer |
+| `retry-failures` | Retry failed unpublished forward-bridge messages |
+| `serve-ui` | Run the admin UI as a separate process |
+| `mcp bridge-ops` | MCP server for bridge status, accounts, messages, failures, and retries |
+| `mcp ssb` | MCP server for local SSB feeds, peers, blobs, and room state |
+| `mcp atproto` | MCP server for ATProto identity, profiles, records, and repo tracking |
 
-Global flags: `--db` (SQLite path), `--relay-url` (firehose endpoint), `--bot-seed` (DID→SSB derivation seed), `--otel-logs-endpoint`, `--otel-logs-protocol` (`grpc|http`), `--otel-logs-insecure`, `--otel-service-name`, `--local-log-output` (`text|none`). Run `bridge-cli --help` for full flag reference.
+Notable `start` flags:
+- `--room-enable` defaults to `true`.
+- `--firehose-enable` defaults to `true`.
+- `--mcp-listen-addr` defaults to `127.0.0.1:8081`; set it to an empty string to disable the live SSE server.
+- `--metrics-listen-addr` enables a dedicated Prometheus listener when set.
+- `--max-msgs-per-did-per-min` defaults to `300`; set `0` to disable rate limiting.
+- `--reverse-sync-enable`, `--reverse-credentials-file`, `--reverse-sync-scan-interval`, and `--reverse-sync-batch-size` control SSB-to-ATProto reverse sync.
 
-**Notable `start` flags:**
-- `--max-msgs-per-did-per-min` (default: 300) - Per-DID rate limit; set to 0 to disable. See [Rate Limiting](./docs/rate-limiting.md).
-- `--publish-workers` - Parallel publish workers (default 1)
+Global flags include `--db`, `--relay-url`, `--bot-seed`, `--otel-logs-*`, `--local-log-output`, and `--log-level`.
+
+### `ssb-client`
+
+`ssb-client` runs a local SSB node with:
+- a web UI and JSON API (`serve`)
+- offline identity management (`identity`)
+- peer and room helpers (`peers`, `room`)
+- feed, message, and replication inspection commands
+
+Run `GOFLAGS=-mod=mod go run ./cmd/ssb-client --help` for the full surface.
 
 ## Architecture
 
 ```
-ATProto Firehose (subscribeRepos)
-        │
-        ▼
-   ┌─────────┐     ┌────────┐     ┌────────────┐     ┌──────┐
-   │ firehose │────▶│ bridge │────▶│ ssbruntime │────▶│  db  │
-   └─────────┘     └────────┘     └────────────┘     └──────┘
-                       │                 │
-                       ▼                 │
-                  ┌────────┐             │
-                  │ mapper │             │
-                  └────────┘             │
-                       │                 ▼
-                       ▼            ┌──────┐
-                  ┌────────────┐    │ room │
-                  │ blobbridge │    └──────┘
-                  └────────────┘
+ATProto subscribeRepos + sync.getRepo
+              │
+              ▼
+           atindex
+              │
+              ▼
+     atproto_event_log / repo state
+              │
+              ▼
+       bridge processor ───────▶ blobbridge
+              │
+              ▼
+         publishqueue
+              │
+              ▼
+          ssbruntime ───────────▶ embedded Room2
+              │
+              ▼
+      SSB publish log / receive log
+              │
+              ▼
+   reverse processor (optional)
+              │
+              ▼
+          ATProto PDS writes
 ```
 
-The **firehose** package streams ATProto commits. The **bridge** processor coordinates record processing: it invokes the **mapper** to translate records into SSB payloads, the **blobbridge** to mirror media, and the **ssbruntime** to publish to SSB feeds. The **room** package runs an embedded Room2 server for SSB peer connectivity. All state is persisted to SQLite via the **db** package.
+Most persistent bridge state lives in SQLite:
+- forward bridge state in `bridged_accounts`, `messages`, `blobs`, and `bridge_state`
+- reverse-sync state in `reverse_identity_mappings` and `reverse_events`
+- ATProto indexing state in `atproto_*` tables
 
-### Internal Packages
+## Package Map
 
-| Package | Description |
-|---------|-------------|
-| `bridge` | Coordinates firehose ingestion, mapping, publishing, and persistence |
-| `db` | SQLite-backed persistence for bridge state and mappings |
-| `ssbruntime` | Manages local SSB storage and publishing dependencies |
-| `firehose` | Streams ATProto repository commits from subscribeRepos |
-| `mapper` | Converts supported ATProto records into SSB-compatible payloads |
-| `bots` | Manages deterministic SSB identities derived from ATProto DIDs |
-| `blobbridge` | Mirrors ATProto blobs into the local SSB blob store |
-| `backfill` | Replays supported records from ATProto repositories via sync.getRepo |
-| `publishqueue` | Per-DID publish ordering with bounded worker parallelism |
-| `room` | Embeds and supervises the go-ssb-room runtime |
-| `web/handlers` | HTTP routes for the bridge admin UI |
-| `web/templates` | HTML views for the bridge admin UI |
-| `web/security` | HTTP middleware for admin UI exposure hardening |
-| `presentation` | Formats bridge data for human-readable CLI and UI output |
-| `livee2e` | End-to-end tests against a live ATProto relay and Room2 instance |
-| `smoke` | Deterministic integration tests for the bridge pipeline |
+| Package | Role |
+| --- | --- |
+| `internal/atindex` | Tracks repo state, event-log replay, and queued backfills |
+| `internal/blobbridge` | Mirrors ATProto blobs into the SSB blob store |
+| `internal/bots` | Deterministic DID-to-feed derivation |
+| `internal/bridge` | Forward processor, deferred resolution, reverse sync, follower tracking |
+| `internal/db` | SQLite schema and persistence |
+| `internal/firehose` | `subscribeRepos` client |
+| `internal/logutil` | Structured logging setup |
+| `internal/mapper` | ATProto-to-SSB record mapping and placeholder replacement |
+| `internal/metrics` | Prometheus collectors and registration |
+| `internal/presentation` | CLI and UI-friendly formatting helpers |
+| `internal/publishqueue` | Ordered publishing with bounded worker parallelism |
+| `internal/room` | Embedded Room2 runtime |
+| `internal/ssbruntime` | Local sbot, blob store, feed resolver, and receive log |
+| `internal/web` | Admin UI handlers, templates, and security middleware |
 
 ## Development
 
-Requires Go 1.26.1+.
-Set `GOFLAGS=-mod=mod` for local Go tooling to avoid accidental local `vendor/` shadowing of nested modules.
+Requirements:
+- Go `1.26.1`
+- Docker for local ATProto stacks and containerized E2E runs
+
+Recommended Go setting:
 
 ```bash
-# Run all tests
-GOFLAGS=-mod=mod go test ./...
-
-# Deterministic smoke test
-./scripts/smoke_bridge.sh
-
-# Local E2E (requires Docker for ATProto stack)
-./scripts/local_atproto_up.sh
-./scripts/local_atproto_bootstrap.sh
-./scripts/local_bridge_e2e.sh
-./scripts/local_atproto_down.sh
-
-# Linux container test runner (non-privileged)
-docker compose -f infra/linux-test/docker-compose.yml run --rm go-test
-
-# Linux eBPF smoke test (privileged; Linux hosts/runners)
-docker compose -f infra/linux-test/docker-compose.yml --profile ebpf run --rm ebpf-smoke
+export GOFLAGS=-mod=mod
 ```
+
+Common commands:
+
+```bash
+GOFLAGS=-mod=mod go test ./...
+./scripts/smoke_bridge.sh
+./scripts/local_bridge_e2e.sh
+./scripts/e2e_tildefriends.sh
+./scripts/e2e_full_up.sh
+```
+
+Live and testnet coverage:
+- `./scripts/live_bridge_e2e.sh`
+- `./scripts/testnet_bridge_e2e.sh`
+- `./scripts/atproto_harness_e2e.sh mini`
+- `./scripts/atproto_harness_e2e.sh testnet`
 
 ## Scripts
 
-### Smoke & E2E Test Runners
+### Test runners
 
 | Script | Description |
-|--------|-------------|
-| `smoke_bridge.sh` | Deterministic local smoke test suite |
-| `local_bridge_e2e.sh` | Full local E2E against dockerized ATProto stack |
-| `live_bridge_e2e.sh` | E2E against live Bluesky firehose (needs credentials) |
-| `testnet_bridge_e2e.sh` | E2E against testnet ATProto stack |
-| `atproto_harness_e2e.sh` | ATProto test harness integration |
-| `e2e_tildefriends.sh` | Docker E2E with tildefriends social hub |
+| --- | --- |
+| `scripts/smoke_bridge.sh` | Deterministic local smoke coverage |
+| `scripts/local_bridge_e2e.sh` | Local ATProto stack + bridge integration run |
+| `scripts/live_bridge_e2e.sh` | Live Bluesky firehose and room interop run |
+| `scripts/testnet_bridge_e2e.sh` | Testnet-backed bridge E2E |
+| `scripts/atproto_harness_e2e.sh` | Local or verdverm/testnet-backed ATProto harness run |
+| `scripts/e2e_tildefriends.sh` | Room/EBT-focused Docker E2E with Tildefriends |
+| `scripts/e2e_full_up.sh` | Full-stack Docker E2E with reverse bootstrap and admin UI |
 
-### Local ATProto Stack
-
-| Script | Description |
-|--------|-------------|
-| `local_atproto_up.sh` | Start local PLC + PDS Docker stack |
-| `local_atproto_down.sh` | Stop local ATProto Docker stack |
-| `local_atproto_bootstrap.sh` | Generate test credentials for local stack |
-| `local_atproto_wait.sh` | Wait for local ATProto services to become healthy |
-
-### Testnet ATProto Stack
+### Local and testnet ATProto stacks
 
 | Script | Description |
-|--------|-------------|
-| `testnet_atproto_up.sh` | Start testnet ATProto stack |
-| `testnet_atproto_down.sh` | Stop testnet ATProto stack |
-| `testnet_atproto_bootstrap.sh` | Generate testnet credentials |
-| `testnet_atproto_wait.sh` | Wait for testnet services to become healthy |
+| --- | --- |
+| `scripts/local_atproto_up.sh` | Start the local PLC, relay, and PDS stack |
+| `scripts/local_atproto_bootstrap.sh` | Create source/target test accounts and write a `LIVE_*` env file |
+| `scripts/local_atproto_wait.sh` | Wait for the local stack to become healthy |
+| `scripts/local_atproto_down.sh` | Stop the local stack |
+| `scripts/testnet_atproto_up.sh` | Start the verdverm/testnet-backed stack |
+| `scripts/testnet_atproto_bootstrap.sh` | Write testnet credentials and env state |
+| `scripts/testnet_atproto_wait.sh` | Wait for the testnet stack |
+| `scripts/testnet_atproto_down.sh` | Stop the testnet stack |
 
-### Verification & Setup
+### Verification, setup, and debugging
 
 | Script | Description |
-|--------|-------------|
-| `local_room_peer_verify.sh` | Verify Room2 peer connectivity and message replication |
-| `local_room_peer_verify_relaxed.sh` | Relaxed Room2 peer verification (HTTP-only) |
-| `setup_live_bridge.sh` | Configure a live bridge deployment environment |
+| --- | --- |
+| `scripts/local_room_peer_verify.sh` | Strict Room2 tunnel verification |
+| `scripts/local_room_peer_verify_relaxed.sh` | Reduced room verification when tunnel assertions are too strict for the target environment |
+| `scripts/setup_live_bridge.sh` | Wrapper for live setup, backfill, start, status, and UI commands |
+| `scripts/debug_ebt_state.sh` | Inspect EBT state in the Docker E2E stack |
+| `scripts/debug_muxrpc_capture.sh` | Capture muxrpc traffic in the Docker E2E stack |
 
 ## Infrastructure
 
-- **`infra/local-atproto/`** — Docker Compose stack for local development: PLC directory server + PDS instance.
-- **`infra/e2e-full/`** — Docker E2E test infrastructure for tildefriends integration testing with Room2 peer verification.
-- **`reference/tildefriends/`** — Tildefriends C source code for SSB protocol compatibility reference (used to verify bridge message format compatibility).
+- [infra/local-atproto/README.md](infra/local-atproto/README.md): local PLC, relay, and PDS stack used by day-to-day development.
+- [infra/e2e-full/README.md](infra/e2e-full/README.md): full Docker E2E stack with reverse bootstrap, bridge admin UI, and Tildefriends.
+- [`reference/tildefriends/`](reference/tildefriends/): checked-in compatibility reference used for SSB protocol work.
 
 ## Documentation
 
-- **[`docs/README.md`](docs/README.md)** — Docs index organized by topic area.
-- **[`docs/agents.md`](docs/agents.md)** — Agent/operator setup profile reference (local Docker vs NixOS production).
-- **[`docs/atproto-ssb-translation-overview.md`](docs/atproto-ssb-translation-overview.md)** — High-level map of DID, AT URI, and blob translation layers.
-- **[`docs/atproto-ssb-identity-mapping.md`](docs/atproto-ssb-identity-mapping.md)** — How DIDs become deterministic SSB feed identities.
-- **[`docs/atproto-ssb-record-translation.md`](docs/atproto-ssb-record-translation.md)** — How `_atproto_*` placeholders become SSB refs.
-- **[`docs/runbook.md`](docs/runbook.md)** — Operational runbook: startup, restart, retry, incident triage, pre-release E2E gates.
-
-### SSB Protocol
-
-The bridge implements Secure Scuttlebutt protocols. These documents cover the protocol stack with ASCII diagrams and code examples:
-
-- **[`docs/ssb-protocol-fundamentals.md`](docs/ssb-protocol-fundamentals.md)** — Identity, feeds, messages, and signing
-- **[`docs/ssb-replication.md`](docs/ssb-replication.md)** — Secret handshake, box stream, MUXRPC, and EBT
-- **[`docs/ssb-rooms.md`](docs/ssb-rooms.md)** — Room2 architecture and tunnel connections
-- **[`docs/ssb-implementations.md`](docs/ssb-implementations.md)** — Go code examples from the bridge
-- **[`docs/ebt-replication.md`](docs/ebt-replication.md)** — EBT debugging findings and Tildefriends compatibility
-
-### Development Notes
-
-- **[`docs/scratchpad/README.md`](docs/scratchpad/README.md)** — Index of development notes and debugging sessions
+- [docs/README.md](docs/README.md): index for project-owned docs.
+- [docs/runbook.md](docs/runbook.md): operator procedures, deployment notes, and incident triage.
+- [docs/reverse-sync.md](docs/reverse-sync.md): SSB-to-ATProto reverse-sync behavior and configuration.
+- [docs/atproto-ssb-translation-overview.md](docs/atproto-ssb-translation-overview.md): forward-bridge translation model.
+- [docs/atproto-ssb-identity-mapping.md](docs/atproto-ssb-identity-mapping.md): DID-to-feed derivation and account policy.
+- [docs/atproto-ssb-record-translation.md](docs/atproto-ssb-record-translation.md): placeholder resolution and deferred state.
+- [docs/rate-limiting.md](docs/rate-limiting.md): per-DID forward-bridge rate limiting.
+- [docs/ssb-implementations.md](docs/ssb-implementations.md): file map for the repo's SSB implementation.
+- [docs/ebt-replication.md](docs/ebt-replication.md): bridge-specific EBT and Room2 debugging notes.
+- [docs/scratchpad/README.md](docs/scratchpad/README.md): archived design notes and implementation logs.
