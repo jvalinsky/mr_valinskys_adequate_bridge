@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"log"
 	"net/url"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
@@ -8,6 +9,7 @@ import (
 )
 
 func mapAccountRows(accounts []db.BridgedAccountStats) []templates.AccountRow {
+	log.Printf("[DEBUG mapAccountRows] received %d accounts", len(accounts))
 	rows := make([]templates.AccountRow, 0, len(accounts))
 	for _, account := range accounts {
 		stateLabel := account.SyncState
@@ -41,7 +43,7 @@ func mapAccountRows(accounts []db.BridgedAccountStats) []templates.AccountRow {
 			SyncStateClass:    stateClass,
 			LastError:         account.LastError,
 			CreatedAt:         account.CreatedAt,
-			MessagesURL:       "/messages?did="+url.QueryEscape(account.ATDID),
+			MessagesURL:       "/messages?did=" + url.QueryEscape(account.ATDID),
 		})
 	}
 	return rows

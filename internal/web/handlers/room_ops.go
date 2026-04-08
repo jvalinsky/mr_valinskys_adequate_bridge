@@ -605,6 +605,12 @@ func resolveRoomSQLitePath(roomRepoPath string) string {
 	if strings.HasSuffix(trimmed, ".sqlite") {
 		return trimmed
 	}
+	// Try room/room.sqlite (common sbot structure)
+	p := filepath.Join(trimmed, "room", "room.sqlite")
+	if _, err := os.Stat(p); err == nil {
+		return p
+	}
+	// Fallback to root
 	return filepath.Join(trimmed, "room.sqlite")
 }
 

@@ -19,6 +19,7 @@ func (h *UIHandler) handlePost(w http.ResponseWriter, r *http.Request) {
 		h.writeInternalError(w, "handlePost", "Failed to get accounts", err)
 		return
 	}
+	h.logger.Printf("event=handle_post accounts=%d", len(accounts))
 
 	data := templates.PostData{
 		Chrome: templates.PageChrome{
