@@ -1,6 +1,6 @@
 # Track 042: Two-Way Bridge Reverse Sync (2026-04)
 
-DG Nodes: `#999`, `#1000-#1032`
+DG Nodes: `#999`, `#1000-#1035`
 
 ## Scope
 
@@ -11,7 +11,7 @@ DG Nodes: `#999`, `#1000-#1032`
 
 ## Decision Graph Map
 
-- Goal: `#999` (active)
+- Goal: `#999` (completed)
 - Observation: `#1000`
 - Decisions:
   - `#1001` authority model -> chose `#1002`
@@ -29,8 +29,8 @@ DG Nodes: `#999`, `#1000-#1032`
   - `#1020` reverse queue state and retry handling
   - `#1021` reverse mappings and queue admin UI
   - `#1022` same-CID forward replay suppression
-  - `#1023` Tildefriends reverse E2E coverage (pending)
-  - `#1024` repo `ssb-client` reverse E2E coverage (pending)
+  - `#1023` Tildefriends reverse E2E coverage
+  - `#1024` repo `ssb-client` reverse E2E coverage
   - `#1025` scratchpad and operator notes
 - Outcomes:
   - `#1026` reverse schema/cursor persistence landed
@@ -40,6 +40,8 @@ DG Nodes: `#999`, `#1000-#1032`
   - `#1030` forward replay suppression landed
   - `#1031` targeted reverse tests passing
   - `#1032` scratchpad/index updated
+  - `#1034` repo `ssb-client` reverse E2E passed
+  - `#1035` Tildefriends reverse E2E passed
 
 ## Implementation Log
 
@@ -71,9 +73,10 @@ DG Nodes: `#999`, `#1000-#1032`
   - Added same-CID forward replay suppression in the ATProto processor.
   - Reverse-created AT records now persist correlation rows in `messages` so later firehose/backfill replays do not publish duplicate SSB messages.
 - `#1023`:
-  - Pending. No Tildefriends reverse E2E script landed in this track yet.
+  - Added Tildefriends reverse E2E coverage and verified root post, reply, follow, and unfollow against the reverse-sync bridge stack.
 - `#1024`:
-  - Pending. No repo `ssb-client` reverse E2E script landed in this track yet.
+  - Added repo `ssb-client` reverse E2E coverage and verified root post, reply, follow, and unfollow against the reverse-sync bridge stack.
+  - Fixed room client persistence, tunnelled history streaming, SQLite busy retries, and signed-message receive-log reconstruction needed for live reverse ingestion.
 - `#1025`:
   - Linked this track to the decision graph and scratchpad index.
 
@@ -95,15 +98,28 @@ DG Nodes: `#999`, `#1000-#1032`
 - `cmd/bridge-cli/commands.go`
 - `cmd/bridge-cli/app.go`
 - `cmd/bridge-cli/helpers.go`
+- `cmd/bridge-cli/room_member_ingest.go`
+- `cmd/ssb-client/commands.go`
+- `internal/livee2e/live_reverse_ssb_client_test.go`
+- `internal/room/tunnel_history_test.go`
+- `internal/ssb/message/legacy/message.go`
+- `internal/ssb/muxrpc/handlers/room/client_tunnel.go`
+- `internal/ssb/muxrpc/stream_conn.go`
+- `internal/ssb/feedlog/feedlog.go`
+- `internal/ssb/sbot/sbot.go`
 - reverse-specific tests in `internal/db`, `internal/bridge`, and `internal/web/handlers`
+- reverse interop tests in `internal/livee2e`, `cmd/bridge-cli`, `internal/room`, and `internal/ssb`
 
 ## Validation
 
 - `go test ./internal/db ./internal/bridge ./internal/web/handlers`
 - `go test ./cmd/bridge-cli`
+- `go test ./cmd/ssb-client ./cmd/bridge-cli ./internal/livee2e`
+- `cd internal/ssb && go test ./sbot ./feedlog ./publisher`
+- `./scripts/e2e_tildefriends.sh`
+- `./scripts/live_reverse_ssb_client_e2e.sh`
 
 ## Remaining Work
 
-- Complete `#1023` with Tildefriends-driven reverse E2E coverage.
-- Complete `#1024` with repo `ssb-client` reverse E2E coverage.
+- No open items remain for reverse-sync v1 in this track.
 - If reverse scope expands beyond v1, split follow-on work into `043-...` instead of overloading this track.

@@ -62,7 +62,7 @@ These drafts were incorporated into the main README:
 | [039-ssb-module-test-fixes.md](039-ssb-module-test-fixes.md) | Verification notes for the nested `internal/ssb` module test pass and any resulting fixes | — | Active |
 | [040-ssbc-compliance-merge.md](040-ssbc-compliance-merge.md) | Replay plan and implementation notes for merging `codex/ssbc-compliance` onto current `main` | — | Historical |
 | [041-ssbc-compliance-remediation-2026-04.md](041-ssbc-compliance-remediation-2026-04.md) | Execution log for SIP-004 and SIP-007 conformance remediations (Bendy signatures/previous, Rooms2 metadata, alias URL normalization) | 959+ | Active |
-| [042-two-way-bridge-reverse-sync.md](042-two-way-bridge-reverse-sync.md) | Reverse-sync implementation log for allowlisted SSB-to-ATProto posts/replies/follows, durable queue state, admin UI, and loop suppression | 999-1032 | Active |
+| [042-two-way-bridge-reverse-sync.md](042-two-way-bridge-reverse-sync.md) | Reverse-sync implementation log for allowlisted SSB-to-ATProto posts/replies/follows, durable queue state, admin UI, loop suppression, and both interop E2E targets | 999-1035 | Historical |
 
 ## Understanding Scratchpad Status
 
