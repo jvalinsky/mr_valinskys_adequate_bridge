@@ -53,6 +53,8 @@ services:
       BOT_DID: "did:plc:e2e-docker-bot"
       MAX_WAIT_SECS: "${E2E_TF_MAX_WAIT_SECS:-120}"
       POLL_INTERVAL: "${E2E_TF_POLL_INTERVAL:-3}"
+      E2E_TF_REQUIRE_ACTIVE_BRIDGED_PEERS: "${E2E_TF_REQUIRE_ACTIVE_BRIDGED_PEERS:-1}"
+      ROOM_TUNNEL_VERIFY_BIN: "${E2E_TF_ROOM_TUNNEL_VERIFY_BIN:-/bridge-data/tools/room-tunnel-feed-verify}"
     volumes:
       - bridge-data:/bridge-data
       - tf-data:/tf-data

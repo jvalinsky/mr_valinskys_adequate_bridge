@@ -19,6 +19,8 @@ BOT_SEED="${BOT_SEED:-e2e-docker-seed}"
 BOT_DID="${BOT_DID:-did:plc:e2e-docker-bot}"
 MAX_WAIT_SECS="${MAX_WAIT_SECS:-120}"
 POLL_INTERVAL="${POLL_INTERVAL:-3}"
+REQUIRE_ACTIVE_BRIDGED_PEERS="${E2E_TF_REQUIRE_ACTIVE_BRIDGED_PEERS:-1}"
+ROOM_TUNNEL_VERIFY_BIN="${ROOM_TUNNEL_VERIFY_BIN:-/bridge-data/tools/room-tunnel-feed-verify}"
 
 log() { echo "[e2e-tf] $(date +%H:%M:%S) $*"; }
 
@@ -45,6 +47,14 @@ die() {
   log "FAIL: $*" >&2
   exit 1
 }
+
+case "${REQUIRE_ACTIVE_BRIDGED_PEERS}" in
+  0|1)
+    ;;
+  *)
+    die "invalid E2E_TF_REQUIRE_ACTIVE_BRIDGED_PEERS=${REQUIRE_ACTIVE_BRIDGED_PEERS} (expected 0 or 1)"
+    ;;
+esac
 
 sql_escape() {
   local escaped="${1//\'/\'\'}"
@@ -192,6 +202,50 @@ queue_retry_trigger_message() {
   sqlite3 "${BRIDGE_DB_PATH}" "PRAGMA busy_timeout=5000; INSERT INTO messages (at_uri, at_cid, at_did, type, message_state, raw_at_json, raw_ssb_json, publish_error, publish_attempts, last_publish_attempt_at) VALUES ('$(sql_escape "${at_uri}")', '$(sql_escape "${at_cid}")', '$(sql_escape "${BOT_DID}")', 'app.bsky.feed.post', 'failed', '$(sql_escape "${at_json}")', '$(sql_escape "${ssb_json}")', '$(sql_escape "e2e room retry trigger")', 0, NULL);"
   RETRY_TRIGGER_AT_URI="${at_uri}"
   log "queued retry-trigger bridge message: ${RETRY_TRIGGER_AT_URI}"
+}
+
+assert_active_bridged_room_peers() {
+  if [[ "${REQUIRE_ACTIVE_BRIDGED_PEERS}" != "1" ]]; then
+    log "strict bridged peer presence check disabled (E2E_TF_REQUIRE_ACTIVE_BRIDGED_PEERS=0)"
+    return 0
+  fi
+
+  if [[ ! -x "${ROOM_TUNNEL_VERIFY_BIN}" ]]; then
+    die "room tunnel verifier helper missing or not executable: ${ROOM_TUNNEL_VERIFY_BIN}"
+  fi
+
+  local attendants_json tunnels_json
+  attendants_json="$(curl -sS -f "http://${BRIDGE_HTTP_ADDR}/api/room/status/attendants")" || die "failed to fetch room attendants status"
+  tunnels_json="$(curl -sS -f "http://${BRIDGE_HTTP_ADDR}/api/room/status/tunnels")" || die "failed to fetch room tunnel endpoints status"
+
+  local -a active_feeds
+  mapfile -t active_feeds < <(sqlite3 "${BRIDGE_DB_PATH}" "SELECT ssb_feed_id FROM bridged_accounts WHERE active=1 AND ssb_feed_id IS NOT NULL AND TRIM(ssb_feed_id) <> '' ORDER BY ssb_feed_id;" | sed '/^[[:space:]]*$/d')
+  if [[ "${#active_feeds[@]}" -eq 0 ]]; then
+    die "strict bridged peer presence failed: no active bridged feeds found"
+  fi
+
+  local probe_key_file="/tmp/tf-tunnel-probe-secret"
+  local feed
+  for feed in "${active_feeds[@]}"; do
+    if ! echo "${attendants_json}" | jq -e --arg feed "${feed}" '.attendants | any(.id == $feed)' >/dev/null; then
+      die "strict bridged peer presence failed: attendant missing for ${feed}"
+    fi
+    if ! echo "${tunnels_json}" | jq -e --arg feed "${feed}" '.tunnels | any(.target == $feed)' >/dev/null; then
+      die "strict bridged peer presence failed: active tunnel endpoint missing for ${feed}"
+    fi
+    if ! "${ROOM_TUNNEL_VERIFY_BIN}" probe \
+      --room-addr "${BRIDGE_MUXRPC_ADDR}" \
+      --room-feed "${ROOM_PUB_KEY}" \
+      --key-file "${probe_key_file}" \
+      --target-feed "${feed}" \
+      --timeout 20s >/tmp/tf-room-probe.log 2>&1; then
+      log "room tunnel probe output:"
+      sed -n '1,120p' /tmp/tf-room-probe.log || true
+      die "strict bridged peer presence failed: tunnel.connect probe failed for ${feed}"
+    fi
+  done
+
+  log "verified strict bridged peer presence for ${#active_feeds[@]} active bridged feed(s)"
 }
 
 parse_host_port "${BRIDGE_MUXRPC_ADDR}" EXPECTED_ROOM_HOST EXPECTED_ROOM_PORT
@@ -540,6 +594,9 @@ bridge_status="$(echo "${bridge_status}" | tr -d '[:space:]')"
 if [[ "${bridge_status}" != "live" ]]; then
   log "warning: bridge runtime status is '${bridge_status}' (expected 'live')"
 fi
+
+# 13f. Verify all active bridged accounts are active room peers and tunnel.connect targets
+assert_active_bridged_room_peers
 
 log "============================================"
 log "  E2E PASSED: TF ↔ Bridge Room replication  "

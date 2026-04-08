@@ -18,6 +18,8 @@
 #   E2E_TF_RELAY_URL=ws://host:port/xrpc/com.atproto.sync.subscribeRepos (required when mode=external)
 #   E2E_TF_MAX_WAIT_SECS=<seconds>
 #   E2E_TF_POLL_INTERVAL=<seconds>
+#   E2E_TF_REQUIRE_ACTIVE_BRIDGED_PEERS=0|1
+#   E2E_TF_ROOM_TUNNEL_VERIFY_BIN=/bridge-data/tools/room-tunnel-feed-verify
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"

@@ -57,6 +57,11 @@ case "${BRIDGE_MODE}" in
     ;;
 esac
 
+# Export verifier helper onto shared volume so docker e2e test-runner can probe tunnel.connect targets.
+mkdir -p /data/tools
+cp /usr/local/bin/room-tunnel-feed-verify /data/tools/room-tunnel-feed-verify
+chmod +x /data/tools/room-tunnel-feed-verify
+
 # ── Engine start (shared by all modes) ─────────────────────────────
 
 case "${BRIDGE_FIREHOSE_ENABLE}" in
