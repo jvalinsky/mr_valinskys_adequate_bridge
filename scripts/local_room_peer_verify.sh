@@ -11,11 +11,20 @@ EXPECTED_URIS="${LIVE_BRIDGE_EXPECTED_URIS:-}"
 ATTEMPTS="${LIVE_SSB_PEER_VERIFY_ATTEMPTS:-20}"
 SLEEP_SECS="${LIVE_SSB_PEER_VERIFY_INTERVAL_SECS:-2}"
 PEER_TIMEOUT="${LIVE_SSB_PEER_VERIFY_TIMEOUT:-20s}"
+REQUIRE_ACTIVE_BRIDGED_PEERS="${LIVE_REQUIRE_ACTIVE_BRIDGED_PEERS:-1}"
 
 if [[ -z "${BRIDGE_DB_PATH}" || -z "${BRIDGE_REPO_PATH}" || -z "${SOURCE_DID}" ]]; then
   echo "[local-room-verify] missing one of LIVE_BRIDGE_DB_PATH/LIVE_BRIDGE_REPO_PATH/LIVE_BRIDGE_SOURCE_DID" >&2
   exit 1
 fi
+case "${REQUIRE_ACTIVE_BRIDGED_PEERS}" in
+  0|1)
+    ;;
+  *)
+    echo "[local-room-verify] LIVE_REQUIRE_ACTIVE_BRIDGED_PEERS must be 0 or 1 (got ${REQUIRE_ACTIVE_BRIDGED_PEERS})" >&2
+    exit 1
+    ;;
+esac
 
 for required in jq sqlite3 go curl; do
   if ! command -v "${required}" >/dev/null 2>&1; then
@@ -35,6 +44,12 @@ if [[ -z "${SOURCE_FEED}" ]]; then
   exit 1
 fi
 
+mapfile -t ACTIVE_FEEDS < <(sqlite3 "${BRIDGE_DB_PATH}" "select ssb_feed_id from bridged_accounts where active=1 and ssb_feed_id is not null and trim(ssb_feed_id) <> '' order by ssb_feed_id;" | sed '/^[[:space:]]*$/d')
+if [[ "${#ACTIVE_FEEDS[@]}" -eq 0 ]]; then
+  echo "[local-room-verify] no active bridged account feeds found in DB" >&2
+  exit 1
+fi
+
 EXPECTED_COUNT=1
 if [[ -n "${EXPECTED_URIS}" ]]; then
   EXPECTED_COUNT="$(echo "${EXPECTED_URIS}" | tr ',' '\n' | sed '/^\s*$/d' | wc -l | tr -d ' ')"
@@ -45,11 +60,17 @@ fi
 
 echo "[local-room-verify] source feed: ${SOURCE_FEED}"
 echo "[local-room-verify] expecting at least ${EXPECTED_COUNT} messages"
+if [[ "${REQUIRE_ACTIVE_BRIDGED_PEERS}" == "1" ]]; then
+  echo "[local-room-verify] strict bridged-peer presence check enabled for ${#ACTIVE_FEEDS[@]} active feed(s)"
+else
+  echo "[local-room-verify] strict bridged-peer presence check disabled"
+fi
 
 PEER_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mvab-ssb-peer-XXXXXX")"
 BIN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/mvab-ssb-peer-bin-XXXXXX")"
 SERVE_LOG="${BIN_DIR}/serve.log"
 READ_LOG="${BIN_DIR}/read.log"
+PROBE_LOG="${BIN_DIR}/probe.log"
 
 cleanup() {
   rm -rf "${PEER_DIR}" "${BIN_DIR}"
@@ -93,6 +114,7 @@ while [[ "${attempt}" -le "${ATTEMPTS}" ]]; do
   READY_FILE="${PEER_DIR}/serve-ready-${attempt}.json"
   : >"${SERVE_LOG}"
   : >"${READ_LOG}"
+  : >"${PROBE_LOG}"
   rm -f "${READY_FILE}"
 
   "${BIN_DIR}/room-tunnel-feed-verify" serve \
@@ -152,6 +174,56 @@ while [[ "${attempt}" -le "${ATTEMPTS}" ]]; do
     --min-count "${EXPECTED_COUNT}" \
     --timeout "${PEER_TIMEOUT}" \
     >"${READ_LOG}" 2>&1; then
+    if [[ "${REQUIRE_ACTIVE_BRIDGED_PEERS}" == "1" ]]; then
+      attendants_json="$(curl -sS -f "http://${ROOM_HTTP_ADDR}/api/room/status/attendants")" || {
+        echo "[local-room-verify] attempt ${attempt}/${ATTEMPTS}: failed to fetch attendants status" >&2
+        kill "${serve_pid}" >/dev/null 2>&1 || true
+        wait "${serve_pid}" || true
+        attempt=$((attempt + 1))
+        sleep "${SLEEP_SECS}"
+        continue
+      }
+      tunnels_json="$(curl -sS -f "http://${ROOM_HTTP_ADDR}/api/room/status/tunnels")" || {
+        echo "[local-room-verify] attempt ${attempt}/${ATTEMPTS}: failed to fetch tunnels status" >&2
+        kill "${serve_pid}" >/dev/null 2>&1 || true
+        wait "${serve_pid}" || true
+        attempt=$((attempt + 1))
+        sleep "${SLEEP_SECS}"
+        continue
+      }
+
+      strict_failed=0
+      for expected_feed in "${ACTIVE_FEEDS[@]}"; do
+        if ! echo "${attendants_json}" | jq -e --arg feed "${expected_feed}" '.attendants | any(.id == $feed)' >/dev/null; then
+          echo "[local-room-verify] attempt ${attempt}/${ATTEMPTS}: active attendant missing feed ${expected_feed}" >&2
+          strict_failed=1
+        fi
+        if ! echo "${tunnels_json}" | jq -e --arg feed "${expected_feed}" '.tunnels | any(.target == $feed)' >/dev/null; then
+          echo "[local-room-verify] attempt ${attempt}/${ATTEMPTS}: active tunnel endpoint missing feed ${expected_feed}" >&2
+          strict_failed=1
+        fi
+        if ! "${BIN_DIR}/room-tunnel-feed-verify" probe \
+          --room-addr "${ROOM_MUXRPC_ADDR}" \
+          --room-feed "${ROOM_FEED}" \
+          --key-file "${READ_KEY_FILE}" \
+          --target-feed "${expected_feed}" \
+          --timeout "${PEER_TIMEOUT}" \
+          >>"${PROBE_LOG}" 2>&1; then
+          echo "[local-room-verify] attempt ${attempt}/${ATTEMPTS}: tunnel.connect probe failed for ${expected_feed}" >&2
+          strict_failed=1
+        fi
+      done
+
+      if [[ "${strict_failed}" -ne 0 ]]; then
+        sed -n '1,160p' "${PROBE_LOG}" >&2 || true
+        kill "${serve_pid}" >/dev/null 2>&1 || true
+        wait "${serve_pid}" || true
+        attempt=$((attempt + 1))
+        sleep "${SLEEP_SECS}"
+        continue
+      fi
+    fi
+
     wait "${serve_pid}" || true
     echo "[local-room-verify] attempt ${attempt}/${ATTEMPTS}: peer observed tunnel snapshot with expected records"
     echo "[local-room-verify] strict peer verification passed"
@@ -171,4 +243,5 @@ done
 echo "[local-room-verify] strict peer verification failed after ${ATTEMPTS} attempts" >&2
 sed -n '1,120p' "${READ_LOG}" >&2 || true
 sed -n '1,120p' "${SERVE_LOG}" >&2 || true
+sed -n '1,120p' "${PROBE_LOG}" >&2 || true
 exit 1

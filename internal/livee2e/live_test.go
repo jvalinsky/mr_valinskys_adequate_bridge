@@ -162,6 +162,7 @@ func TestBridgeLiveInterop(t *testing.T) {
 		fmt.Sprintf("LIVE_BRIDGE_SOURCE_DID=%s", sourceDID),
 		fmt.Sprintf("LIVE_BRIDGE_TARGET_DID=%s", targetDID),
 		fmt.Sprintf("LIVE_BRIDGE_EXPECTED_URIS=%s", strings.Join(expectedURIs, ",")),
+		"LIVE_REQUIRE_ACTIVE_BRIDGED_PEERS=1",
 	)
 	verifyOut, err := verify.CombinedOutput()
 	if err != nil {

@@ -29,7 +29,7 @@ const defaultSHSCap = "1KHLiKZvAvjbY1ziZEHMXawbCEIM6qwjCDm3VYRan/s="
 
 func main() {
 	if len(os.Args) < 2 {
-		fatalf("usage: room-tunnel-feed-verify <serve|read> [flags]")
+		fatalf("usage: room-tunnel-feed-verify <serve|read|probe> [flags]")
 	}
 
 	switch strings.ToLower(strings.TrimSpace(os.Args[1])) {
@@ -41,8 +41,12 @@ func main() {
 		if err := runRead(os.Args[2:]); err != nil {
 			fatalf("read: %v", err)
 		}
+	case "probe":
+		if err := runProbe(os.Args[2:]); err != nil {
+			fatalf("probe: %v", err)
+		}
 	default:
-		fatalf("unknown mode %q (expected serve or read)", os.Args[1])
+		fatalf("unknown mode %q (expected serve, read, or probe)", os.Args[1])
 	}
 }
 
@@ -211,9 +215,6 @@ func runRead(args []string) error {
 	if _, err := verifyRoomConn(ctx, conn.Endpoint); err != nil {
 		return err
 	}
-	if err := announce(ctx, conn.Endpoint); err != nil {
-		return err
-	}
 
 	source, sink, err := conn.Endpoint.Duplex(ctx, muxrpc.TypeBinary, muxrpc.Method{"tunnel", "connect"}, tunnelConnectArg{
 		Portal: *roomFeed,
@@ -244,6 +245,69 @@ func runRead(args []string) error {
 	}
 
 	fmt.Printf("read_tunnel_snapshot entries=%d\n", len(snapshot.Entries))
+	return nil
+}
+
+func runProbe(args []string) error {
+	fs := flag.NewFlagSet("probe", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+
+	var cfg probeConfig
+	fs.StringVar(&cfg.RoomAddr, "room-addr", "", "room muxrpc tcp address (host:port)")
+	fs.StringVar(&cfg.RoomFeed, "room-feed", "", "room feed ref (@...ed25519)")
+	fs.StringVar(&cfg.KeyFile, "key-file", "", "path to peer secret key file")
+	fs.StringVar(&cfg.TargetFeed, "target-feed", "", "target announced peer feed ref")
+	fs.StringVar(&cfg.SHSCap, "shs-cap", defaultSHSCap, "secret-handshake app key (base64)")
+	fs.DurationVar(&cfg.Timeout, "timeout", 15*time.Second, "probe timeout")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := cfg.validate(); err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
+	defer cancel()
+
+	keyPair, err := ensureKeyPair(cfg.KeyFile)
+	if err != nil {
+		return fmt.Errorf("ensure keypair: %w", err)
+	}
+	roomFeed, err := refs.ParseFeedRef(cfg.RoomFeed)
+	if err != nil {
+		return fmt.Errorf("parse --room-feed: %v", err)
+	}
+	targetFeed, err := refs.ParseFeedRef(cfg.TargetFeed)
+	if err != nil {
+		return fmt.Errorf("parse --target-feed: %v", err)
+	}
+
+	handler := typemux.New(kitlog.NewNopLogger())
+	handler.RegisterAsync(muxrpc.Method{"whoami"}, typemux.AsyncFunc(func(context.Context, *muxrpc.Request) (interface{}, error) {
+		return map[string]interface{}{"id": keyPair.FeedRef()}, nil
+	}))
+
+	conn, err := openRoomEndpoint(ctx, keyPair, *roomFeed, cfg.RoomAddr, cfg.SHSCap, &handler)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	if _, err := verifyRoomConn(ctx, conn.Endpoint); err != nil {
+		return err
+	}
+
+	source, sink, err := conn.Endpoint.Duplex(ctx, muxrpc.TypeBinary, muxrpc.Method{"tunnel", "connect"}, tunnelConnectArg{
+		Portal: *roomFeed,
+		Target: *targetFeed,
+	})
+	if err != nil {
+		return fmt.Errorf("probe tunnel.connect duplex: %w", err)
+	}
+	_ = sink.Close()
+	source.Cancel(nil)
+
+	fmt.Printf("probe_tunnel_connect_ok target=%s\n", targetFeed.String())
 	return nil
 }
 
@@ -294,6 +358,15 @@ type readConfig struct {
 	MinCount         int
 }
 
+type probeConfig struct {
+	RoomAddr   string
+	RoomFeed   string
+	KeyFile    string
+	TargetFeed string
+	SHSCap     string
+	Timeout    time.Duration
+}
+
 type tunnelConnectArg struct {
 	Portal refs.FeedRef `json:"portal"`
 	Target refs.FeedRef `json:"target"`
@@ -321,6 +394,25 @@ func (c readConfig) validate() error {
 	return nil
 }
 
+func (c probeConfig) validate() error {
+	if strings.TrimSpace(c.RoomAddr) == "" {
+		return fmt.Errorf("--room-addr is required")
+	}
+	if strings.TrimSpace(c.RoomFeed) == "" {
+		return fmt.Errorf("--room-feed is required")
+	}
+	if strings.TrimSpace(c.KeyFile) == "" {
+		return fmt.Errorf("--key-file is required")
+	}
+	if strings.TrimSpace(c.TargetFeed) == "" {
+		return fmt.Errorf("--target-feed is required")
+	}
+	if c.Timeout <= 0 {
+		return fmt.Errorf("--timeout must be > 0")
+	}
+	return nil
+}
+
 type roomConn struct {
 	Endpoint muxrpc.Endpoint
 	netConn  net.Conn
@@ -341,7 +433,7 @@ func (c *roomConn) Close() error {
 
 type roomMetadata struct {
 	Name       string   `json:"name"`
-	Membership bool     `json:"membership"`
+	Membership string   `json:"membership"`
 	Features   []string `json:"features"`
 }
 
