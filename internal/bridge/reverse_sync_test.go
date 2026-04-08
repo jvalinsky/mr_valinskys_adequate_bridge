@@ -128,6 +128,44 @@ func TestReverseProcessorPublishesRootPost(t *testing.T) {
 	}
 }
 
+func TestReverseProcessorPublishesRootPostFromSignedEnvelope(t *testing.T) {
+	database, err := db.Open(":memory:?parseTime=true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	if err := database.AddReverseIdentityMapping(ctx, db.ReverseIdentityMapping{
+		SSBFeedID:    "@alice.ed25519",
+		ATDID:        "did:plc:alice",
+		Active:       true,
+		AllowPosts:   true,
+		AllowReplies: true,
+		AllowFollows: true,
+	}); err != nil {
+		t.Fatalf("add mapping: %v", err)
+	}
+
+	writer := &stubReverseWriter{}
+	proc := newTestReverseProcessor(t, database, writer)
+	rawSigned := []byte(`{"previous":null,"author":"@alice.ed25519","sequence":1,"timestamp":1775624250000,"hash":"sha256","content":{"type":"post","text":"hello signed reverse"},"signature":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==.sig.ed25519"}`)
+	if err := proc.processDecodedMessage(ctx, 1, "%post.sha256", "@alice.ed25519", int64Ptr(1), rawSigned, false); err != nil {
+		t.Fatalf("process decoded message: %v", err)
+	}
+
+	if len(writer.createCalls) != 1 {
+		t.Fatalf("expected 1 create call, got %d", len(writer.createCalls))
+	}
+	post, ok := writer.createCalls[0].record.(*appbsky.FeedPost)
+	if !ok {
+		t.Fatalf("expected feed post, got %T", writer.createCalls[0].record)
+	}
+	if post.Text != "hello signed reverse" {
+		t.Fatalf("unexpected post payload: %#v", post)
+	}
+}
+
 func TestReverseProcessorPublishesReplyWithResolvedTargets(t *testing.T) {
 	database, err := db.Open(":memory:?parseTime=true")
 	if err != nil {
@@ -314,4 +352,3 @@ func TestReverseProcessorDefersUnfollowWithoutPriorFollowRecord(t *testing.T) {
 		t.Fatalf("unexpected reverse event: %#v", event)
 	}
 }
-

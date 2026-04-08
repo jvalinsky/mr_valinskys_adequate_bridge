@@ -1,6 +1,7 @@
 package feedlog
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
@@ -11,6 +12,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -27,6 +29,11 @@ var (
 	ErrFeedNotFound   = errors.New("feedlog: feed not found")
 	ErrInvalidContent = errors.New("feedlog: invalid content")
 	ErrNotFound       = errors.New("sqlite: not found")
+)
+
+const (
+	sqliteBusyRetryLimit = 20
+	sqliteBusyRetryDelay = 25 * time.Millisecond
 )
 
 type Log interface {
@@ -510,12 +517,18 @@ func (m *multiLog) Get(addr string) (Log, error) {
 	defer m.mu.RUnlock()
 
 	var feedID int64
-	err := m.db.QueryRow("SELECT id FROM feeds WHERE addr = ?", []byte(addr)).Scan(&feedID)
-	if err == sql.ErrNoRows {
-		return nil, ErrNotFound
-	}
-	if err != nil {
-		return nil, err
+	for attempt := 0; ; attempt++ {
+		err := m.db.QueryRow("SELECT id FROM feeds WHERE addr = ?", []byte(addr)).Scan(&feedID)
+		if err == sql.ErrNoRows {
+			return nil, ErrNotFound
+		}
+		if err != nil {
+			if shouldRetrySQLiteBusy(err, attempt) {
+				continue
+			}
+			return nil, err
+		}
+		break
 	}
 
 	la := &logAdapter{db: m.db, feedID: feedID, tangles: m.tangles}
@@ -526,14 +539,23 @@ func (m *multiLog) Create(addr string) (Log, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	result, err := m.db.Exec("INSERT INTO feeds (addr, created_at) VALUES (?, ?)", []byte(addr), now())
-	if err != nil {
-		return nil, err
-	}
+	var id int64
+	for attempt := 0; ; attempt++ {
+		if _, err := m.db.Exec("INSERT OR IGNORE INTO feeds (addr, created_at) VALUES (?, ?)", []byte(addr), now()); err != nil {
+			if shouldRetrySQLiteBusy(err, attempt) {
+				continue
+			}
+			return nil, err
+		}
 
-	id, err := result.LastInsertId()
-	if err != nil {
-		return nil, err
+		err := m.db.QueryRow("SELECT id FROM feeds WHERE addr = ?", []byte(addr)).Scan(&id)
+		if err != nil {
+			if shouldRetrySQLiteBusy(err, attempt) {
+				continue
+			}
+			return nil, err
+		}
+		break
 	}
 
 	la := &logAdapter{db: m.db, feedID: id, tangles: m.tangles}
@@ -545,12 +567,18 @@ func (m *multiLog) Has(addr string) (bool, error) {
 	defer m.mu.RUnlock()
 
 	var exists int
-	err := m.db.QueryRow("SELECT 1 FROM feeds WHERE addr = ?", []byte(addr)).Scan(&exists)
-	if err == sql.ErrNoRows {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
+	for attempt := 0; ; attempt++ {
+		err := m.db.QueryRow("SELECT 1 FROM feeds WHERE addr = ?", []byte(addr)).Scan(&exists)
+		if err == sql.ErrNoRows {
+			return false, nil
+		}
+		if err != nil {
+			if shouldRetrySQLiteBusy(err, attempt) {
+				continue
+			}
+			return false, err
+		}
+		break
 	}
 	return true, nil
 }
@@ -598,32 +626,64 @@ func (l *logAdapter) Append(content []byte, metadata *Metadata) (int64, error) {
 		return 0, err
 	}
 
-	var currentSeq sql.NullInt64
-	if err := l.db.QueryRow("SELECT MAX(seq) FROM messages WHERE feed_id = ?", l.feedID).Scan(&currentSeq); err != nil {
-		return 0, err
-	}
-
-	nextSeq := int64(1)
-	if currentSeq.Valid {
-		nextSeq = currentSeq.Int64 + 1
-	}
-
-	key := fmt.Sprintf("%x", data)[:32]
-
-	_, err = l.db.Exec(
-		"INSERT INTO messages (feed_id, seq, key, value_json, created_at) VALUES (?, ?, ?, ?, ?)",
-		l.feedID, nextSeq, key, data, now(),
+	var (
+		nextSeq int64
+		key     string
 	)
-	if err != nil {
-		return 0, err
-	}
+	for attempt := 0; ; attempt++ {
+		tx, err := l.db.BeginTx(context.Background(), nil)
+		if err != nil {
+			if shouldRetrySQLiteBusy(err, attempt) {
+				continue
+			}
+			return 0, err
+		}
 
-	_, err = l.db.Exec(
-		"INSERT OR REPLACE INTO messages_key_idx (key, feed_id, seq) VALUES (?, ?, ?)",
-		key, l.feedID, nextSeq,
-	)
-	if err != nil {
-		return 0, err
+		var currentSeq sql.NullInt64
+		if err := tx.QueryRow("SELECT MAX(seq) FROM messages WHERE feed_id = ?", l.feedID).Scan(&currentSeq); err != nil {
+			_ = tx.Rollback()
+			if shouldRetrySQLiteBusy(err, attempt) {
+				continue
+			}
+			return 0, err
+		}
+
+		nextSeq = int64(1)
+		if currentSeq.Valid {
+			nextSeq = currentSeq.Int64 + 1
+		}
+		key = fmt.Sprintf("%x", data)[:32]
+
+		if _, err := tx.Exec(
+			"INSERT INTO messages (feed_id, seq, key, value_json, created_at) VALUES (?, ?, ?, ?, ?)",
+			l.feedID, nextSeq, key, data, now(),
+		); err != nil {
+			_ = tx.Rollback()
+			if shouldRetrySQLiteBusy(err, attempt) {
+				continue
+			}
+			return 0, err
+		}
+
+		if _, err := tx.Exec(
+			"INSERT OR REPLACE INTO messages_key_idx (key, feed_id, seq) VALUES (?, ?, ?)",
+			key, l.feedID, nextSeq,
+		); err != nil {
+			_ = tx.Rollback()
+			if shouldRetrySQLiteBusy(err, attempt) {
+				continue
+			}
+			return 0, err
+		}
+
+		if err := tx.Commit(); err != nil {
+			_ = tx.Rollback()
+			if shouldRetrySQLiteBusy(err, attempt) {
+				continue
+			}
+			return 0, err
+		}
+		break
 	}
 
 	if l.tangles != nil && metadata != nil && metadata.TangleName != "" {
@@ -698,13 +758,27 @@ func (v *DefaultSignatureVerifier) Verify(content []byte, metadata *Metadata) er
 		return fmt.Errorf("invalid signature length: %d (expected %d)", len(metadata.Sig), ed25519.SignatureSize)
 	}
 
-	var msg legacy.SignedMessage
-	if err := json.Unmarshal(content, &msg); err != nil {
+	msg, err := legacy.VerifySignedMessageJSON(content)
+	if err != nil {
 		return fmt.Errorf("parse signed message: %w", err)
 	}
 
-	if err := msg.Verify(); err != nil {
-		return fmt.Errorf("signature verification failed: %w", err)
+	msgRef, err := legacy.SignedMessageRefFromJSON(content)
+	if err != nil {
+		return fmt.Errorf("derive message ref: %w", err)
+	}
+
+	if metadata.Author != "" && metadata.Author != msg.Author.String() {
+		return fmt.Errorf("author mismatch: metadata=%s message=%s", metadata.Author, msg.Author.String())
+	}
+	if metadata.Sequence != 0 && metadata.Sequence != msg.Sequence {
+		return fmt.Errorf("sequence mismatch: metadata=%d message=%d", metadata.Sequence, msg.Sequence)
+	}
+	if len(metadata.Sig) > 0 && !bytes.Equal(metadata.Sig, msg.Signature) {
+		return errors.New("signature mismatch")
+	}
+	if metadata.Hash != "" && metadata.Hash != msgRef.String() {
+		return fmt.Errorf("message ref mismatch: metadata=%s message=%s", metadata.Hash, msgRef.String())
 	}
 
 	return nil
@@ -778,24 +852,53 @@ func (l *receiveLog) Append(content []byte, metadata *Metadata) (int64, error) {
 		return 0, err
 	}
 
-	var currentSeq sql.NullInt64
-	if err := l.db.QueryRow("SELECT MAX(seq) FROM receive_log").Scan(&currentSeq); err != nil {
-		return 0, err
-	}
-
-	nextSeq := int64(1)
-	if currentSeq.Valid {
-		nextSeq = currentSeq.Int64 + 1
-	}
-
-	key := fmt.Sprintf("%x", data)[:32]
-
-	_, err = l.db.Exec(
-		"INSERT INTO receive_log (seq, key, value_json, created_at) VALUES (?, ?, ?, ?)",
-		nextSeq, key, data, now(),
+	var (
+		nextSeq int64
+		key     string
 	)
-	if err != nil {
-		return 0, err
+	for attempt := 0; ; attempt++ {
+		tx, err := l.db.BeginTx(context.Background(), nil)
+		if err != nil {
+			if shouldRetrySQLiteBusy(err, attempt) {
+				continue
+			}
+			return 0, err
+		}
+
+		var currentSeq sql.NullInt64
+		if err := tx.QueryRow("SELECT MAX(seq) FROM receive_log").Scan(&currentSeq); err != nil {
+			_ = tx.Rollback()
+			if shouldRetrySQLiteBusy(err, attempt) {
+				continue
+			}
+			return 0, err
+		}
+
+		nextSeq = int64(1)
+		if currentSeq.Valid {
+			nextSeq = currentSeq.Int64 + 1
+		}
+
+		key = fmt.Sprintf("%x", data)[:32]
+		if _, err := tx.Exec(
+			"INSERT INTO receive_log (seq, key, value_json, created_at) VALUES (?, ?, ?, ?)",
+			nextSeq, key, data, now(),
+		); err != nil {
+			_ = tx.Rollback()
+			if shouldRetrySQLiteBusy(err, attempt) {
+				continue
+			}
+			return 0, err
+		}
+
+		if err := tx.Commit(); err != nil {
+			_ = tx.Rollback()
+			if shouldRetrySQLiteBusy(err, attempt) {
+				continue
+			}
+			return 0, err
+		}
+		break
 	}
 
 	if l.logger != nil && metadata != nil {
@@ -842,6 +945,18 @@ func (l *receiveLog) Query(specs ...QuerySpec) (Source, error) {
 
 func (l *receiveLog) Close() error {
 	return nil
+}
+
+func shouldRetrySQLiteBusy(err error, attempt int) bool {
+	if err == nil || attempt >= sqliteBusyRetryLimit-1 {
+		return false
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "database is locked") || strings.Contains(msg, "SQLITE_BUSY") {
+		time.Sleep(sqliteBusyRetryDelay)
+		return true
+	}
+	return false
 }
 
 type blobStore struct {

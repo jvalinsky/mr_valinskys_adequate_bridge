@@ -32,51 +32,52 @@ import (
 )
 
 type BridgeApp struct {
-	db              *db.DB
-	ssbRuntime      *ssbruntime.Runtime
-	publisher       *publishqueue.WorkerPublisher
-	processor       *bridge.Processor
+	db               *db.DB
+	ssbRuntime       *ssbruntime.Runtime
+	publisher        *publishqueue.WorkerPublisher
+	processor        *bridge.Processor
 	reverseProcessor *bridge.ReverseProcessor
-	indexer         *atindex.Service
-	firehose        *firehose.Client
-	room            *room.Runtime
-	bridgedPeers    bridgedRoomPeerSessionManager
-	logger          *log.Logger
-	mcpServer       *server.MCPServer
-	followerTracker *bridge.FollowerTracker
-	metricsSrv      *http.Server
+	indexer          *atindex.Service
+	firehose         *firehose.Client
+	room             *room.Runtime
+	bridgedPeers     bridgedRoomPeerSessionManager
+	roomMemberIngest *roomMemberIngestManager
+	logger           *log.Logger
+	mcpServer        *server.MCPServer
+	followerTracker  *bridge.FollowerTracker
+	metricsSrv       *http.Server
 
 	cfg AppConfig
 }
 
 type AppConfig struct {
-	DBPath              string
-	RepoPath            string
-	BotSeed             string
-	HMACKey             *[32]byte
-	AppKey              string
-	SSBListenAddr       string
-	PublishWorkers      int
-	FirehoseEnable      bool
-	RelayURL            string
-	XRPCReadHost        string
-	RoomEnable          bool
-	RoomListenAddr      string
-	RoomHTTPAddr        string
-	RoomMode            string
-	RoomDomain          string
-	RoomTLSCert         string
-	RoomTLSKey          string
-	PLCURL              string
-	AtprotoInsecure     bool
-	MCPListenAddr       string
-	MetricsListenAddr   string
-	MaxMsgsPerDIDPerMin int
-	BridgedPeerSyncIntv time.Duration
-	ReverseSyncEnable   bool
-	ReverseCredentialsFile string
+	DBPath                  string
+	RepoPath                string
+	BotSeed                 string
+	HMACKey                 *[32]byte
+	AppKey                  string
+	SSBListenAddr           string
+	PublishWorkers          int
+	FirehoseEnable          bool
+	RelayURL                string
+	XRPCReadHost            string
+	RoomEnable              bool
+	RoomListenAddr          string
+	RoomHTTPAddr            string
+	RoomMode                string
+	RoomDomain              string
+	RoomTLSCert             string
+	RoomTLSKey              string
+	PLCURL                  string
+	AtprotoInsecure         bool
+	MCPListenAddr           string
+	MetricsListenAddr       string
+	MaxMsgsPerDIDPerMin     int
+	BridgedPeerSyncIntv     time.Duration
+	ReverseSyncEnable       bool
+	ReverseCredentialsFile  string
 	ReverseSyncScanInterval time.Duration
-	ReverseSyncBatchSize int
+	ReverseSyncBatchSize    int
 }
 
 func (a *BridgeApp) MCPServer() *server.MCPServer {
@@ -224,7 +225,20 @@ func (a *BridgeApp) Init(ctx context.Context) error {
 			return fmt.Errorf("init bridged room peer manager: %w", err)
 		}
 
+		a.roomMemberIngest, err = newRoomMemberIngestManager(roomMemberIngestManagerConfig{
+			AccountLister: a.db,
+			RoomRuntime:   a.room,
+			Sbot:          a.ssbRuntime.Node(),
+			ReceiveLog:    a.ssbRuntime.ReceiveLog(),
+			Store:         a.ssbRuntime.Node().Store(),
+			AppKey:        a.cfg.AppKey,
+		}, a.logger)
+		if err != nil {
+			return fmt.Errorf("init room member ingest: %w", err)
+		}
+
 		a.initFollowerTracker(ctx)
+		a.installRoomAnnounceHook()
 	}
 
 	// Register all MCP tools against the live application instances.
@@ -288,14 +302,27 @@ func (a *BridgeApp) initFollowerTracker(ctx context.Context) {
 		MaxFollowsPer: 10,
 	})
 
-	a.room.SetAnnounceHook(func(feed refs.FeedRef) error {
-		tracker.Announce(feed)
-		return nil
-	})
 	tracker.Start(ctx, a.logger)
 	a.followerTracker = tracker
 
 	a.logger.Printf("follower-tracker: started for bot %s", bridgeBotDID)
+}
+
+func (a *BridgeApp) installRoomAnnounceHook() {
+	if a == nil || a.room == nil {
+		return
+	}
+	a.room.SetAnnounceHook(func(feed refs.FeedRef) error {
+		if a.roomMemberIngest != nil {
+			if err := a.roomMemberIngest.Announce(feed); err != nil {
+				return err
+			}
+		}
+		if a.followerTracker != nil {
+			a.followerTracker.Announce(feed)
+		}
+		return nil
+	})
 }
 
 func (a *BridgeApp) Start(ctx context.Context) error {
@@ -317,6 +344,9 @@ func (a *BridgeApp) Start(ctx context.Context) error {
 	}
 
 	if a.room != nil {
+		if a.roomMemberIngest != nil {
+			a.roomMemberIngest.Start(ctx)
+		}
 		go runRoomTunnelBootstrap(ctx, a.ssbRuntime, a.room, a.logger)
 		if a.bridgedPeers != nil {
 			a.bridgedPeers.Start(ctx)
@@ -329,6 +359,9 @@ func (a *BridgeApp) Start(ctx context.Context) error {
 	go runRetryScheduler(ctx, a.processor, a.logger)
 	go runDeferredResolverScheduler(ctx, a.processor, a.logger)
 	go runDeferredExpiryScheduler(ctx, a.processor, a.logger)
+	if a.cfg.ReverseSyncEnable && a.db != nil && a.ssbRuntime != nil {
+		go runReverseReplicationScheduler(ctx, a.db, a.ssbRuntime.Node(), a.logger, reverseReplicationSyncInterval)
+	}
 	if a.reverseProcessor != nil && a.cfg.ReverseSyncEnable {
 		go a.reverseProcessor.Run(ctx, a.cfg.ReverseSyncScanInterval, a.cfg.ReverseSyncBatchSize)
 	}
@@ -485,6 +518,12 @@ func (a *BridgeApp) Stop() error {
 	if a.bridgedPeers != nil {
 		if err := a.bridgedPeers.Stop(); err != nil {
 			errs = append(errs, fmt.Errorf("stop bridged room peers: %w", err))
+		}
+	}
+
+	if a.roomMemberIngest != nil {
+		if err := a.roomMemberIngest.Stop(); err != nil {
+			errs = append(errs, fmt.Errorf("stop room member ingest: %w", err))
 		}
 	}
 

@@ -65,7 +65,7 @@ sql_count() {
   local db_path="$1"
   local query="$2"
   local count
-  count="$(sqlite3 "${db_path}" "PRAGMA busy_timeout=5000; ${query}" 2>/dev/null || echo "0")"
+  count="$(sqlite3 -cmd ".timeout 5000" "${db_path}" "${query}" 2>/dev/null || echo "0")"
   count="$(echo "${count}" | tr -d '[:space:]')"
   if [[ -z "${count}" ]]; then
     count="0"

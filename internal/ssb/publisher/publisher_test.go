@@ -100,6 +100,53 @@ func TestPublisher(t *testing.T) {
 	}
 }
 
+func TestPublisherAppendsReceiveLogAndCallsAfterPublish(t *testing.T) {
+	aliceKeys, _ := keys.Generate()
+	users := &mockMultiLog{logs: make(map[string]*mockLog)}
+	receiveLog := &mockLog{seq: -1, messages: make(map[int64]*feedlog.StoredMessage)}
+
+	var callbackFeed refs.FeedRef
+	var callbackSeq int64
+	p, err := New(
+		aliceKeys,
+		receiveLog,
+		users,
+		WithAfterPublish(func(feed refs.FeedRef, seq int64) {
+			callbackFeed = feed
+			callbackSeq = seq
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ref, err := p.PublishJSON(map[string]interface{}{"type": "post", "text": "replicate me"})
+	if err != nil {
+		t.Fatalf("Publish failed: %v", err)
+	}
+
+	if receiveLog.seq != 1 {
+		t.Fatalf("expected receive log seq 1, got %d", receiveLog.seq)
+	}
+	rxMsg, ok := receiveLog.messages[1]
+	if !ok {
+		t.Fatal("expected receive log entry at seq 1")
+	}
+	gotRef, err := legacy.SignedMessageRefFromJSON(rxMsg.Value)
+	if err != nil {
+		t.Fatalf("derive message ref from receive log: %v", err)
+	}
+	if gotRef.String() != ref.String() {
+		t.Fatalf("receive log ref mismatch: got %q want %q", gotRef.String(), ref.String())
+	}
+	if callbackSeq != 1 {
+		t.Fatalf("after publish seq mismatch: got %d want 1", callbackSeq)
+	}
+	if !callbackFeed.Equal(aliceKeys.FeedRef()) {
+		t.Fatalf("after publish feed mismatch: got %q want %q", callbackFeed.String(), aliceKeys.FeedRef().String())
+	}
+}
+
 func TestMessageSigning(t *testing.T) {
 	seed := make([]byte, 32)
 	for i := range seed {

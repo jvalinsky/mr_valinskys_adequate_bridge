@@ -242,7 +242,7 @@ func TestSignatureVerification(t *testing.T) {
 		Author:    authorRef.String(),
 		Sequence:  1,
 		Timestamp: 1234567890,
-		Hash:      "%" + msgRef.Ref(),
+		Hash:      msgRef.String(),
 		Sig:       sig,
 	}
 
@@ -360,7 +360,7 @@ func createTestSignedMessage(t *testing.T, kp *keys.KeyPair, seq int64) ([]byte,
 		Author:    authorRef.String(),
 		Sequence:  seq,
 		Timestamp: 1234567890,
-		Hash:      "%" + msgRef.Ref(),
+		Hash:      msgRef.String(),
 		Sig:       sig,
 	}
 

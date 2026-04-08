@@ -8,6 +8,7 @@ set -e
 PDS_HOST="${PDS_HOST:-http://pds:80}"
 BOT_SEED="${BOT_SEED:-e2e-full-seed}"
 DB_PATH="${DB_PATH:-/data/bridge.sqlite}"
+REVERSE_ENV_FILE="${REVERSE_ENV_FILE:-/data/reverse-bootstrap.env}"
 
 # Wait for bridge to connect to firehose by checking for firehose_connected in bridge DB
 echo "[seeder] Waiting for bridge to connect to firehose..."
@@ -25,6 +26,23 @@ done
 
 if [ $WAIT_COUNT -ge $MAX_WAIT ]; then
     echo "[seeder] Warning: Bridge firehose connection not detected after ${MAX_WAIT}s, proceeding anyway..."
+fi
+
+if [[ -f "${REVERSE_ENV_FILE}" ]]; then
+    echo "[seeder] Loading reverse bootstrap env from ${REVERSE_ENV_FILE}"
+    set -a
+    # shellcheck source=/dev/null
+    source "${REVERSE_ENV_FILE}"
+    set +a
+
+    if [[ -n "${E2E_REVERSE_SOURCE_DID:-}" ]]; then
+        echo "[seeder] Registering reverse source account in bridge..."
+        bridge-cli --db "$DB_PATH" --bot-seed "$BOT_SEED" account add "$E2E_REVERSE_SOURCE_DID"
+    fi
+    if [[ -n "${E2E_REVERSE_TARGET_DID:-}" ]]; then
+        echo "[seeder] Registering reverse target account in bridge..."
+        bridge-cli --db "$DB_PATH" --bot-seed "$BOT_SEED" account add "$E2E_REVERSE_TARGET_DID"
+    fi
 fi
 
 echo "[seeder] Phase 1: Creating bot account with 10 posts..."
@@ -65,4 +83,3 @@ echo "[seeder] Seeding complete!"
 echo "complete" > /data/seeder-complete
 
 exit 0
-

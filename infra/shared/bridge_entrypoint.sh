@@ -17,7 +17,7 @@ BOT_TARGET_DID="${BOT_TARGET_DID:-did:plc:e2e-docker-target}"
 ROOM_MUXRPC_ADDR="${ROOM_MUXRPC_ADDR:-0.0.0.0:8989}"
 ROOM_HTTP_ADDR="${ROOM_HTTP_ADDR:-0.0.0.0:8976}"
 ROOM_MODE="${ROOM_MODE:-open}"
-ROOM_HTTPS_DOMAIN="${ROOM_HTTPS_DOMAIN:-bridge}"
+ROOM_HTTPS_DOMAIN="${ROOM_HTTPS_DOMAIN-bridge}"
 E2E_SEED_INCLUDE_BLOB_POST="${E2E_SEED_INCLUDE_BLOB_POST:-0}"
 BRIDGE_MODE="${BRIDGE_MODE:-seeded}"
 BRIDGE_FIREHOSE_ENABLE="${BRIDGE_FIREHOSE_ENABLE:-0}"
@@ -25,6 +25,10 @@ BRIDGE_RELAY_URL="${BRIDGE_RELAY_URL:-}"
 BRIDGE_PLC_URL="${BRIDGE_PLC_URL:-https://plc.directory}"
 BRIDGE_ATPROTO_INSECURE="${BRIDGE_ATPROTO_INSECURE:-0}"
 BRIDGE_CLEAN_START="${BRIDGE_CLEAN_START:-0}"
+BRIDGE_REVERSE_SYNC_ENABLE="${BRIDGE_REVERSE_SYNC_ENABLE:-0}"
+BRIDGE_REVERSE_CREDENTIALS_FILE="${BRIDGE_REVERSE_CREDENTIALS_FILE:-}"
+BRIDGE_REVERSE_SYNC_SCAN_INTERVAL="${BRIDGE_REVERSE_SYNC_SCAN_INTERVAL:-}"
+BRIDGE_REVERSE_SYNC_BATCH_SIZE="${BRIDGE_REVERSE_SYNC_BATCH_SIZE:-}"
 
 # ── Mode-specific pre-start ────────────────────────────────────────
 
@@ -106,6 +110,22 @@ bridge_cli_args+=(
 
 if [ "${BRIDGE_ATPROTO_INSECURE}" = "1" ]; then
   bridge_cli_args+=(--atproto-insecure)
+fi
+
+if [ "${BRIDGE_REVERSE_SYNC_ENABLE}" = "1" ]; then
+  bridge_cli_args+=(--reverse-sync-enable)
+fi
+
+if [[ -n "${BRIDGE_REVERSE_CREDENTIALS_FILE}" ]]; then
+  bridge_cli_args+=(--reverse-credentials-file "${BRIDGE_REVERSE_CREDENTIALS_FILE}")
+fi
+
+if [[ -n "${BRIDGE_REVERSE_SYNC_SCAN_INTERVAL}" ]]; then
+  bridge_cli_args+=(--reverse-sync-scan-interval "${BRIDGE_REVERSE_SYNC_SCAN_INTERVAL}")
+fi
+
+if [[ -n "${BRIDGE_REVERSE_SYNC_BATCH_SIZE}" ]]; then
+  bridge_cli_args+=(--reverse-sync-batch-size "${BRIDGE_REVERSE_SYNC_BATCH_SIZE}")
 fi
 
 exec bridge-cli "${bridge_cli_args[@]}"

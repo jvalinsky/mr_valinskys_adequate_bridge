@@ -1837,6 +1837,44 @@ func TestRuntimeStatusEndpointsTrackAttendantAndTunnelSnapshots(t *testing.T) {
 	}
 }
 
+func TestRuntimeMemberConnectInvokesAnnounceHook(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	rt := startTestRuntime(t, "open", nil)
+
+	memberKey, err := keys.Generate()
+	if err != nil {
+		t.Fatalf("generate member key: %v", err)
+	}
+	if _, err := rt.roomDB.Members().Add(ctx, memberKey.FeedRef(), roomdb.RoleMember); err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+
+	announced := make(chan refs.FeedRef, 1)
+	rt.SetAnnounceHook(func(feed refs.FeedRef) error {
+		select {
+		case announced <- feed:
+		default:
+		}
+		return nil
+	})
+
+	_ = connectRuntimeRoomClient(t, ctx, rt, memberKey, nil)
+
+	select {
+	case feed := <-announced:
+		if !feed.Equal(memberKey.FeedRef()) {
+			t.Fatalf("expected announce hook feed %s, got %s", memberKey.FeedRef(), feed)
+		}
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for announce hook on member connect: %v", ctx.Err())
+	}
+	if !rt.state.HasPeer(memberKey.FeedRef()) {
+		t.Fatalf("expected member connect to register tunnel peer for %s", memberKey.FeedRef())
+	}
+}
+
 func TestRuntimeAliasRegisterEndpointAndRevoke(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

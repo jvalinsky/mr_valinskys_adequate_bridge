@@ -153,6 +153,23 @@ func (m MessageRef) Ref() string {
 	return m.String()
 }
 
+func (m MessageRef) MarshalJSON() ([]byte, error) {
+	return json.Marshal(m.String())
+}
+
+func (m *MessageRef) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return err
+	}
+	parsed, err := ParseMessageRef(s)
+	if err != nil {
+		return fmt.Errorf("refs: unmarshal message ref: %w", err)
+	}
+	*m = *parsed
+	return nil
+}
+
 func (m MessageRef) Equal(other MessageRef) bool {
 	return m.algo == other.algo && m.hash == other.hash
 }

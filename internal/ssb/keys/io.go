@@ -62,10 +62,6 @@ func checkPerms(path string) error {
 }
 
 func Save(kp *KeyPair, path string) error {
-	if _, err := os.Stat(path); err == nil {
-		return fmt.Errorf("keys: secret file already exists: %s", path)
-	}
-
 	dir := filepath.Dir(path)
 	if dir != "" {
 		if err := os.MkdirAll(dir, 0700); err != nil && !os.IsExist(err) {
@@ -73,17 +69,30 @@ func Save(kp *KeyPair, path string) error {
 		}
 	}
 
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, SecretPerms)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, SecretPerms)
 	if err != nil {
+		if os.IsExist(err) {
+			return fmt.Errorf("keys: secret file already exists: %s", path)
+		}
 		return fmt.Errorf("keys: failed to create secret file: %w", err)
 	}
-	defer f.Close()
+	saveSucceeded := false
+	defer func() {
+		_ = f.Close()
+		if !saveSucceeded {
+			_ = os.Remove(path)
+		}
+	}()
 
 	if err := EncodeSecret(kp, f); err != nil {
 		return fmt.Errorf("keys: failed to write secret: %w", err)
 	}
 
-	return f.Close()
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("keys: failed to close secret file: %w", err)
+	}
+	saveSucceeded = true
+	return nil
 }
 
 func ParseSecret(r io.Reader) (*KeyPair, error) {

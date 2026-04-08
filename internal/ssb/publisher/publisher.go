@@ -16,14 +16,17 @@ import (
 )
 
 type Publisher struct {
-	feed    refs.FeedRef
-	keyPair *keys.KeyPair
-	log     feedlog.Log
-	hmacKey []byte
+	feed         refs.FeedRef
+	keyPair      *keys.KeyPair
+	log          feedlog.Log
+	receiveLog   feedlog.Log
+	hmacKey      []byte
+	afterPublish func(refs.FeedRef, int64)
 }
 
 type Options struct {
-	HMACKey []byte
+	HMACKey      []byte
+	AfterPublish func(refs.FeedRef, int64)
 }
 
 type Option func(*Options)
@@ -31,6 +34,12 @@ type Option func(*Options)
 func WithHMAC(key []byte) Option {
 	return func(o *Options) {
 		o.HMACKey = key
+	}
+}
+
+func WithAfterPublish(fn func(refs.FeedRef, int64)) Option {
+	return func(o *Options) {
+		o.AfterPublish = fn
 	}
 }
 
@@ -52,10 +61,12 @@ func New(keyPair *keys.KeyPair, receiveLog feedlog.Log, users feedlog.MultiLog, 
 	}
 
 	return &Publisher{
-		feed:    feed,
-		keyPair: keyPair,
-		log:     log,
-		hmacKey: o.HMACKey,
+		feed:         feed,
+		keyPair:      keyPair,
+		log:          log,
+		receiveLog:   receiveLog,
+		hmacKey:      o.HMACKey,
+		afterPublish: o.AfterPublish,
 	}, nil
 }
 
@@ -113,6 +124,20 @@ func (p *Publisher) Publish(content []byte) (refs.MessageRef, error) {
 	_, err = p.log.Append(content, metadata)
 	if err != nil {
 		return refs.MessageRef{}, fmt.Errorf("publisher: failed to append: %w", err)
+	}
+
+	if p.receiveLog != nil {
+		raw, err := msg.MarshalWithSignature(sig)
+		if err != nil {
+			return refs.MessageRef{}, fmt.Errorf("publisher: failed to marshal signed message: %w", err)
+		}
+		if _, err := p.receiveLog.Append(raw, metadata); err != nil {
+			return refs.MessageRef{}, fmt.Errorf("publisher: failed to append receive log: %w", err)
+		}
+	}
+
+	if p.afterPublish != nil {
+		p.afterPublish(p.feed, msg.Sequence)
 	}
 
 	return *msgRef, nil

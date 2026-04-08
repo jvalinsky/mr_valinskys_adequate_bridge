@@ -1106,42 +1106,11 @@ func (h *clientUIHandler) consumeInvite(ctx context.Context, inviteCode string) 
 		return fmt.Errorf("empty invite code")
 	}
 
-	var roomHTTPAddr string
-	var token string
-
-	parsedURL, err := url.Parse(inviteCode)
+	token, roomHTTPAddr, err := resolveInviteConsumeTarget(inviteCode, roomHTTPAddr)
 	if err != nil {
-		return fmt.Errorf("invalid invite URL: %w", err)
+		return err
 	}
-
-	if parsedURL.Host != "" {
-		if t := parsedURL.Query().Get("token"); t != "" {
-			token = t
-		} else if t := parsedURL.Query().Get("invite"); t != "" {
-			token = t
-		} else {
-			return fmt.Errorf("no token found in invite URL")
-		}
-
-		host := parsedURL.Hostname()
-		port := parsedURL.Port()
-		if host == "localhost" || host == "127.0.0.1" {
-			// In E2E demo, the bridge is known as 'bridge' inside the container
-			host = "bridge"
-		}
-		if port == "" {
-			if parsedURL.Scheme == "https" {
-				roomHTTPAddr = "https://" + host
-			} else {
-				roomHTTPAddr = "http://" + host
-			}
-		} else {
-			roomHTTPAddr = parsedURL.Scheme + "://" + host + ":" + port
-		}
-		h.slog.Info("consuming invite", "invite_url", inviteCode, "target_http_addr", roomHTTPAddr)
-	} else {
-		return fmt.Errorf("invite code must be a full URL (e.g., http://127.0.0.1:8976/join?token=xxx)")
-	}
+	h.slog.Info("consuming invite", "invite_url", inviteCode, "target_http_addr", roomHTTPAddr)
 
 	if roomHTTPAddr == "" {
 		return fmt.Errorf("room HTTP address not provided; set --room-http-addr or use full invite URL")
@@ -1167,6 +1136,7 @@ func (h *clientUIHandler) consumeInvite(ctx context.Context, inviteCode string) 
 		return fmt.Errorf("create request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("X-Forwarded-Proto", "https")
 
 	resp, err := http.DefaultClient.Do(httpReq)
 	if err != nil {
@@ -1202,6 +1172,50 @@ func (h *clientUIHandler) consumeInvite(ctx context.Context, inviteCode string) 
 	}
 
 	return nil
+}
+
+func resolveInviteConsumeTarget(inviteCode, configuredRoomHTTPAddr string) (token string, roomHTTPAddr string, err error) {
+	parsedURL, err := url.Parse(strings.TrimSpace(inviteCode))
+	if err != nil {
+		return "", "", fmt.Errorf("invalid invite URL: %w", err)
+	}
+	if parsedURL.Host == "" {
+		return "", "", fmt.Errorf("invite code must be a full URL (e.g., http://127.0.0.1:8976/join?token=xxx)")
+	}
+
+	if t := parsedURL.Query().Get("token"); t != "" {
+		token = t
+	} else if t := parsedURL.Query().Get("invite"); t != "" {
+		token = t
+	} else {
+		return "", "", fmt.Errorf("no token found in invite URL")
+	}
+
+	if configured := strings.TrimRight(strings.TrimSpace(configuredRoomHTTPAddr), "/"); configured != "" {
+		host := parsedURL.Hostname()
+		if host == "localhost" || host == "127.0.0.1" {
+			return token, configured, nil
+		}
+	}
+
+	host := parsedURL.Hostname()
+	port := parsedURL.Port()
+	if host == "localhost" || host == "127.0.0.1" {
+		// In the container demo, the bridge is reachable by service name rather than loopback.
+		host = "bridge"
+	}
+
+	if port == "" {
+		if parsedURL.Scheme == "https" {
+			roomHTTPAddr = "https://" + host
+		} else {
+			roomHTTPAddr = "http://" + host
+		}
+	} else {
+		roomHTTPAddr = parsedURL.Scheme + "://" + host + ":" + port
+	}
+
+	return token, roomHTTPAddr, nil
 }
 
 func (h *clientUIHandler) connectToPeer(ctx context.Context, address string) error {

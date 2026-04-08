@@ -140,6 +140,10 @@ func (m *mockFeedManager) GetMessage(author *refs.FeedRef, seq int64) ([]byte, e
 	return nil, ErrNotFound
 }
 
+func (m *mockFeedManager) AppendSignedMessage(raw []byte) (*refs.FeedRef, int64, error) {
+	return nil, 0, nil
+}
+
 type mockLister struct {
 	feeds []refs.FeedRef
 }

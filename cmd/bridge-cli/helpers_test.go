@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"io"
+	"log"
 	"log/slog"
 	"path/filepath"
 	"testing"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 )
 
 func testContext() context.Context {
@@ -220,4 +223,79 @@ func TestReadFirehoseCursor(t *testing.T) {
 	if seq != 0 {
 		t.Errorf("empty db should return seq=0, got %d", seq)
 	}
+}
+
+type mockFeedReplicator struct {
+	feeds []string
+}
+
+func (m *mockFeedReplicator) Replicate(feed interface{}) {
+	switch v := feed.(type) {
+	case refs.FeedRef:
+		m.feeds = append(m.feeds, v.String())
+	case *refs.FeedRef:
+		if v != nil {
+			m.feeds = append(m.feeds, v.String())
+		}
+	case string:
+		m.feeds = append(m.feeds, v)
+	}
+}
+
+func TestSyncReverseReplicatedFeeds(t *testing.T) {
+	ctx := context.Background()
+	database := setupTestDB(t)
+
+	activeFeed := refs.MustNewFeedRef(testFeedBytes(1), refs.RefAlgoFeedSSB1).String()
+	inactiveFeed := refs.MustNewFeedRef(testFeedBytes(2), refs.RefAlgoFeedSSB1).String()
+	noActionFeed := refs.MustNewFeedRef(testFeedBytes(3), refs.RefAlgoFeedSSB1).String()
+
+	if err := database.AddReverseIdentityMapping(ctx, db.ReverseIdentityMapping{
+		SSBFeedID:    activeFeed,
+		ATDID:        "did:plc:active",
+		Active:       true,
+		AllowPosts:   true,
+		AllowReplies: true,
+		AllowFollows: true,
+	}); err != nil {
+		t.Fatalf("add active mapping: %v", err)
+	}
+	if err := database.AddReverseIdentityMapping(ctx, db.ReverseIdentityMapping{
+		SSBFeedID:    inactiveFeed,
+		ATDID:        "did:plc:inactive",
+		Active:       false,
+		AllowPosts:   true,
+		AllowReplies: true,
+		AllowFollows: true,
+	}); err != nil {
+		t.Fatalf("add inactive mapping: %v", err)
+	}
+	if err := database.AddReverseIdentityMapping(ctx, db.ReverseIdentityMapping{
+		SSBFeedID:    noActionFeed,
+		ATDID:        "did:plc:noaction",
+		Active:       true,
+		AllowPosts:   false,
+		AllowReplies: false,
+		AllowFollows: false,
+	}); err != nil {
+		t.Fatalf("add no-action mapping: %v", err)
+	}
+
+	replicator := &mockFeedReplicator{}
+	syncReverseReplicatedFeeds(ctx, database, replicator, log.New(io.Discard, "", 0))
+
+	if len(replicator.feeds) != 1 {
+		t.Fatalf("expected 1 replicated feed, got %d (%v)", len(replicator.feeds), replicator.feeds)
+	}
+	if replicator.feeds[0] != activeFeed {
+		t.Fatalf("expected active mapped feed %s, got %s", activeFeed, replicator.feeds[0])
+	}
+}
+
+func testFeedBytes(fill byte) []byte {
+	out := make([]byte, 32)
+	for i := range out {
+		out[i] = fill
+	}
+	return out
 }

@@ -26,11 +26,22 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/metrics"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/room"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomdb"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssbruntime"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/web/handlers"
 	"github.com/urfave/cli/v2"
 )
+
+const reverseReplicationSyncInterval = 2 * time.Second
+
+type reverseMappingLister interface {
+	ListReverseIdentityMappings(ctx context.Context) ([]db.ReverseIdentityMapping, error)
+}
+
+type ssbFeedReplicator interface {
+	Replicate(feed interface{})
+}
 
 func parseSlogLevel(s string) slog.Level {
 	switch strings.ToLower(strings.TrimSpace(s)) {
@@ -344,6 +355,58 @@ func waitForRetry(ctx context.Context, delay time.Duration) bool {
 		return false
 	case <-timer.C:
 		return true
+	}
+}
+
+func syncReverseReplicatedFeeds(ctx context.Context, mappings reverseMappingLister, replicator ssbFeedReplicator, logger *log.Logger) {
+	if mappings == nil || replicator == nil {
+		return
+	}
+	logger = logutil.Ensure(logger)
+
+	entries, err := mappings.ListReverseIdentityMappings(ctx)
+	if err != nil {
+		logger.Printf("event=reverse_replication_sync_failed err=%v", err)
+		return
+	}
+
+	for _, entry := range entries {
+		if !entry.Active {
+			continue
+		}
+		if !entry.AllowPosts && !entry.AllowReplies && !entry.AllowFollows {
+			continue
+		}
+
+		feedRef, err := refs.ParseFeedRef(strings.TrimSpace(entry.SSBFeedID))
+		if err != nil {
+			logger.Printf("event=reverse_replication_invalid_feed feed=%q err=%v", entry.SSBFeedID, err)
+			continue
+		}
+		replicator.Replicate(*feedRef)
+	}
+}
+
+func runReverseReplicationScheduler(ctx context.Context, mappings reverseMappingLister, replicator ssbFeedReplicator, logger *log.Logger, interval time.Duration) {
+	if mappings == nil || replicator == nil {
+		return
+	}
+	if interval <= 0 {
+		interval = reverseReplicationSyncInterval
+	}
+
+	syncReverseReplicatedFeeds(ctx, mappings, replicator, logger)
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			syncReverseReplicatedFeeds(ctx, mappings, replicator, logger)
+		}
 	}
 }
 

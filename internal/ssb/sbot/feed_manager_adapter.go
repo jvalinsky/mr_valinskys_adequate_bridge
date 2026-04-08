@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/feedlog"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/message/legacy"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/replication"
 )
@@ -98,6 +100,64 @@ func (f *FeedManagerAdapter) GetMessage(author *refs.FeedRef, seq int64) ([]byte
 	slog.Debug("feed manager get message full msg", "seq", seq, "msg", string(msgBytes))
 	slog.Debug("feed manager get message bytes", "author", author.String(), "seq", seq, "bytes", len(msgBytes))
 	return msgBytes, nil
+}
+
+func (f *FeedManagerAdapter) AppendSignedMessage(raw []byte) (*refs.FeedRef, int64, error) {
+	raw = bytes.TrimSpace(raw)
+
+	msg, contentBytes, err := legacy.ParseSignedMessageJSON(raw)
+	if err != nil {
+		return nil, 0, fmt.Errorf("feed manager: parse signed message: %w", err)
+	}
+
+	msgRef, err := legacy.SignedMessageRefFromJSON(raw)
+	if err != nil {
+		return nil, 0, fmt.Errorf("feed manager: derive message ref: %w", err)
+	}
+
+	metadata := &feedlog.Metadata{
+		Author:    msg.Author.String(),
+		Sequence:  msg.Sequence,
+		Timestamp: msg.Timestamp,
+		Sig:       msg.Signature,
+		Hash:      msgRef.String(),
+	}
+	if msg.Previous != nil {
+		metadata.Previous = strings.TrimSpace(msg.Previous.String())
+	}
+
+	log, err := f.store.Logs().Get(msg.Author.String())
+	if err == feedlog.ErrNotFound {
+		log, err = f.store.Logs().Create(msg.Author.String())
+	}
+	if err != nil {
+		return nil, 0, fmt.Errorf("feed manager: open log for %s: %w", msg.Author.String(), err)
+	}
+
+	currentSeq, err := log.Seq()
+	if err != nil {
+		return nil, 0, fmt.Errorf("feed manager: read seq for %s: %w", msg.Author.String(), err)
+	}
+	if msg.Sequence <= currentSeq {
+		return &msg.Author, currentSeq, nil
+	}
+	if currentSeq >= 0 && msg.Sequence != currentSeq+1 {
+		return nil, 0, fmt.Errorf("feed manager: sequence gap for %s: have=%d got=%d", msg.Author.String(), currentSeq, msg.Sequence)
+	}
+
+	if _, err := log.Append(contentBytes, metadata); err != nil {
+		return nil, 0, fmt.Errorf("feed manager: append feed log for %s: %w", msg.Author.String(), err)
+	}
+
+	receiveLog, err := f.store.ReceiveLog()
+	if err != nil {
+		return nil, 0, fmt.Errorf("feed manager: open receive log: %w", err)
+	}
+	if _, err := receiveLog.Append(raw, metadata); err != nil {
+		return nil, 0, fmt.Errorf("feed manager: append receive log for %s: %w", msg.Author.String(), err)
+	}
+
+	return &msg.Author, msg.Sequence, nil
 }
 
 var _ replication.FeedManager = (*FeedManagerAdapter)(nil)

@@ -3,6 +3,8 @@ package keys
 import (
 	"bytes"
 	"encoding/base64"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -189,5 +191,38 @@ func TestFromSeedString(t *testing.T) {
 
 	if kp.Public() != kp2.Public() {
 		t.Errorf("parsed key pair doesn't match")
+	}
+}
+
+func TestSaveDoesNotOverwriteExistingSecret(t *testing.T) {
+	tempDir := t.TempDir()
+	secretPath := filepath.Join(tempDir, "secret")
+
+	first, err := Generate()
+	if err != nil {
+		t.Fatalf("generate first key pair: %v", err)
+	}
+	second, err := Generate()
+	if err != nil {
+		t.Fatalf("generate second key pair: %v", err)
+	}
+
+	if err := Save(first, secretPath); err != nil {
+		t.Fatalf("save first secret: %v", err)
+	}
+	if err := Save(second, secretPath); err == nil {
+		t.Fatal("expected second save to fail for existing secret")
+	}
+
+	loaded, err := Load(secretPath)
+	if err != nil {
+		t.Fatalf("load existing secret: %v", err)
+	}
+	if loaded.Public() != first.Public() {
+		t.Fatal("existing secret was overwritten")
+	}
+
+	if _, err := os.Stat(secretPath); err != nil {
+		t.Fatalf("secret path missing after failed save: %v", err)
 	}
 }

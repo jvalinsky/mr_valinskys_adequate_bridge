@@ -18,6 +18,8 @@ TF_BIN="${TF_BIN:-/app/out/release/tildefriends}"
 BOT_SEED="${BOT_SEED:-e2e-full-seed}"
 MAX_WAIT_SECS="${MAX_WAIT_SECS:-300}"
 POLL_INTERVAL="${POLL_INTERVAL:-5}"
+PDS_HOST="${PDS_HOST:-http://pds:80}"
+REVERSE_ENV_FILE="${REVERSE_ENV_FILE:-/bridge-data/reverse-bootstrap.env}"
 
 log() { echo "[e2e-full] $(date +%H:%M:%S) $*"; }
 die() {
@@ -53,7 +55,7 @@ sql_retry() {
   local attempts=5
   local i
   for ((i = 1; i <= attempts; i++)); do
-    result="$(sqlite3 "${db_path}" "PRAGMA busy_timeout=5000; ${query}" 2>/dev/null)" && { echo "${result}"; return 0; }
+    result="$(sqlite3 -cmd ".timeout 5000" "${db_path}" "${query}" 2>/dev/null)" && { echo "${result}"; return 0; }
     sleep 1
   done
   echo ""
@@ -75,6 +77,132 @@ sql_count() {
 url_decode() {
   local encoded="${1//+/ }"
   printf '%b' "${encoded//%/\\x}"
+}
+
+atproto_create_session() {
+  local identifier="$1"
+  local password="$2"
+  local payload
+  payload="$(jq -cn --arg identifier "${identifier}" --arg password "${password}" '{identifier:$identifier,password:$password}')"
+  curl -sS -f -X POST \
+    -H 'content-type: application/json' \
+    "${PDS_HOST}/xrpc/com.atproto.server.createSession" \
+    -d "${payload}"
+}
+
+atproto_create_record() {
+  local access_jwt="$1"
+  local repo="$2"
+  local collection="$3"
+  local record_json="$4"
+  local payload
+  payload="$(jq -cn \
+    --arg collection "${collection}" \
+    --arg repo "${repo}" \
+    --argjson record "${record_json}" \
+    '{collection:$collection,repo:$repo,record:$record}')"
+  curl -sS -f -X POST \
+    -H 'authorization: Bearer '"${access_jwt}" \
+    -H 'content-type: application/json' \
+    "${PDS_HOST}/xrpc/com.atproto.repo.createRecord" \
+    -d "${payload}"
+}
+
+atproto_get_record_http() {
+  local access_jwt="$1"
+  local at_uri="$2"
+  local without_prefix="${at_uri#at://}"
+  local repo="${without_prefix%%/*}"
+  local remainder="${without_prefix#*/}"
+  local collection="${remainder%%/*}"
+  local rkey="${remainder#*/}"
+  curl -sS -o /tmp/atproto-get-record.json -w "%{http_code}" -G \
+    -H 'authorization: Bearer '"${access_jwt}" \
+    --data-urlencode "repo=${repo}" \
+    --data-urlencode "collection=${collection}" \
+    --data-urlencode "rkey=${rkey}" \
+    "${PDS_HOST}/xrpc/com.atproto.repo.getRecord"
+}
+
+wait_for_published_message_ref() {
+  local at_uri="$1"
+  local at_uri_escaped
+  at_uri_escaped="$(sql_escape "${at_uri}")"
+  local deadline=$((SECONDS + MAX_WAIT_SECS))
+  while true; do
+    local ref
+    ref="$(sql_retry "${BRIDGE_DB_PATH}" "SELECT ssb_msg_ref FROM messages WHERE at_uri='${at_uri_escaped}' AND message_state='published' AND TRIM(COALESCE(ssb_msg_ref, '')) <> '' LIMIT 1;" || true)"
+    ref="$(echo "${ref}" | tr -d '[:space:]')"
+    if [[ -n "${ref}" ]]; then
+      echo "${ref}"
+      return 0
+    fi
+    if ((SECONDS >= deadline)); then
+      return 1
+    fi
+    sleep "${POLL_INTERVAL}"
+  done
+}
+
+wait_for_reverse_event_by_marker() {
+  local action="$1"
+  local marker="$2"
+  local marker_escaped
+  marker_escaped="$(sql_escape "${marker}")"
+  local deadline=$((SECONDS + MAX_WAIT_SECS))
+  while true; do
+    local row
+    row="$(sql_retry "${BRIDGE_DB_PATH}" "SELECT source_ssb_msg_ref || '|' || event_state || '|' || COALESCE(result_at_uri, '') || '|' || COALESCE(result_at_cid, '') || '|' || COALESCE(target_at_uri, '') FROM reverse_events WHERE source_ssb_author='$(sql_escape "${TF_IDENTITY}")' AND action='$(sql_escape "${action}")' AND raw_ssb_json LIKE '%${marker_escaped}%' ORDER BY receive_log_seq DESC LIMIT 1;" || true)"
+    if [[ -n "${row}" ]]; then
+      local state
+      state="$(echo "${row}" | cut -d'|' -f2)"
+      if [[ "${state}" == "published" ]]; then
+        echo "${row}"
+        return 0
+      fi
+      if [[ "${state}" == "failed" ]]; then
+        return 1
+      fi
+    fi
+    if ((SECONDS >= deadline)); then
+      return 1
+    fi
+    sleep "${POLL_INTERVAL}"
+  done
+}
+
+wait_for_record_deleted() {
+  local access_jwt="$1"
+  local at_uri="$2"
+  local deadline=$((SECONDS + MAX_WAIT_SECS))
+  while true; do
+    local http_code
+    http_code="$(atproto_get_record_http "${access_jwt}" "${at_uri}")"
+    if [[ "${http_code}" != "200" ]]; then
+      return 0
+    fi
+    if ((SECONDS >= deadline)); then
+      return 1
+    fi
+    sleep "${POLL_INTERVAL}"
+  done
+}
+
+wait_for_record_present() {
+  local access_jwt="$1"
+  local at_uri="$2"
+  local deadline=$((SECONDS + MAX_WAIT_SECS))
+  while true; do
+    local http_code
+    http_code="$(atproto_get_record_http "${access_jwt}" "${at_uri}")"
+    if [[ "${http_code}" == "200" ]]; then
+      return 0
+    fi
+    if ((SECONDS >= deadline)); then
+      return 1
+    fi
+    sleep "${POLL_INTERVAL}"
+  done
 }
 
 # ------------------------------------------------------------------
@@ -109,6 +237,18 @@ while true; do
   fi
   sleep "${POLL_INTERVAL}"
 done
+
+if [[ ! -f "${REVERSE_ENV_FILE}" ]]; then
+  die "reverse env file not found at ${REVERSE_ENV_FILE}"
+fi
+set -a
+# shellcheck source=/dev/null
+source "${REVERSE_ENV_FILE}"
+set +a
+
+if [[ -z "${E2E_REVERSE_SOURCE_DID:-}" || -z "${E2E_REVERSE_TARGET_DID:-}" || -z "${E2E_REVERSE_SOURCE_IDENTIFIER:-}" || -z "${E2E_REVERSE_SOURCE_PASSWORD:-}" ]]; then
+  die "reverse bootstrap env missing source/target credentials"
+fi
 
 # ------------------------------------------------------------------
 # 3. Wait for firehose to deliver commits and bridge to publish
@@ -153,6 +293,26 @@ if [[ -z "${BOT_SSB_FEED}" ]]; then
 fi
 log "bot SSB feed: ${BOT_SSB_FEED}"
 
+log "looking up reverse source/target SSB feeds ..."
+REVERSE_SOURCE_FEED="$(sql_retry "${BRIDGE_DB_PATH}" "SELECT ssb_feed_id FROM bridged_accounts WHERE at_did='$(sql_escape "${E2E_REVERSE_SOURCE_DID}")' AND active=1 LIMIT 1;" || true)"
+REVERSE_SOURCE_FEED="$(echo "${REVERSE_SOURCE_FEED}" | tr -d '[:space:]')"
+REVERSE_TARGET_FEED="$(sql_retry "${BRIDGE_DB_PATH}" "SELECT ssb_feed_id FROM bridged_accounts WHERE at_did='$(sql_escape "${E2E_REVERSE_TARGET_DID}")' AND active=1 LIMIT 1;" || true)"
+REVERSE_TARGET_FEED="$(echo "${REVERSE_TARGET_FEED}" | tr -d '[:space:]')"
+
+deadline=$((SECONDS + 60))
+while [[ -z "${REVERSE_SOURCE_FEED}" || -z "${REVERSE_TARGET_FEED}" ]]; do
+  if ((SECONDS >= deadline)); then
+    die "reverse source/target feeds not registered in bridge db"
+  fi
+  sleep 2
+  REVERSE_SOURCE_FEED="$(sql_retry "${BRIDGE_DB_PATH}" "SELECT ssb_feed_id FROM bridged_accounts WHERE at_did='$(sql_escape "${E2E_REVERSE_SOURCE_DID}")' AND active=1 LIMIT 1;" || true)"
+  REVERSE_SOURCE_FEED="$(echo "${REVERSE_SOURCE_FEED}" | tr -d '[:space:]')"
+  REVERSE_TARGET_FEED="$(sql_retry "${BRIDGE_DB_PATH}" "SELECT ssb_feed_id FROM bridged_accounts WHERE at_did='$(sql_escape "${E2E_REVERSE_TARGET_DID}")' AND active=1 LIMIT 1;" || true)"
+  REVERSE_TARGET_FEED="$(echo "${REVERSE_TARGET_FEED}" | tr -d '[:space:]')"
+done
+log "reverse source feed: ${REVERSE_SOURCE_FEED}"
+log "reverse target feed: ${REVERSE_TARGET_FEED}"
+
 # ------------------------------------------------------------------
 # 5. Extract room + bridge keys
 # ------------------------------------------------------------------
@@ -183,14 +343,21 @@ if [[ -z "${TF_IDENTITY}" || "${TF_IDENTITY}" != @*".ed25519" ]]; then
 fi
 log "tildefriends identity: ${TF_IDENTITY}"
 
+baseline_msg_count="$(sql_count "${TF_DB_PATH}" "SELECT COUNT(*) FROM messages WHERE author='$(sql_escape "${BOT_SSB_FEED}")';")"
+log "tildefriends baseline messages from bot before room sync: ${baseline_msg_count}"
+
 # ------------------------------------------------------------------
 # 7. Create + consume invite for TF
 # ------------------------------------------------------------------
 log "creating invite via room HTTP endpoint..."
-invite_resp="$(curl -sS -f -X POST "http://${BRIDGE_HTTP_ADDR}/create-invite" -H "Accept: application/json")"
-invite_url="$(echo "${invite_resp}" | jq -r '.url // empty')"
-if [[ -z "${invite_url}" || "${invite_url}" != *"token="* ]]; then
-  die "create-invite failed: ${invite_resp}"
+invite_headers="/tmp/create-invite.headers"
+invite_body="/tmp/create-invite.json"
+invite_http="$(curl -sS -D "${invite_headers}" -o "${invite_body}" -w "%{http_code}" -X POST "http://${BRIDGE_HTTP_ADDR}/create-invite" -H "Accept: application/json" -H "X-Forwarded-Proto: https")"
+invite_resp="$(cat "${invite_body}")"
+invite_location="$(awk 'BEGIN{IGNORECASE=1} /^Location:/ {sub(/\r$/, "", $2); print $2}' "${invite_headers}" | tail -n1)"
+invite_url="$(echo "${invite_resp}" | jq -r '.url // empty' 2>/dev/null || true)"
+if [[ "${invite_http}" != "200" || -z "${invite_url}" || "${invite_url}" != *"token="* ]]; then
+  die "create-invite failed: http=${invite_http} location=${invite_location} body=${invite_resp}"
 fi
 invite_token_raw="${invite_url##*token=}"
 invite_token_raw="${invite_token_raw%%&*}"
@@ -198,7 +365,7 @@ INVITE_TOKEN="$(url_decode "${invite_token_raw}")"
 log "invite created"
 
 consume_payload="$(jq -cn --arg invite "${INVITE_TOKEN}" --arg id "${TF_IDENTITY}" '{invite:$invite,id:$id}')"
-consume_http="$(curl -sS -o /tmp/invite-consume.json -w "%{http_code}" -X POST "http://${BRIDGE_HTTP_ADDR}/invite/consume" -H "Content-Type: application/json" -H "Accept: application/json" --data "${consume_payload}")"
+consume_http="$(curl -sS -o /tmp/invite-consume.json -w "%{http_code}" -X POST "http://${BRIDGE_HTTP_ADDR}/invite/consume" -H "Content-Type: application/json" -H "Accept: application/json" -H "X-Forwarded-Proto: https" --data "${consume_payload}")"
 consume_body="$(cat /tmp/invite-consume.json)"
 if [[ "${consume_http}" != "200" ]]; then
   die "invite consume failed: http=${consume_http} body=${consume_body}"
@@ -238,8 +405,8 @@ log "follow messages published"
 log "configuring TF connection table (room-only) ..."
 room_host_escaped="$(sql_escape "${ROOM_HOST}")"
 room_key_escaped="$(sql_escape "${ROOM_KEY}")"
-sqlite3 "${TF_DB_PATH}" "PRAGMA busy_timeout=5000; DELETE FROM connections;"
-sqlite3 "${TF_DB_PATH}" "PRAGMA busy_timeout=5000; INSERT INTO connections (host, port, key) VALUES ('${room_host_escaped}', ${ROOM_PORT}, '${room_key_escaped}');"
+sqlite3 -cmd ".timeout 5000" "${TF_DB_PATH}" "DELETE FROM connections;"
+sqlite3 -cmd ".timeout 5000" "${TF_DB_PATH}" "INSERT INTO connections (host, port, key) VALUES ('${room_host_escaped}', ${ROOM_PORT}, '${room_key_escaped}');"
 
 # ------------------------------------------------------------------
 # 10. Start tildefriends in background
@@ -272,7 +439,6 @@ done
 # 11. Wait for replication
 # ------------------------------------------------------------------
 log "waiting for TF to replicate bot feed via room ..."
-baseline_msg_count="$(sql_count "${TF_DB_PATH}" "SELECT COUNT(*) FROM messages WHERE author='$(sql_escape "${BOT_SSB_FEED}")';")"
 deadline=$((SECONDS + MAX_WAIT_SECS))
 replicated=false
 
@@ -333,8 +499,90 @@ if [[ "${bridge_status}" != "live" ]]; then
   gh_warn "bridge runtime status is '${bridge_status}' (expected 'live')"
 fi
 
+# ------------------------------------------------------------------
+# 13. Reverse sync verification (Tildefriends -> ATProto)
+# ------------------------------------------------------------------
+log "running reverse sync verification ..."
+
+source_session_json="$(atproto_create_session "${E2E_REVERSE_SOURCE_IDENTIFIER}" "${E2E_REVERSE_SOURCE_PASSWORD}")"
+SOURCE_ACCESS_JWT="$(echo "${source_session_json}" | jq -r '.accessJwt // empty')"
+SOURCE_SESSION_DID="$(echo "${source_session_json}" | jq -r '.did // empty')"
+if [[ -z "${SOURCE_ACCESS_JWT}" || -z "${SOURCE_SESSION_DID}" ]]; then
+  die "failed to create reverse source ATProto session"
+fi
+if [[ "${SOURCE_SESSION_DID}" != "${E2E_REVERSE_SOURCE_DID}" ]]; then
+  die "reverse source session DID mismatch: expected ${E2E_REVERSE_SOURCE_DID}, got ${SOURCE_SESSION_DID}"
+fi
+
+log "adding reverse allowlist mapping for Tildefriends identity ..."
+tf_id_escaped="$(sql_escape "${TF_IDENTITY}")"
+reverse_source_did_escaped="$(sql_escape "${E2E_REVERSE_SOURCE_DID}")"
+sqlite3 -cmd ".timeout 5000" "${BRIDGE_DB_PATH}" "INSERT INTO reverse_identity_mappings (ssb_feed_id, at_did, active, allow_posts, allow_replies, allow_follows, updated_at) VALUES ('${tf_id_escaped}', '${reverse_source_did_escaped}', 1, 1, 1, 1, CURRENT_TIMESTAMP) ON CONFLICT(ssb_feed_id) DO UPDATE SET at_did=excluded.at_did, active=1, allow_posts=1, allow_replies=1, allow_follows=1, updated_at=CURRENT_TIMESTAMP;"
+
+reply_target_text="tf reverse reply target $(date +%s%N)"
+reply_target_record="$(jq -cn --arg text "${reply_target_text}" --arg created_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{"$type":"app.bsky.feed.post","text":$text,"createdAt":$created_at}')"
+reply_target_resp="$(atproto_create_record "${SOURCE_ACCESS_JWT}" "${E2E_REVERSE_SOURCE_DID}" "app.bsky.feed.post" "${reply_target_record}")"
+REPLY_TARGET_URI="$(echo "${reply_target_resp}" | jq -r '.uri // empty')"
+REPLY_TARGET_CID="$(echo "${reply_target_resp}" | jq -r '.cid // empty')"
+[[ -n "${REPLY_TARGET_URI}" && -n "${REPLY_TARGET_CID}" ]] || die "failed to create reverse reply target record"
+
+REPLY_TARGET_SSB_REF="$(wait_for_published_message_ref "${REPLY_TARGET_URI}")" || die "bridge did not publish reverse reply target ${REPLY_TARGET_URI}"
+log "reverse reply target published to SSB as ${REPLY_TARGET_SSB_REF}"
+
+root_marker="tf-reverse-root-$(date +%s%N)"
+root_text="tildefriends reverse root ${root_marker}"
+root_json="$(jq -cn --arg text "${root_text}" --arg marker "${root_marker}" '{"type":"post","text":$text,"bridge_marker":$marker}')"
+"${TF_BIN}" publish --db-path "${TF_DB_PATH}" --id "${TF_IDENTITY}" --content "${root_json}" || die "failed to publish Tildefriends reverse root post"
+root_event_row="$(wait_for_reverse_event_by_marker "post" "${root_marker}")" || die "reverse root post did not publish"
+ROOT_RESULT_URI="$(echo "${root_event_row}" | cut -d'|' -f3)"
+wait_for_record_present "${SOURCE_ACCESS_JWT}" "${ROOT_RESULT_URI}" || die "reverse root atproto record not visible for ${ROOT_RESULT_URI}"
+if [[ "$(jq -r '.value.text // empty' /tmp/atproto-get-record.json)" != "${root_text}" ]]; then
+  die "reverse root text mismatch for ${ROOT_RESULT_URI}"
+fi
+
+reply_marker="tf-reverse-reply-$(date +%s%N)"
+reply_text="tildefriends reverse reply ${reply_marker}"
+reply_json="$(jq -cn --arg text "${reply_text}" --arg marker "${reply_marker}" --arg root "${REPLY_TARGET_SSB_REF}" '{"type":"post","text":$text,"root":$root,"branch":$root,"bridge_marker":$marker}')"
+"${TF_BIN}" publish --db-path "${TF_DB_PATH}" --id "${TF_IDENTITY}" --content "${reply_json}" || die "failed to publish Tildefriends reverse reply"
+reply_event_row="$(wait_for_reverse_event_by_marker "reply" "${reply_marker}")" || die "reverse reply did not publish"
+REPLY_RESULT_URI="$(echo "${reply_event_row}" | cut -d'|' -f3)"
+wait_for_record_present "${SOURCE_ACCESS_JWT}" "${REPLY_RESULT_URI}" || die "reverse reply atproto record not visible for ${REPLY_RESULT_URI}"
+if [[ "$(jq -r '.value.reply.root.uri // empty' /tmp/atproto-get-record.json)" != "${REPLY_TARGET_URI}" ]]; then
+  die "reverse reply root uri mismatch for ${REPLY_RESULT_URI}"
+fi
+if [[ "$(jq -r '.value.reply.parent.uri // empty' /tmp/atproto-get-record.json)" != "${REPLY_TARGET_URI}" ]]; then
+  die "reverse reply parent uri mismatch for ${REPLY_RESULT_URI}"
+fi
+if [[ "$(jq -r '.value.reply.root.cid // empty' /tmp/atproto-get-record.json)" != "${REPLY_TARGET_CID}" ]]; then
+  die "reverse reply root cid mismatch for ${REPLY_RESULT_URI}"
+fi
+if [[ "$(jq -r '.value.reply.parent.cid // empty' /tmp/atproto-get-record.json)" != "${REPLY_TARGET_CID}" ]]; then
+  die "reverse reply parent cid mismatch for ${REPLY_RESULT_URI}"
+fi
+
+follow_marker="tf-reverse-follow-$(date +%s%N)"
+follow_json="$(jq -cn --arg contact "${REVERSE_TARGET_FEED}" --arg marker "${follow_marker}" '{"type":"contact","contact":$contact,"following":true,"blocking":false,"bridge_marker":$marker}')"
+"${TF_BIN}" publish --db-path "${TF_DB_PATH}" --id "${TF_IDENTITY}" --content "${follow_json}" || die "failed to publish Tildefriends reverse follow"
+follow_event_row="$(wait_for_reverse_event_by_marker "follow" "${follow_marker}")" || die "reverse follow did not publish"
+FOLLOW_RESULT_URI="$(echo "${follow_event_row}" | cut -d'|' -f3)"
+wait_for_record_present "${SOURCE_ACCESS_JWT}" "${FOLLOW_RESULT_URI}" || die "reverse follow atproto record not visible for ${FOLLOW_RESULT_URI}"
+if [[ "$(jq -r '.value.subject // empty' /tmp/atproto-get-record.json)" != "${E2E_REVERSE_TARGET_DID}" ]]; then
+  die "reverse follow subject mismatch for ${FOLLOW_RESULT_URI}"
+fi
+
+unfollow_marker="tf-reverse-unfollow-$(date +%s%N)"
+unfollow_json="$(jq -cn --arg contact "${REVERSE_TARGET_FEED}" --arg marker "${unfollow_marker}" '{"type":"contact","contact":$contact,"following":false,"blocking":false,"bridge_marker":$marker}')"
+"${TF_BIN}" publish --db-path "${TF_DB_PATH}" --id "${TF_IDENTITY}" --content "${unfollow_json}" || die "failed to publish Tildefriends reverse unfollow"
+unfollow_event_row="$(wait_for_reverse_event_by_marker "unfollow" "${unfollow_marker}")" || die "reverse unfollow did not publish"
+UNFOLLOW_RESULT_URI="$(echo "${unfollow_event_row}" | cut -d'|' -f3)"
+if [[ "${UNFOLLOW_RESULT_URI}" != "${FOLLOW_RESULT_URI}" ]]; then
+  die "reverse unfollow deleted ${UNFOLLOW_RESULT_URI}, expected ${FOLLOW_RESULT_URI}"
+fi
+wait_for_record_deleted "${SOURCE_ACCESS_JWT}" "${FOLLOW_RESULT_URI}" || die "reverse unfollow did not delete ${FOLLOW_RESULT_URI}"
+log "reverse sync verified for Tildefriends root/reply/follow/unfollow"
+
 log "============================================"
-log "  E2E PASSED: Full-stack ATProto → SSB     "
-log "  Pipeline verified end-to-end             "
+log "  E2E PASSED: Full-stack ATProto ↔ SSB     "
+log "  Forward and reverse pipeline verified    "
 log "============================================"
 exit 0

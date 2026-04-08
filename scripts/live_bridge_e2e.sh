@@ -18,6 +18,8 @@ if [[ -n "${ENV_FILE}" ]]; then
 fi
 
 EXPECT="${E2E_EXPECT:-pass}"
+TEST_PATTERN="${LIVE_E2E_TEST_PATTERN:-TestBridgeLiveInterop}"
+TEST_LABEL="${LIVE_E2E_LABEL:-live relay + room interoperability tests}"
 case "${EXPECT}" in
   pass|fail)
     ;;
@@ -37,9 +39,9 @@ if [[ "${GOFLAGS:-}" != *"-mod="* ]]; then
   export GOFLAGS="-mod=mod ${GOFLAGS:-}"
 fi
 
-echo "[live-e2e] running live relay + room interoperability test (expect=${EXPECT})"
+echo "[live-e2e] running ${TEST_LABEL} (pattern=${TEST_PATTERN} expect=${EXPECT})"
 set +e
-go test ./internal/livee2e -run TestBridgeLiveInterop -count=1
+go test ./internal/livee2e -run "${TEST_PATTERN}" -count=1
 test_exit=$?
 set -e
 

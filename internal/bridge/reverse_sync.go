@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -16,6 +17,7 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/logutil"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/mapper"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/feedlog"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/message/legacy"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto"
 	appbsky "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/appbsky"
 	lexutil "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/lexutil"
@@ -24,12 +26,12 @@ import (
 )
 
 const (
-	reverseReceiveLogSeqKey  = "reverse_receive_log_seq"
-	reverseLastScanAtKey     = "reverse_sync_last_scan_at"
-	reverseLastErrorKey      = "reverse_sync_last_error"
-	reverseEnabledKey        = "reverse_sync_enabled"
-	reverseCredentialsKey    = "reverse_sync_credentials_file"
-	defaultReverseScanLimit  = 100
+	reverseReceiveLogSeqKey = "reverse_receive_log_seq"
+	reverseLastScanAtKey    = "reverse_sync_last_scan_at"
+	reverseLastErrorKey     = "reverse_sync_last_error"
+	reverseEnabledKey       = "reverse_sync_enabled"
+	reverseCredentialsKey   = "reverse_sync_credentials_file"
+	defaultReverseScanLimit = 100
 )
 
 type ReverseDatabase interface {
@@ -71,10 +73,10 @@ type reverseResolvedCredential struct {
 }
 
 type ReverseCreatedRecord struct {
-	URI            string
-	CID            string
-	Collection     string
-	RawRecordJSON  string
+	URI           string
+	CID           string
+	Collection    string
+	RawRecordJSON string
 }
 
 type ReverseRecordWriter interface {
@@ -89,13 +91,13 @@ type ReverseSyncStatusProvider interface {
 }
 
 type ReverseProcessor struct {
-	db          ReverseDatabase
-	receiveLog  feedlog.Log
-	writer      ReverseRecordWriter
+	db           ReverseDatabase
+	receiveLog   feedlog.Log
+	writer       ReverseRecordWriter
 	hostResolver ReversePDSHostResolver
-	logger      *log.Logger
-	credentials map[string]ReverseCredentialFileEntry
-	enabled     bool
+	logger       *log.Logger
+	credentials  map[string]ReverseCredentialFileEntry
+	enabled      bool
 }
 
 type ReverseProcessorConfig struct {
@@ -346,8 +348,8 @@ func (p *ReverseProcessor) processDecodedMessage(ctx context.Context, receiveLog
 		return nil
 	}
 
-	var content map[string]any
-	if err := json.Unmarshal(rawSSBJSON, &content); err != nil {
+	content, err := decodeSSBContent(rawSSBJSON)
+	if err != nil {
 		event := p.baseReverseEvent(receiveLogSeq, sourceRef, sourceAuthor, sourceSeq, mapping.ATDID, "", rawSSBJSON)
 		event.EventState = db.ReverseEventStateFailed
 		event.ErrorText = fmt.Sprintf("decode_ssb_json=%v", err)
@@ -415,6 +417,49 @@ func (p *ReverseProcessor) processDecodedMessage(ctx context.Context, receiveLog
 	return p.db.AddReverseEvent(ctx, *event)
 }
 
+func decodeSSBContent(rawSSBJSON []byte) (map[string]any, error) {
+	rawSSBJSON = bytes.TrimSpace(rawSSBJSON)
+	if len(rawSSBJSON) == 0 {
+		return nil, fmt.Errorf("empty_ssb_json")
+	}
+
+	if signed, _, err := legacy.ParseSignedMessageJSON(rawSSBJSON); err == nil {
+		return normalizeSSBContentMap(signed.Content)
+	}
+
+	var envelope map[string]any
+	if err := json.Unmarshal(rawSSBJSON, &envelope); err != nil {
+		return nil, err
+	}
+	if content, ok := envelope["content"]; ok {
+		return normalizeSSBContentMap(content)
+	}
+	return normalizeSSBContentMap(envelope)
+}
+
+func normalizeSSBContentMap(value any) (map[string]any, error) {
+	switch typed := value.(type) {
+	case map[string]any:
+		return typed, nil
+	case json.RawMessage:
+		var out map[string]any
+		if err := json.Unmarshal(typed, &out); err != nil {
+			return nil, err
+		}
+		return out, nil
+	default:
+		data, err := json.Marshal(typed)
+		if err != nil {
+			return nil, err
+		}
+		var out map[string]any
+		if err := json.Unmarshal(data, &out); err != nil {
+			return nil, err
+		}
+		return out, nil
+	}
+}
+
 func (p *ReverseProcessor) buildReverseEvent(ctx context.Context, receiveLogSeq int64, sourceRef, sourceAuthor string, sourceSeq *int64, mapping db.ReverseIdentityMapping, content map[string]any, rawSSBJSON []byte) (*db.ReverseEvent, any, string, error) {
 	msgType := strings.TrimSpace(stringValue(content["type"]))
 	switch msgType {
@@ -427,22 +472,22 @@ func (p *ReverseProcessor) buildReverseEvent(ctx context.Context, receiveLogSeq 
 				event.DeferReason = "action_disabled=reply"
 				return &event, nil, "", nil
 			}
-				rootMsg, parentMsg, deferReason, err := p.resolveReplyTargets(ctx, replyRootRef, replyParentRef)
-				if err != nil {
-					return nil, nil, "", err
-				}
-				event.TargetSSBRef = replyParentRef
-				if deferReason != "" {
-					event.EventState = db.ReverseEventStateDeferred
-					event.DeferReason = deferReason
-					return &event, nil, "", nil
-				}
-				event.TargetATURI = parentMsg.ATURI
-				event.TargetATCID = parentMsg.ATCID
-				if rootMsg != nil {
-					event.TargetATDID = rootMsg.ATDID
-				}
-				record := &appbsky.FeedPost{
+			rootMsg, parentMsg, deferReason, err := p.resolveReplyTargets(ctx, replyRootRef, replyParentRef)
+			if err != nil {
+				return nil, nil, "", err
+			}
+			event.TargetSSBRef = replyParentRef
+			if deferReason != "" {
+				event.EventState = db.ReverseEventStateDeferred
+				event.DeferReason = deferReason
+				return &event, nil, "", nil
+			}
+			event.TargetATURI = parentMsg.ATURI
+			event.TargetATCID = parentMsg.ATCID
+			if rootMsg != nil {
+				event.TargetATDID = rootMsg.ATDID
+			}
+			record := &appbsky.FeedPost{
 				Text:      stringValue(content["text"]),
 				CreatedAt: reverseCreatedAt(sourceSeq),
 				Reply: &appbsky.FeedPost_ReplyRef{

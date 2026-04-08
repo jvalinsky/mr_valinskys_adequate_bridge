@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -83,7 +84,11 @@ func New(opts Options) (*Sbot, error) {
 				return nil, fmt.Errorf("sbot: failed to generate key pair: %w", err)
 			}
 			if saveErr := keys.Save(kp, secretPath); saveErr != nil {
-				return nil, fmt.Errorf("sbot: failed to save key pair: %w", saveErr)
+				existingKP, loadErr := loadKeyPairWithRetry(secretPath, 5, 50*time.Millisecond)
+				if loadErr != nil {
+					return nil, fmt.Errorf("sbot: failed to save key pair: %v (reload existing secret failed: %w)", saveErr, loadErr)
+				}
+				kp = existingKP
 			}
 		}
 		opts.KeyPair = kp
@@ -177,7 +182,7 @@ func New(opts Options) (*Sbot, error) {
 		tunnelHandler := room.NewTunnelHandler(roomSrv, opts.KeyPair, opts.AppKey)
 		handlerMux.Register(muxrpc.Method{"tunnel", "announce"}, tunnelHandler)
 		handlerMux.Register(muxrpc.Method{"tunnel", "leave"}, tunnelHandler)
-		handlerMux.Register(muxrpc.Method{"tunnel", "connect"}, tunnelHandler)
+		handlerMux.Register(muxrpc.Method{"tunnel", "connect"}, room.NewClientTunnelConnectHandler(opts.KeyPair.FeedRef(), handlerMux))
 		handlerMux.Register(muxrpc.Method{"tunnel", "endpoints"}, tunnelHandler)
 		handlerMux.Register(muxrpc.Method{"tunnel", "isRoom"}, tunnelHandler)
 		handlerMux.Register(muxrpc.Method{"tunnel", "ping"}, tunnelHandler)
@@ -208,6 +213,26 @@ func New(opts Options) (*Sbot, error) {
 		manifest:   manifest,
 		handlerMux: handlerMux,
 	}, nil
+}
+
+func loadKeyPairWithRetry(path string, attempts int, delay time.Duration) (*keys.KeyPair, error) {
+	if attempts <= 0 {
+		attempts = 1
+	}
+
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		kp, err := keys.Load(path)
+		if err == nil {
+			return kp, nil
+		}
+		lastErr = err
+		if i+1 < attempts {
+			time.Sleep(delay)
+		}
+	}
+
+	return nil, lastErr
 }
 
 func newManifest(enableEBT, enableRoom bool) *muxrpc.Manifest {
@@ -337,12 +362,43 @@ func (s *Sbot) Shutdown() error {
 }
 
 func (s *Sbot) Connect(ctx context.Context, addr string, remote ed25519.PublicKey) (*network.Peer, error) {
-	peer, err := s.netClient.Connect(ctx, addr, remote, s.handlerMux)
+	if ctx != nil {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+	}
+
+	peer, err := s.netClient.Connect(s.connectionContext(), addr, remote, s.handlerMux)
 	if err != nil {
 		return nil, err
 	}
 	s.netServer.AddPeer(peer)
+	s.trackOutgoingPeer(peer)
 	return peer, nil
+}
+
+func (s *Sbot) connectionContext() context.Context {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.ctx != nil {
+		return s.ctx
+	}
+	return context.Background()
+}
+
+func (s *Sbot) trackOutgoingPeer(peer *network.Peer) {
+	if s == nil || s.netServer == nil || peer == nil || peer.RPC() == nil {
+		return
+	}
+
+	go func() {
+		<-peer.RPC().Wait()
+		s.netServer.RemovePeer(peer)
+		_ = peer.Conn.Close()
+	}()
 }
 
 func (s *Sbot) Node() *Sbot {
@@ -420,7 +476,23 @@ func (s *Sbot) BlobStore() *blobs.Store {
 }
 
 func (s *Sbot) Publisher() (*publisher.Publisher, error) {
-	return publisher.New(s.KeyPair, nil, s.store.Logs())
+	var receiveLog feedlog.Log
+	if s.store != nil {
+		var err error
+		receiveLog, err = s.store.ReceiveLog()
+		if err != nil {
+			return nil, fmt.Errorf("sbot: open receive log: %w", err)
+		}
+	}
+
+	return publisher.New(
+		s.KeyPair,
+		receiveLog,
+		s.store.Logs(),
+		publisher.WithAfterPublish(func(feed refs.FeedRef, seq int64) {
+			s.NotifyFeedSeq(&feed, seq)
+		}),
+	)
 }
 
 func (s *Sbot) SetMessageLogger(logger feedlog.MessageLogger) {
@@ -480,12 +552,52 @@ func (e *peerEndpoint) Async(ctx context.Context, result interface{}, tipe inter
 }
 
 func (s *Sbot) Replicate(feed interface{}) {
+	var feedRef *refs.FeedRef
 	switch f := feed.(type) {
 	case refs.FeedRef:
 		s.replicatedFeeds.Store(f.String(), f)
+		feedRef = &f
+	case *refs.FeedRef:
+		if f == nil {
+			return
+		}
+		s.replicatedFeeds.Store(f.String(), *f)
+		feedRef = f
 	case string:
-		s.replicatedFeeds.Store(f, nil)
+		trimmed := strings.TrimSpace(f)
+		if trimmed == "" {
+			return
+		}
+		s.replicatedFeeds.Store(trimmed, nil)
+		parsed, err := refs.ParseFeedRef(trimmed)
+		if err == nil {
+			feedRef = parsed
+			s.replicatedFeeds.Store(parsed.String(), *parsed)
+		}
+	default:
+		return
 	}
+
+	if feedRef == nil || s.state == nil {
+		return
+	}
+
+	seq := int64(0)
+	if s.store != nil {
+		log, err := s.store.Logs().Get(feedRef.String())
+		switch err {
+		case nil:
+			currentSeq, seqErr := log.Seq()
+			if seqErr == nil && currentSeq > 0 {
+				seq = currentSeq
+			}
+		case feedlog.ErrNotFound:
+		default:
+			return
+		}
+	}
+
+	s.state.SetFeedSeq(feedRef, seq)
 }
 
 func (s *Sbot) NotifyFeedSeq(feed *refs.FeedRef, seq int64) {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -34,6 +35,85 @@ type StoredMessage struct {
 	Key       refs.MessageRef `json:"key"`
 	Value     SignedMessage   `json:"value"`
 	Timestamp float64         `json:"timestamp"`
+}
+
+type signedMessageJSON struct {
+	Previous  *refs.MessageRef `json:"previous,omitempty"`
+	Author    refs.FeedRef     `json:"author"`
+	Sequence  int64            `json:"sequence"`
+	Timestamp int64            `json:"timestamp"`
+	Hash      string           `json:"hash"`
+	Content   json.RawMessage  `json:"content"`
+	Signature string           `json:"signature"`
+}
+
+func parseSignedMessageJSONRaw(input []byte) (*signedMessageJSON, error) {
+	var raw signedMessageJSON
+	if err := json.Unmarshal(input, &raw); err != nil {
+		return nil, err
+	}
+	return &raw, nil
+}
+
+func marshalSignedMessageJSON(raw *signedMessageJSON, includeSignature bool) ([]byte, error) {
+	buf := &bytes.Buffer{}
+	buf.WriteString("{\n")
+
+	buf.WriteString(`  "previous": `)
+	if raw.Previous != nil {
+		buf.WriteString(`"` + raw.Previous.String() + `"`)
+	} else {
+		buf.WriteString("null")
+	}
+	buf.WriteString(",\n")
+
+	buf.WriteString(`  "author": "`)
+	buf.WriteString(raw.Author.String())
+	buf.WriteString(`",` + "\n")
+
+	buf.WriteString(`  "sequence": `)
+	buf.WriteString(fmt.Sprintf("%d", raw.Sequence))
+	buf.WriteString(",\n")
+
+	buf.WriteString(`  "timestamp": `)
+	buf.WriteString(fmt.Sprintf("%d", raw.Timestamp))
+	buf.WriteString(",\n")
+
+	buf.WriteString(`  "hash": "`)
+	buf.WriteString(raw.Hash)
+	buf.WriteString(`",` + "\n")
+
+	buf.WriteString(`  "content": `)
+	contentBytes, err := PrettyPrint(bytes.TrimSpace(raw.Content))
+	if err != nil {
+		return nil, err
+	}
+	buf.Write(indentJSONFragment(contentBytes, "  "))
+
+	if includeSignature {
+		sig, err := ParseSignatureString(raw.Signature)
+		if err != nil {
+			return nil, err
+		}
+		buf.WriteString(",\n")
+		buf.WriteString(`  "signature": "`)
+		buf.WriteString(base64.StdEncoding.EncodeToString(sig))
+		buf.WriteString(".sig.ed25519")
+		buf.WriteString(`"` + "\n")
+	} else {
+		buf.WriteString("\n")
+	}
+
+	buf.WriteString("}")
+	return buf.Bytes(), nil
+}
+
+func indentJSONFragment(data []byte, prefix string) []byte {
+	lines := bytes.Split(data, []byte("\n"))
+	for i := 1; i < len(lines); i++ {
+		lines[i] = append([]byte(prefix), lines[i]...)
+	}
+	return bytes.Join(lines, []byte("\n"))
 }
 
 const HashAlgorithm = "sha256"
@@ -334,4 +414,80 @@ func (m *SignedMessage) HashContent() ([]byte, error) {
 		return nil, err
 	}
 	return CanonicalJSON(data), nil
+}
+
+func ParseSignedMessageJSON(input []byte) (*SignedMessage, []byte, error) {
+	input = bytes.TrimSpace(input)
+
+	raw, err := parseSignedMessageJSONRaw(input)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	sig, err := ParseSignatureString(raw.Signature)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var content interface{}
+	contentBytes := bytes.TrimSpace(raw.Content)
+	if err := json.Unmarshal(contentBytes, &content); err != nil {
+		content = string(contentBytes)
+	}
+
+	return &SignedMessage{
+		Previous:  raw.Previous,
+		Author:    raw.Author,
+		Sequence:  raw.Sequence,
+		Timestamp: raw.Timestamp,
+		Hash:      raw.Hash,
+		Content:   content,
+		Signature: sig,
+	}, contentBytes, nil
+}
+
+func VerifySignedMessageJSON(input []byte) (*SignedMessage, error) {
+	input = bytes.TrimSpace(input)
+
+	raw, err := parseSignedMessageJSONRaw(input)
+	if err != nil {
+		return nil, err
+	}
+
+	msg, _, err := ParseSignedMessageJSON(input)
+	if err != nil {
+		return nil, err
+	}
+
+	signable, err := marshalSignedMessageJSON(raw, false)
+	if err != nil {
+		return nil, err
+	}
+
+	sig, err := ParseSignatureString(raw.Signature)
+	if err != nil {
+		return nil, err
+	}
+
+	if !verifySignature(msg.Author.PubKey(), signable, sig) {
+		return nil, fmt.Errorf("legacy: invalid signature")
+	}
+
+	return msg, nil
+}
+
+func SignedMessageRefFromJSON(input []byte) (*refs.MessageRef, error) {
+	input = bytes.TrimSpace(input)
+
+	raw, err := parseSignedMessageJSONRaw(input)
+	if err != nil {
+		return nil, err
+	}
+
+	canonical, err := marshalSignedMessageJSON(raw, true)
+	if err != nil {
+		return nil, err
+	}
+
+	return NewMessageRef(HashMessage(canonical))
 }

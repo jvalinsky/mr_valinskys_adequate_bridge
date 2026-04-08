@@ -513,6 +513,11 @@ func (r *Runtime) handleMUXRPCConn(ctx context.Context, conn net.Conn) {
 	if isMember && r.state != nil {
 		r.state.AddAttendant(*remoteFeed, tracked.RemoteAddr().String())
 		r.logger.Printf("event=room_member_connected feed=%s addr=%s", remoteFeed.String(), tracked.RemoteAddr().String())
+		if r.tunnelHandler != nil {
+			if err := r.tunnelHandler.NotifyPeerAvailable(*remoteFeed); err != nil {
+				r.logger.Printf("event=room_member_connect_hook_failed feed=%s err=%v", remoteFeed.String(), err)
+			}
+		}
 	}
 	if isMember && r.snapshots != nil {
 		_ = r.snapshots.UpsertAttendant(context.Background(), *remoteFeed, tracked.RemoteAddr().String(), time.Now().Unix())

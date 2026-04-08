@@ -71,6 +71,24 @@ func TestMessageRefParse(t *testing.T) {
 	}
 }
 
+func TestMessageRefJSON(t *testing.T) {
+	original := MustNewMessageRef([]byte("abcdefghijklmnopqrstuvwxyz123456"), RefAlgoMessageSSB1)
+
+	b, err := json.Marshal(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var parsed MessageRef
+	if err := json.Unmarshal(b, &parsed); err != nil {
+		t.Fatal(err)
+	}
+
+	if !parsed.Equal(*original) {
+		t.Errorf("JSON roundtrip failed")
+	}
+}
+
 func TestBlobRefString(t *testing.T) {
 	ref := MustNewBlobRef([]byte("abcdefghijklmnopqrstuvwxyz123456"))
 	s := ref.String()

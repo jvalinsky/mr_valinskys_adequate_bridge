@@ -50,6 +50,23 @@ func (h *TunnelHandler) SetAnnounceHook(hook func(refs.FeedRef) error) {
 	h.announceHook = hook
 }
 
+func (h *TunnelHandler) NotifyPeerAvailable(feed refs.FeedRef) error {
+	if h == nil {
+		return nil
+	}
+	if h.server != nil && h.server.state != nil && h.server.keyPair != nil {
+		addr := tunnelAddress(*h.server.keyPair, feed)
+		h.server.state.AddPeer(feed, addr)
+		if h.snapshots != nil {
+			_ = h.snapshots.UpsertTunnelEndpoint(context.Background(), feed, addr, time.Now().Unix())
+		}
+	}
+	if h.announceHook == nil {
+		return nil
+	}
+	return h.announceHook(feed)
+}
+
 func (h *TunnelHandler) Handled(m muxrpc.Method) bool {
 	return len(m) >= 1 && m[0] == "tunnel"
 }

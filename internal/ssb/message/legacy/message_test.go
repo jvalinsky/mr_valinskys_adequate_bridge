@@ -92,3 +92,23 @@ func TestExtractSignature(t *testing.T) {
 		t.Errorf("expected 64, got %d", len(s))
 	}
 }
+
+func TestVerifySignedMessageJSONPreservesContentOrder(t *testing.T) {
+	raw := []byte(`{"previous":null,"author":"@6iF2pmL9+jpnM515551HTgVVOGCUZ9qfE8Y3DmdFz7w=.ed25519","sequence":1,"timestamp":1775622534000,"hash":"sha256","content":{"type":"contact","contact":"@HY3zOj73zbLT5wG76eUZXIKTMB4to/voRbYWESXyVtA=.ed25519","following":true},"signature":"IFefnN3fb4bEpWfFtMD2lyn30yQXtmSPVCB0JQQv05WkHVADzz675PiMAf5JLXosTUPfP02IvTeKHdQd1JGPAw==.sig.ed25519"}`)
+
+	msg, err := VerifySignedMessageJSON(raw)
+	if err != nil {
+		t.Fatalf("verify signed message JSON: %v", err)
+	}
+	if got, want := msg.Author.String(), "@6iF2pmL9+jpnM515551HTgVVOGCUZ9qfE8Y3DmdFz7w=.ed25519"; got != want {
+		t.Fatalf("author = %s, want %s", got, want)
+	}
+
+	msgRef, err := SignedMessageRefFromJSON(raw)
+	if err != nil {
+		t.Fatalf("signed message ref: %v", err)
+	}
+	if got, want := msgRef.String(), "%+ofkHa7VpmLgrdhkjtY9SFYoOOp+F7KiEHlG9y4s8eo=.sha256"; got != want {
+		t.Fatalf("message ref = %s, want %s", got, want)
+	}
+}

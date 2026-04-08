@@ -4,9 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
-	"net"
 	"strings"
 	"sync"
 	"time"
@@ -500,85 +498,17 @@ func (h *bridgedPeerTunnelConnectHandler) HandleCall(ctx context.Context, req *m
 		return
 	}
 
-	serverConn, tunnelConn := net.Pipe()
-	defer serverConn.Close()
-	defer tunnelConn.Close()
-
 	innerCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	innerRPC := muxrpc.NewServer(innerCtx, serverConn, h.inner, nil)
-
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		h.copySourceToConn(innerCtx, source, tunnelConn, cancel)
-	}()
-	go func() {
-		defer wg.Done()
-		h.copyConnToSink(innerCtx, tunnelConn, sink, cancel)
-	}()
-
-	go func() {
-		<-innerCtx.Done()
-		_ = tunnelConn.Close()
-		_ = serverConn.Close()
-	}()
-
-	wg.Wait()
-	cancel()
-	_ = sink.Close()
-	_ = req.Close()
+	streamConn := muxrpc.NewByteStreamConn(innerCtx, source, sink, req.RemoteAddr())
+	innerRPC := muxrpc.NewServer(innerCtx, streamConn, h.inner, nil)
+	<-innerRPC.Wait()
 	_ = innerRPC.Terminate()
+	_ = streamConn.Close()
+	_ = req.Close()
 }
 
 func (h *bridgedPeerTunnelConnectHandler) HandleConnect(ctx context.Context, edp muxrpc.Endpoint) {}
-
-func (h *bridgedPeerTunnelConnectHandler) copySourceToConn(ctx context.Context, source *muxrpc.ByteSource, conn net.Conn, cancel context.CancelFunc) {
-	defer cancel()
-	for {
-		if !source.Next(ctx) {
-			return
-		}
-		payload, err := source.Bytes()
-		if err != nil {
-			return
-		}
-		if len(payload) == 0 {
-			continue
-		}
-		if _, err := conn.Write(payload); err != nil {
-			return
-		}
-	}
-}
-
-func (h *bridgedPeerTunnelConnectHandler) copyConnToSink(ctx context.Context, conn net.Conn, sink *muxrpc.ByteSink, cancel context.CancelFunc) {
-	defer cancel()
-	buf := make([]byte, 32*1024)
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-		n, err := conn.Read(buf)
-		if n > 0 {
-			if _, werr := sink.Write(buf[:n]); werr != nil {
-				return
-			}
-		}
-		if err != nil {
-			if err == io.EOF {
-				return
-			}
-			if h.logger != nil {
-				h.logger.Printf("event=bridged_room_peer_tunnel_copy_read_failed feed=%s err=%v", h.feed.String(), err)
-			}
-			return
-		}
-	}
-}
 
 type noopDuplexHandler struct {
 	method muxrpc.Method

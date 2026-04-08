@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strconv"
+	"strings"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/keys"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
@@ -52,6 +53,27 @@ func NewSignatureFromBase64(input []byte) (Signature, error) {
 	}
 
 	return decoded[:ed25519.SignatureSize], nil
+}
+
+func ParseSignatureString(input string) (Signature, error) {
+	trimmed := strings.TrimSpace(input)
+	if trimmed == "" {
+		return nil, ErrInvalidSignature
+	}
+
+	sig, err := NewSignatureFromBase64([]byte(trimmed))
+	if err == nil {
+		return sig, nil
+	}
+
+	decoded, decodeErr := base64.StdEncoding.DecodeString(trimmed)
+	if decodeErr != nil {
+		return nil, err
+	}
+	if len(decoded) != ed25519.SignatureSize {
+		return nil, ErrInvalidSignatureLength
+	}
+	return Signature(decoded), nil
 }
 
 func (s Signature) Verify(content []byte, r refs.FeedRef) error {
@@ -100,6 +122,10 @@ func (m *Message) Sign(kp *keys.KeyPair, hmacKey []byte) (*refs.MessageRef, []by
 
 func (m *Message) MarshalForSigning() ([]byte, error) {
 	return m.marshalForSigning()
+}
+
+func (m *Message) MarshalWithSignature(sig []byte) ([]byte, error) {
+	return m.marshalWithSignature(sig)
 }
 
 func (m *Message) marshalForSigning() ([]byte, error) {
