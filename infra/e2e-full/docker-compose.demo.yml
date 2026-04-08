@@ -24,7 +24,7 @@ services:
       BRIDGE_RELAY_URL: "ws://pds:80/xrpc/com.atproto.sync.subscribeRepos"
       BRIDGE_PLC_URL: "http://plc:2582"
       BRIDGE_ATPROTO_INSECURE: "1"
-      BRIDGE_CLEAN_START: "1"
+      BRIDGE_CLEAN_START: "0"
       BRIDGE_MODE: firehose
     ports:
       - "8976:8976"
@@ -50,13 +50,13 @@ services:
     build:
       context: ../..
       dockerfile: infra/e2e-tildefriends/Dockerfile.bridge
-    entrypoint: ["/bin/bash", "/scripts/seeder_entrypoint.sh"]
+    entrypoint: ["/bin/bash", "/usr/local/bin/seeder_run.sh"]
     environment:
       PDS_HOST: "http://pds:80"
       BOT_SEED: e2e-full-seed
     volumes:
       - bridge-data:/data
-      - ./seeder_entrypoint.sh:/scripts/seeder_entrypoint.sh:ro
+      - ./seeder_entrypoint.sh:/usr/local/bin/seeder_run.sh:ro
     depends_on:
       bridge:
         condition: service_healthy
@@ -101,7 +101,7 @@ services:
       - "8080:8080"
     volumes:
       - bridge-data:/data
-    command: ["--db", "/data/bridge.sqlite", "serve-ui", "--listen-addr", "0.0.0.0:8080", "--repo-path", "/data/ssb-repo", "--ui-auth-user", "admin", "--ui-auth-pass-env", "BRIDGE_UI_AUTH_PASS", "--pds-host", "http://pds:80", "--pds-password", "password", "--atproto-insecure"]
+    command: ["--db", "/data/bridge.sqlite", "serve-ui", "--listen-addr", "0.0.0.0:8080", "--repo-path", "/data/ssb-repo", "--ui-auth-user", "admin", "--ui-auth-pass-env", "BRIDGE_UI_AUTH_PASS", "--pds-host", "http://pds:80", "--pds-password", "password", "--atproto-insecure", "--room-repo-path", "/data/ssb-repo", "--room-http-base-url", "http://bridge:8976"]
     networks:
       - atproto-network
 

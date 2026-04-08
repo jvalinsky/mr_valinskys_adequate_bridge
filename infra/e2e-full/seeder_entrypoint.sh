@@ -14,8 +14,7 @@ echo "[seeder] Waiting for bridge to connect to firehose..."
 MAX_WAIT=60
 WAIT_COUNT=0
 while [ $WAIT_COUNT -lt $MAX_WAIT ]; do
-    FIREHOSE_CONNECTED=$(sqlite3 "$DB_PATH" "PRAGMA busy_timeout=5000; SELECT value FROM bridge_state WHERE key = 'firehose_connected';" 2>/dev/null || echo "")
-    if [ "$FIREHOSE_CONNECTED" = "1" ]; then
+    if sqlite3 "$DB_PATH" "PRAGMA busy_timeout=5000; SELECT value FROM bridge_state WHERE key = 'firehose_connected';" 2>/dev/null | grep -q "1"; then
         echo "[seeder] Bridge connected to firehose"
         break
     fi
@@ -56,6 +55,9 @@ atproto-seed \
     --db "$DB_PATH" \
     --bot-seed "${BOT_SEED}-phase2" \
     --target-did "$BOT_DID"
+
+echo "[seeder] Registering bot account in bridge..."
+bridge-cli --db "$DB_PATH" --bot-seed "$BOT_SEED" account add "$BOT_DID"
 
 echo "[seeder] Seeding complete!"
 
