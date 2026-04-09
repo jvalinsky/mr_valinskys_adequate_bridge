@@ -560,6 +560,38 @@ if [[ "$(jq -r '.value.reply.parent.cid // empty' /tmp/atproto-get-record.json)"
   die "reverse reply parent cid mismatch for ${REPLY_RESULT_URI}"
 fi
 
+image_marker="tf-reverse-image-$(date +%s%N)"
+image_path="/tmp/tf-reverse-image.png"
+printf '%s' 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVQI12P4z8AAAwABAAX+1O4AAAAASUVORK5CYII=' | base64 -d > "${image_path}"
+TF_BLOB_REF="$("${TF_BIN}" store_blob --db-path "${TF_DB_PATH}" --file "${image_path}" | tail -n1 | tr -d '\r')"
+[[ -n "${TF_BLOB_REF}" ]] || die "failed to store Tildefriends reverse image blob"
+image_text="tildefriends reverse image @target https://example.com ![preview](${TF_BLOB_REF})"
+image_json="$(jq -cn \
+  --arg text "${image_text}" \
+  --arg marker "${image_marker}" \
+  --arg target "${REVERSE_TARGET_FEED}" \
+  --arg blob "${TF_BLOB_REF}" \
+  '{type:"post",text:$text,bridge_marker:$marker,mentions:[{link:$target,name:"@target"},{link:$blob,name:"tf image",type:"image/png"}]}')"
+"${TF_BIN}" publish --db-path "${TF_DB_PATH}" --id "${TF_IDENTITY}" --content "${image_json}" || die "failed to publish Tildefriends reverse image post"
+image_event_row="$(wait_for_reverse_event_by_marker "post" "${image_marker}")" || die "reverse image post did not publish"
+IMAGE_RESULT_URI="$(echo "${image_event_row}" | cut -d'|' -f3)"
+wait_for_record_present "${SOURCE_ACCESS_JWT}" "${IMAGE_RESULT_URI}" || die "reverse image atproto record not visible for ${IMAGE_RESULT_URI}"
+if [[ "$(jq -r '.value.text // empty' /tmp/atproto-get-record.json)" != "tildefriends reverse image @target https://example.com" ]]; then
+  die "reverse image text mismatch for ${IMAGE_RESULT_URI}"
+fi
+if [[ "$(jq -r '.value.embed.images | length // 0' /tmp/atproto-get-record.json)" != "1" ]]; then
+  die "reverse image embed mismatch for ${IMAGE_RESULT_URI}"
+fi
+if [[ "$(jq -r '.value.embed.images[0].alt // empty' /tmp/atproto-get-record.json)" != "tf image" ]]; then
+  die "reverse image alt mismatch for ${IMAGE_RESULT_URI}"
+fi
+if ! jq -e --arg did "${E2E_REVERSE_TARGET_DID}" 'any(.value.facets[]?; any(.features[]?; .did? == $did))' /tmp/atproto-get-record.json >/dev/null; then
+  die "reverse image missing mention facet for ${IMAGE_RESULT_URI}"
+fi
+if ! jq -e 'any(.value.facets[]?; any(.features[]?; .uri? == "https://example.com"))' /tmp/atproto-get-record.json >/dev/null; then
+  die "reverse image missing link facet for ${IMAGE_RESULT_URI}"
+fi
+
 follow_marker="tf-reverse-follow-$(date +%s%N)"
 follow_json="$(jq -cn --arg contact "${REVERSE_TARGET_FEED}" --arg marker "${follow_marker}" '{"type":"contact","contact":$contact,"following":true,"blocking":false,"bridge_marker":$marker}')"
 "${TF_BIN}" publish --db-path "${TF_DB_PATH}" --id "${TF_IDENTITY}" --content "${follow_json}" || die "failed to publish Tildefriends reverse follow"
@@ -579,7 +611,7 @@ if [[ "${UNFOLLOW_RESULT_URI}" != "${FOLLOW_RESULT_URI}" ]]; then
   die "reverse unfollow deleted ${UNFOLLOW_RESULT_URI}, expected ${FOLLOW_RESULT_URI}"
 fi
 wait_for_record_deleted "${SOURCE_ACCESS_JWT}" "${FOLLOW_RESULT_URI}" || die "reverse unfollow did not delete ${FOLLOW_RESULT_URI}"
-log "reverse sync verified for Tildefriends root/reply/follow/unfollow"
+log "reverse sync verified for Tildefriends root/reply/image/follow/unfollow"
 
 log "============================================"
 log "  E2E PASSED: Full-stack ATProto ↔ SSB     "

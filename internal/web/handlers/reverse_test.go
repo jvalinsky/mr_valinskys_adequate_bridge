@@ -111,3 +111,48 @@ func TestHandleReverseEventRetry(t *testing.T) {
 		t.Fatalf("unexpected retry calls: %#v", provider.retried)
 	}
 }
+
+func TestHandleReverseShowsMediaDeferReason(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	ctx := context.Background()
+	if err := database.AddReverseIdentityMapping(ctx, db.ReverseIdentityMapping{
+		SSBFeedID:    "@alice.ed25519",
+		ATDID:        "did:plc:alice",
+		Active:       true,
+		AllowPosts:   true,
+		AllowReplies: true,
+		AllowFollows: true,
+	}); err != nil {
+		t.Fatalf("add reverse mapping: %v", err)
+	}
+	if err := database.AddReverseEvent(ctx, db.ReverseEvent{
+		SourceSSBMsgRef: "%reverse-media.sha256",
+		SourceSSBAuthor: "@alice.ed25519",
+		ReceiveLogSeq:   10,
+		ATDID:           "did:plc:alice",
+		Action:          db.ReverseActionPost,
+		EventState:      db.ReverseEventStateDeferred,
+		DeferReason:     "blob_upload_failed=&media.sha256",
+		RawSSBJSON:      `{"type":"post","text":"hello"}`,
+	}); err != nil {
+		t.Fatalf("add reverse event: %v", err)
+	}
+
+	router := chi.NewRouter()
+	handler := NewUIHandler(database, log.New(io.Discard, "", 0), nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).
+		WithReverseSync(&stubReverseSyncProvider{enabled: true})
+	handler.Mount(router)
+
+	req := httptest.NewRequest(http.MethodGet, "/reverse", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "blob_upload_failed=&amp;media.sha256") {
+		t.Fatalf("expected media defer reason in body: %s", rr.Body.String())
+	}
+}

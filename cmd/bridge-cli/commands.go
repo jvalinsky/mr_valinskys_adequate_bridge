@@ -444,8 +444,9 @@ func runServeUI(c *cli.Context) error {
 
 	var ssbStatus handlers.SSBStatusProvider
 	var blobStore handlers.BlobStore
+	var ssbRuntime *ssbruntime.Runtime
 	if repo := strings.TrimSpace(c.String("repo-path")); repo != "" {
-		ssbRuntime, err := ssbruntime.Open(c.Context, ssbruntime.Config{
+		ssbRuntime, err = ssbruntime.Open(c.Context, ssbruntime.Config{
 			RepoPath:   repo,
 			MasterSeed: []byte(botSeed),
 			GossipDB:   database,
@@ -494,6 +495,8 @@ func runServeUI(c *cli.Context) error {
 	} else {
 		reverseProcessor := bridge.NewReverseProcessor(bridge.ReverseProcessorConfig{
 			DB:           database,
+			BlobStore:    blobStore,
+			BlobFetcher:  ssbRuntime,
 			Writer:       &bridge.ATProtoReverseWriter{HTTPClient: httpClient, Insecure: c.Bool("atproto-insecure")},
 			HostResolver: bridge.NewDefaultReverseHostResolver(c.String("plc-url"), httpClient),
 			Logger:       uiLogger,

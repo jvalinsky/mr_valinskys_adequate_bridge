@@ -319,6 +319,7 @@ func (h *Handler) handleGet(ctx context.Context, req *muxrpc.Request) {
 		}
 	}
 	slog.Debug("blobs.get done", "hash", hashStr)
+	_ = req.Close()
 }
 
 func (h *Handler) handleGetSlice(ctx context.Context, req *muxrpc.Request) {
@@ -384,6 +385,7 @@ func (h *Handler) handleGetSlice(ctx context.Context, req *muxrpc.Request) {
 		}
 	}
 	slog.Debug("blobs.getSlice done", "hash", args.Hash)
+	_ = req.Close()
 }
 
 func (h *Handler) handleAdd(ctx context.Context, req *muxrpc.Request) {
@@ -450,4 +452,5 @@ func (h *Handler) handleCreateWants(ctx context.Context, req *muxrpc.Request) {
 			return
 		}
 	}
+	_ = req.Close()
 }

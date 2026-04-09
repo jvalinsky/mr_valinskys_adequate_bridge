@@ -111,8 +111,7 @@ func (m *Message) Sign(kp *keys.KeyPair, hmacKey []byte) (*refs.MessageRef, []by
 		return nil, nil, err
 	}
 
-	h := sha256.Sum256(msgToHash)
-	msgRef, err := refs.NewMessageRef(h[:], refs.RefAlgoMessageSSB1)
+	msgRef, err := refs.NewMessageRef(HashMessage(msgToHash), refs.RefAlgoMessageSSB1)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -157,9 +156,7 @@ func (m *Message) marshalForSigning() ([]byte, error) {
 	buf.WriteString(`",` + "\n")
 
 	buf.WriteString(`  "content": `)
-	// Content must be indented with JSON.stringify(msg, null, 2) semantics.
-	// At depth 1, nested keys use prefix "  " (parent depth) + indent "  " per level.
-	contentBytes, err := json.MarshalIndent(m.Content, "  ", "  ")
+	contentBytes, err := marshalLegacyContent(m.Content)
 	if err != nil {
 		return nil, err
 	}
@@ -199,7 +196,7 @@ func (m *Message) marshalWithSignature(sig []byte) ([]byte, error) {
 	buf.WriteString(`",` + "\n")
 
 	buf.WriteString(`  "content": `)
-	contentBytes, err := json.MarshalIndent(m.Content, "  ", "  ")
+	contentBytes, err := marshalLegacyContent(m.Content)
 	if err != nil {
 		return nil, err
 	}
@@ -212,6 +209,18 @@ func (m *Message) marshalWithSignature(sig []byte) ([]byte, error) {
 
 	buf.WriteString("}")
 	return buf.Bytes(), nil
+}
+
+func marshalLegacyContent(content any) ([]byte, error) {
+	data, err := json.Marshal(content)
+	if err != nil {
+		return nil, err
+	}
+	pretty, err := PrettyPrint(data)
+	if err != nil {
+		return nil, err
+	}
+	return indentJSONFragment(pretty, "  "), nil
 }
 
 func ExtractSignature(b []byte) ([]byte, Signature, error) {

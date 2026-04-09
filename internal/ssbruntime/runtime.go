@@ -15,6 +15,7 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/feedlog"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/gossip"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/keys"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/sbot"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/web/handlers"
 )
@@ -189,6 +190,13 @@ func (r *Runtime) ResolveFeed(_ context.Context, atDID string) (string, error) {
 
 func (r *Runtime) BlobStore() feedlog.BlobStore {
 	return r.blobStore
+}
+
+func (r *Runtime) EnsureBlob(ctx context.Context, _ string, ref *refs.BlobRef) error {
+	if r == nil || r.sbotNode == nil {
+		return fmt.Errorf("ssbruntime: node not initialized")
+	}
+	return r.sbotNode.EnsureBlob(ctx, ref)
 }
 
 func (r *Runtime) ReceiveLog() feedlog.Log {

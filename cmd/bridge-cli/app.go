@@ -166,15 +166,6 @@ func (a *BridgeApp) Init(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	a.reverseProcessor = bridge.NewReverseProcessor(bridge.ReverseProcessorConfig{
-		DB:           a.db,
-		ReceiveLog:   a.ssbRuntime.ReceiveLog(),
-		Writer:       &bridge.ATProtoReverseWriter{HTTPClient: httpClient, Insecure: a.cfg.AtprotoInsecure},
-		HostResolver: bridge.NewDefaultReverseHostResolver(a.cfg.PLCURL, httpClient),
-		Logger:       a.logger,
-		Credentials:  reverseCreds,
-		Enabled:      a.cfg.ReverseSyncEnable,
-	})
 	setBridgeStateBestEffort(ctx, a.db, "reverse_sync_enabled", boolToBridgeState(a.cfg.ReverseSyncEnable), a.logger)
 	setBridgeStateBestEffort(ctx, a.db, "reverse_sync_credentials_file", a.cfg.ReverseCredentialsFile, a.logger)
 
@@ -234,6 +225,22 @@ func (a *BridgeApp) Init(ctx context.Context) error {
 		a.initFollowerTracker(ctx)
 		a.installRoomAnnounceHook()
 	}
+
+	reverseBlobFetcher := bridge.ReverseBlobFetcher(a.ssbRuntime)
+	if a.room != nil {
+		reverseBlobFetcher = newRoomAwareReverseBlobFetcher(a.ssbRuntime, a.room, a.logger)
+	}
+	a.reverseProcessor = bridge.NewReverseProcessor(bridge.ReverseProcessorConfig{
+		DB:           a.db,
+		ReceiveLog:   a.ssbRuntime.ReceiveLog(),
+		BlobStore:    a.ssbRuntime.BlobStore(),
+		BlobFetcher:  reverseBlobFetcher,
+		Writer:       &bridge.ATProtoReverseWriter{HTTPClient: httpClient, Insecure: a.cfg.AtprotoInsecure},
+		HostResolver: bridge.NewDefaultReverseHostResolver(a.cfg.PLCURL, httpClient),
+		Logger:       a.logger,
+		Credentials:  reverseCreds,
+		Enabled:      a.cfg.ReverseSyncEnable,
+	})
 
 	// Register all MCP tools against the live application instances.
 	registerBridgeOpsTools(a.mcpServer, a.db, a.cfg.BotSeed)

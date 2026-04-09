@@ -147,6 +147,40 @@ func TestPublisherAppendsReceiveLogAndCallsAfterPublish(t *testing.T) {
 	}
 }
 
+func TestPublisherAppendsReceiveLogForSeedStylePost(t *testing.T) {
+	aliceKeys, _ := keys.Generate()
+	users := &mockMultiLog{logs: make(map[string]*mockLog)}
+	receiveLog := &mockLog{seq: -1, messages: make(map[int64]*feedlog.StoredMessage)}
+
+	p, err := New(aliceKeys, receiveLog, users)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	content := map[string]interface{}{
+		"type":      "post",
+		"text":      "e2e test message 1 — 1775701254120",
+		"channel":   "e2e-test",
+		"createdAt": "2026-04-09T02:20:54Z",
+	}
+	ref, err := p.PublishJSON(content)
+	if err != nil {
+		t.Fatalf("Publish failed: %v", err)
+	}
+
+	rxMsg, ok := receiveLog.messages[1]
+	if !ok {
+		t.Fatal("expected receive log entry at seq 1")
+	}
+	gotRef, err := legacy.SignedMessageRefFromJSON(rxMsg.Value)
+	if err != nil {
+		t.Fatalf("derive message ref from receive log: %v", err)
+	}
+	if gotRef.String() != ref.String() {
+		t.Fatalf("receive log ref mismatch: got %q want %q\nraw=%s", gotRef.String(), ref.String(), string(rxMsg.Value))
+	}
+}
+
 func TestMessageSigning(t *testing.T) {
 	seed := make([]byte, 32)
 	for i := range seed {

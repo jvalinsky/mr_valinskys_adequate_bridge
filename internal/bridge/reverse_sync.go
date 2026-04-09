@@ -5,10 +5,13 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -18,6 +21,7 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/mapper"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/feedlog"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/message/legacy"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto"
 	appbsky "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/appbsky"
 	lexutil "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/lexutil"
@@ -32,6 +36,14 @@ const (
 	reverseEnabledKey       = "reverse_sync_enabled"
 	reverseCredentialsKey   = "reverse_sync_credentials_file"
 	defaultReverseScanLimit = 100
+	maxReverseImageEmbeds   = 4
+)
+
+var (
+	reverseMarkdownBlobLinkPattern = regexp.MustCompile(`!?\[[^\]]*\]\(([^)\s]+)\)`)
+	reverseBareURLPattern          = regexp.MustCompile(`https?://[^\s<>()]+`)
+	reverseMultiSpacePattern       = regexp.MustCompile(`[ \t]{2,}`)
+	reverseMultiBlankLinePattern   = regexp.MustCompile(`\n{3,}`)
 )
 
 type ReverseDatabase interface {
@@ -44,6 +56,7 @@ type ReverseDatabase interface {
 	GetMessageBySSBRef(ctx context.Context, ssbMsgRef string) (*db.Message, error)
 	GetMessage(ctx context.Context, atURI string) (*db.Message, error)
 	AddMessage(ctx context.Context, msg db.Message) error
+	GetBlobBySSBRef(ctx context.Context, ssbBlobRef string) (*db.Blob, error)
 	GetBridgeState(ctx context.Context, key string) (string, bool, error)
 	SetBridgeState(ctx context.Context, key, value string) error
 }
@@ -79,9 +92,22 @@ type ReverseCreatedRecord struct {
 	RawRecordJSON string
 }
 
+type ReverseBlobStore interface {
+	Get(hash []byte) (io.ReadCloser, error)
+}
+
+type ReverseBlobFetcher interface {
+	EnsureBlob(ctx context.Context, sourceFeedID string, ref *refs.BlobRef) error
+}
+
+type ReverseRecordSession interface {
+	UploadBlob(ctx context.Context, input io.Reader, mimeType string) (*lexutil.LexBlob, error)
+	CreateRecord(ctx context.Context, collection string, record any) (*ReverseCreatedRecord, error)
+	DeleteRecord(ctx context.Context, atURI string) error
+}
+
 type ReverseRecordWriter interface {
-	CreateRecord(ctx context.Context, cred reverseResolvedCredential, collection string, record any) (*ReverseCreatedRecord, error)
-	DeleteRecord(ctx context.Context, cred reverseResolvedCredential, atURI string) error
+	NewSession(ctx context.Context, cred reverseResolvedCredential) (ReverseRecordSession, error)
 }
 
 type ReverseSyncStatusProvider interface {
@@ -93,6 +119,8 @@ type ReverseSyncStatusProvider interface {
 type ReverseProcessor struct {
 	db           ReverseDatabase
 	receiveLog   feedlog.Log
+	blobStore    ReverseBlobStore
+	blobFetcher  ReverseBlobFetcher
 	writer       ReverseRecordWriter
 	hostResolver ReversePDSHostResolver
 	logger       *log.Logger
@@ -103,6 +131,8 @@ type ReverseProcessor struct {
 type ReverseProcessorConfig struct {
 	DB           ReverseDatabase
 	ReceiveLog   feedlog.Log
+	BlobStore    ReverseBlobStore
+	BlobFetcher  ReverseBlobFetcher
 	Writer       ReverseRecordWriter
 	HostResolver ReversePDSHostResolver
 	Logger       *log.Logger
@@ -113,6 +143,11 @@ type ReverseProcessorConfig struct {
 type ATProtoReverseWriter struct {
 	HTTPClient *http.Client
 	Insecure   bool
+}
+
+type reverseByteRange struct {
+	start int
+	end   int
 }
 
 func LoadReverseCredentials(path string) (map[string]ReverseCredentialFileEntry, error) {
@@ -157,6 +192,8 @@ func NewReverseProcessor(cfg ReverseProcessorConfig) *ReverseProcessor {
 	return &ReverseProcessor{
 		db:           cfg.DB,
 		receiveLog:   cfg.ReceiveLog,
+		blobStore:    cfg.BlobStore,
+		blobFetcher:  cfg.BlobFetcher,
 		writer:       writer,
 		hostResolver: cfg.HostResolver,
 		logger:       logutil.Ensure(cfg.Logger),
@@ -353,7 +390,7 @@ func (p *ReverseProcessor) processDecodedMessage(ctx context.Context, receiveLog
 		event := p.baseReverseEvent(receiveLogSeq, sourceRef, sourceAuthor, sourceSeq, mapping.ATDID, "", rawSSBJSON)
 		event.EventState = db.ReverseEventStateFailed
 		event.ErrorText = fmt.Sprintf("decode_ssb_json=%v", err)
-		if addErr := p.db.AddReverseEvent(ctx, event); addErr != nil {
+		if addErr := p.persistReverseEvent(ctx, event); addErr != nil {
 			return fmt.Errorf("persist reverse decode failure %s: %w", sourceRef, addErr)
 		}
 		return nil
@@ -368,7 +405,7 @@ func (p *ReverseProcessor) processDecodedMessage(ctx context.Context, receiveLog
 	}
 
 	if event.EventState == db.ReverseEventStateDeferred || event.EventState == db.ReverseEventStateSkipped {
-		return p.db.AddReverseEvent(ctx, *event)
+		return p.persistReverseEvent(ctx, *event)
 	}
 
 	cred, credStatus := p.resolveCredential(ctx, event.ATDID)
@@ -376,19 +413,26 @@ func (p *ReverseProcessor) processDecodedMessage(ctx context.Context, receiveLog
 		event.EventState = db.ReverseEventStateDeferred
 		event.DeferReason = "credentials_" + credStatus.Reason
 		event.ErrorText = ""
-		return p.db.AddReverseEvent(ctx, *event)
+		return p.persistReverseEvent(ctx, *event)
 	}
 
 	attemptedAt := time.Now().UTC()
 	event.Attempts = 1
 	event.LastAttemptAt = &attemptedAt
 
+	session, err := p.writer.NewSession(ctx, cred)
+	if err != nil {
+		event.EventState = db.ReverseEventStateFailed
+		event.ErrorText = err.Error()
+		return p.persistReverseEvent(ctx, *event)
+	}
+
 	switch event.Action {
 	case db.ReverseActionUnfollow:
-		if err := p.writer.DeleteRecord(ctx, cred, deleteATURI); err != nil {
+		if err := session.DeleteRecord(ctx, deleteATURI); err != nil {
 			event.EventState = db.ReverseEventStateFailed
 			event.ErrorText = err.Error()
-			return p.db.AddReverseEvent(ctx, *event)
+			return p.persistReverseEvent(ctx, *event)
 		}
 		event.EventState = db.ReverseEventStatePublished
 		publishedAt := time.Now().UTC()
@@ -396,11 +440,26 @@ func (p *ReverseProcessor) processDecodedMessage(ctx context.Context, receiveLog
 		event.ResultATURI = deleteATURI
 		event.RawATJSON = fmt.Sprintf(`{"op":"delete","at_uri":%q}`, deleteATURI)
 	default:
-		created, err := p.writer.CreateRecord(ctx, cred, event.ResultCollection, record)
+		if post, ok := record.(*appbsky.FeedPost); ok && post != nil {
+			deferReason, err := p.enrichReversePostRecord(ctx, session, event.SourceSSBAuthor, content, post)
+			if err != nil {
+				event.EventState = db.ReverseEventStateFailed
+				event.ErrorText = err.Error()
+				return p.persistReverseEvent(ctx, *event)
+			}
+			if deferReason != "" {
+				event.EventState = db.ReverseEventStateDeferred
+				event.DeferReason = deferReason
+				event.ErrorText = ""
+				return p.persistReverseEvent(ctx, *event)
+			}
+		}
+
+		created, err := session.CreateRecord(ctx, event.ResultCollection, record)
 		if err != nil {
 			event.EventState = db.ReverseEventStateFailed
 			event.ErrorText = err.Error()
-			return p.db.AddReverseEvent(ctx, *event)
+			return p.persistReverseEvent(ctx, *event)
 		}
 		event.EventState = db.ReverseEventStatePublished
 		publishedAt := time.Now().UTC()
@@ -414,7 +473,334 @@ func (p *ReverseProcessor) processDecodedMessage(ctx context.Context, receiveLog
 		}
 	}
 
-	return p.db.AddReverseEvent(ctx, *event)
+	return p.persistReverseEvent(ctx, *event)
+}
+
+func (p *ReverseProcessor) enrichReversePostRecord(ctx context.Context, session ReverseRecordSession, sourceFeedID string, content map[string]any, post *appbsky.FeedPost) (string, error) {
+	if post == nil {
+		return "", nil
+	}
+
+	mentions := normalizedReverseMentions(content["mentions"])
+	images, embeddedRefs, deferReason, err := p.buildReverseImageEmbeds(ctx, session, sourceFeedID, mentions)
+	if err != nil || deferReason != "" {
+		return deferReason, err
+	}
+
+	text := stripEmbeddedBlobMarkdown(post.Text, embeddedRefs)
+	post.Text = text
+	post.Facets, err = p.buildReverseFacets(ctx, text, mentions, embeddedRefs)
+	if err != nil {
+		return "", err
+	}
+	if len(images) > 0 {
+		post.Embed = &appbsky.FeedPost_Embed{
+			EmbedImages: &appbsky.EmbedImages{Images: images},
+		}
+	}
+	return "", nil
+}
+
+func (p *ReverseProcessor) buildReverseImageEmbeds(ctx context.Context, session ReverseRecordSession, sourceFeedID string, mentions []map[string]any) ([]*appbsky.EmbedImages_Image, map[string]struct{}, string, error) {
+	embeddedRefs := make(map[string]struct{})
+	if len(mentions) == 0 {
+		return nil, embeddedRefs, "", nil
+	}
+	if p.blobStore == nil {
+		for _, mention := range mentions {
+			if strings.HasPrefix(strings.TrimSpace(stringValue(mention["link"])), "&") {
+				return nil, nil, "blob_store_unavailable", nil
+			}
+		}
+		return nil, embeddedRefs, "", nil
+	}
+
+	images := make([]*appbsky.EmbedImages_Image, 0, maxReverseImageEmbeds)
+	seenRefs := make(map[string]string)
+	for _, mention := range mentions {
+		link := strings.TrimSpace(stringValue(mention["link"]))
+		if !strings.HasPrefix(link, "&") {
+			continue
+		}
+		if existingMime, seen := seenRefs[link]; seen {
+			currentMime := strings.TrimSpace(stringValue(mention["type"]))
+			if currentMime != "" && existingMime != "" && !strings.EqualFold(currentMime, existingMime) {
+				return nil, nil, "blob_mime_mismatch=" + link, nil
+			}
+			embeddedRefs[link] = struct{}{}
+			continue
+		}
+
+		blobMeta, err := p.db.GetBlobBySSBRef(ctx, link)
+		if err != nil {
+			return nil, nil, "", fmt.Errorf("lookup blob metadata %s: %w", link, err)
+		}
+
+		mentionMime := strings.TrimSpace(stringValue(mention["type"]))
+		metaMime := ""
+		if blobMeta != nil {
+			metaMime = strings.TrimSpace(blobMeta.MimeType)
+		}
+		if mentionMime != "" && metaMime != "" && !strings.EqualFold(mentionMime, metaMime) {
+			return nil, nil, "blob_mime_mismatch=" + link, nil
+		}
+		mimeType := mentionMime
+		if mimeType == "" {
+			mimeType = metaMime
+		}
+		if mimeType == "" {
+			return nil, nil, "blob_mime_missing=" + link, nil
+		}
+		if !strings.HasPrefix(strings.ToLower(mimeType), "image/") {
+			return nil, nil, "blob_media_unsupported=" + link, nil
+		}
+		if len(images) >= maxReverseImageEmbeds {
+			return nil, nil, fmt.Sprintf("image_limit_exceeded=%d", len(images)+1), nil
+		}
+
+		blobRef, err := refs.ParseBlobRef(link)
+		if err != nil {
+			return nil, nil, "blob_ref_invalid=" + link, nil
+		}
+		reader, err := p.blobStore.Get(blobRef.Hash())
+		if err != nil {
+			if p.blobFetcher == nil || p.blobFetcher.EnsureBlob(ctx, sourceFeedID, blobRef) != nil {
+				return nil, nil, "blob_read_failed=" + link, nil
+			}
+			reader, err = p.blobStore.Get(blobRef.Hash())
+			if err != nil {
+				return nil, nil, "blob_read_failed=" + link, nil
+			}
+		}
+		uploaded, uploadErr := session.UploadBlob(ctx, reader, mimeType)
+		closeErr := reader.Close()
+		if uploadErr != nil {
+			return nil, nil, "blob_upload_failed=" + link, nil
+		}
+		if closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
+			return nil, nil, "", fmt.Errorf("close blob reader %s: %w", link, closeErr)
+		}
+		if uploaded == nil {
+			return nil, nil, "blob_upload_failed=" + link, nil
+		}
+		uploadMime := strings.TrimSpace(uploaded.MimeType)
+		if uploadMime == "" {
+			uploaded.MimeType = mimeType
+			uploadMime = mimeType
+		}
+		if !strings.HasPrefix(strings.ToLower(uploadMime), "image/") {
+			return nil, nil, "blob_media_unsupported=" + link, nil
+		}
+		if mimeType != "" && uploadMime != "" && !strings.EqualFold(mimeType, uploadMime) {
+			return nil, nil, "blob_mime_mismatch=" + link, nil
+		}
+
+		images = append(images, &appbsky.EmbedImages_Image{
+			Alt:   strings.TrimSpace(stringValue(mention["name"])),
+			Image: &appbsky.LexBlob{Ref: uploaded.Ref, MimeType: uploaded.MimeType, Size: uploaded.Size},
+		})
+		seenRefs[link] = mimeType
+		embeddedRefs[link] = struct{}{}
+	}
+
+	return images, embeddedRefs, "", nil
+}
+
+func (p *ReverseProcessor) buildReverseFacets(ctx context.Context, text string, mentions []map[string]any, embeddedRefs map[string]struct{}) ([]*appbsky.RichtextFacet, error) {
+	if strings.TrimSpace(text) == "" && len(mentions) == 0 {
+		return nil, nil
+	}
+
+	occupied := make([]reverseByteRange, 0, len(mentions))
+	facets := make([]*appbsky.RichtextFacet, 0, len(mentions))
+
+	appendFacet := func(start, end int, feature *appbsky.RichtextFacet_Features_Elem) {
+		if start < 0 || end <= start || feature == nil {
+			return
+		}
+		occupied = append(occupied, reverseByteRange{start: start, end: end})
+		facets = append(facets, &appbsky.RichtextFacet{
+			Index: &appbsky.RichtextFacet_ByteSlice{
+				ByteStart: int64(start),
+				ByteEnd:   int64(end),
+			},
+			Features: []*appbsky.RichtextFacet_Features_Elem{feature},
+		})
+	}
+
+	for _, mention := range mentions {
+		link := strings.TrimSpace(stringValue(mention["link"]))
+		if link == "" {
+			continue
+		}
+		if _, isEmbeddedBlob := embeddedRefs[link]; isEmbeddedBlob {
+			continue
+		}
+
+		switch {
+		case strings.HasPrefix(link, "&"):
+			return nil, fmt.Errorf("unsupported blob mention remained after embed resolution: %s", link)
+		case strings.HasPrefix(link, "@"):
+			atDID, ok, err := p.db.ResolveATDIDBySSBFeed(ctx, link)
+			if err != nil {
+				return nil, fmt.Errorf("resolve reverse mention did %s: %w", link, err)
+			}
+			if !ok || strings.TrimSpace(atDID) == "" {
+				continue
+			}
+			token := firstNonBlank(strings.TrimSpace(stringValue(mention["name"])), link)
+			start, end, ok := findFirstNonOverlappingToken(text, token, occupied)
+			if !ok {
+				continue
+			}
+			appendFacet(start, end, &appbsky.RichtextFacet_Features_Elem{
+				RichtextFacet_Mention: &appbsky.RichtextFacet_Mention{Did: atDID},
+			})
+		case strings.HasPrefix(link, "#"):
+			tag := strings.TrimSpace(strings.TrimPrefix(link, "#"))
+			if tag == "" {
+				continue
+			}
+			token := firstNonBlank(strings.TrimSpace(stringValue(mention["name"])), "#"+tag)
+			start, end, ok := findFirstNonOverlappingToken(text, token, occupied)
+			if !ok {
+				continue
+			}
+			appendFacet(start, end, &appbsky.RichtextFacet_Features_Elem{
+				RichtextFacet_Tag: &appbsky.RichtextFacet_Tag{Tag: tag},
+			})
+		case isHTTPURL(link):
+			token := firstNonBlank(strings.TrimSpace(stringValue(mention["name"])), link)
+			start, end, ok := findFirstNonOverlappingToken(text, token, occupied)
+			if !ok {
+				continue
+			}
+			appendFacet(start, end, &appbsky.RichtextFacet_Features_Elem{
+				RichtextFacet_Link: &appbsky.RichtextFacet_Link{Uri: link},
+			})
+		}
+	}
+
+	for _, match := range reverseBareURLPattern.FindAllStringIndex(text, -1) {
+		start := match[0]
+		end := match[1]
+		rawURL := text[start:end]
+		trimmedURL := strings.TrimRight(rawURL, ".,!?;:")
+		if trimmedURL == "" {
+			continue
+		}
+		end = start + len(trimmedURL)
+		if rangeOverlaps(start, end, occupied) {
+			continue
+		}
+		appendFacet(start, end, &appbsky.RichtextFacet_Features_Elem{
+			RichtextFacet_Link: &appbsky.RichtextFacet_Link{Uri: trimmedURL},
+		})
+	}
+
+	if len(facets) == 0 {
+		return nil, nil
+	}
+	return facets, nil
+}
+
+func stripEmbeddedBlobMarkdown(text string, embeddedRefs map[string]struct{}) string {
+	if len(embeddedRefs) == 0 || text == "" {
+		return text
+	}
+
+	matches := reverseMarkdownBlobLinkPattern.FindAllStringSubmatchIndex(text, -1)
+	if len(matches) == 0 {
+		return text
+	}
+
+	var builder strings.Builder
+	last := 0
+	for _, match := range matches {
+		if len(match) < 4 {
+			continue
+		}
+		wholeStart, wholeEnd := match[0], match[1]
+		target := strings.TrimSpace(text[match[2]:match[3]])
+		if _, ok := embeddedRefs[target]; !ok {
+			continue
+		}
+		builder.WriteString(text[last:wholeStart])
+		last = wholeEnd
+	}
+	builder.WriteString(text[last:])
+	return normalizeReversePostText(builder.String())
+}
+
+func normalizeReversePostText(text string) string {
+	if text == "" {
+		return text
+	}
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		line = reverseMultiSpacePattern.ReplaceAllString(line, " ")
+		lines[i] = strings.TrimSpace(line)
+	}
+	text = strings.Join(lines, "\n")
+	text = reverseMultiBlankLinePattern.ReplaceAllString(text, "\n\n")
+	return strings.TrimSpace(text)
+}
+
+func normalizedReverseMentions(raw any) []map[string]any {
+	switch typed := raw.(type) {
+	case nil:
+		return nil
+	case []map[string]any:
+		return typed
+	case []any:
+		out := make([]map[string]any, 0, len(typed))
+		for _, item := range typed {
+			m, ok := item.(map[string]any)
+			if ok {
+				out = append(out, m)
+				continue
+			}
+			if m, ok := item.(map[string]interface{}); ok {
+				out = append(out, m)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func findFirstNonOverlappingToken(text, token string, occupied []reverseByteRange) (int, int, bool) {
+	token = strings.TrimSpace(token)
+	if token == "" || text == "" {
+		return 0, 0, false
+	}
+	searchFrom := 0
+	for searchFrom < len(text) {
+		idx := strings.Index(text[searchFrom:], token)
+		if idx < 0 {
+			return 0, 0, false
+		}
+		start := searchFrom + idx
+		end := start + len(token)
+		if !rangeOverlaps(start, end, occupied) {
+			return start, end, true
+		}
+		searchFrom = start + 1
+	}
+	return 0, 0, false
+}
+
+func rangeOverlaps(start, end int, occupied []reverseByteRange) bool {
+	if end <= start {
+		return true
+	}
+	for _, used := range occupied {
+		if start < used.end && end > used.start {
+			return true
+		}
+	}
+	return false
 }
 
 func decodeSSBContent(rawSSBJSON []byte) (map[string]any, error) {
@@ -695,18 +1081,54 @@ func (p *ReverseProcessor) baseReverseEvent(receiveLogSeq int64, sourceRef, sour
 	}
 }
 
-func (w *ATProtoReverseWriter) CreateRecord(ctx context.Context, cred reverseResolvedCredential, collection string, record any) (*ReverseCreatedRecord, error) {
+func (p *ReverseProcessor) persistReverseEvent(ctx context.Context, event db.ReverseEvent) error {
+	if p != nil && p.logger != nil {
+		p.logger.Printf(
+			"event=reverse_sync_event source_ref=%s source_author=%s action=%s state=%s defer_reason=%s result_at_uri=%s err=%s",
+			strings.TrimSpace(event.SourceSSBMsgRef),
+			strings.TrimSpace(event.SourceSSBAuthor),
+			strings.TrimSpace(event.Action),
+			strings.TrimSpace(event.EventState),
+			strings.TrimSpace(event.DeferReason),
+			strings.TrimSpace(event.ResultATURI),
+			strings.TrimSpace(event.ErrorText),
+		)
+	}
+	return p.db.AddReverseEvent(ctx, event)
+}
+
+type atprotoReverseSession struct {
+	client *xrpc.Client
+	did    string
+}
+
+func (w *ATProtoReverseWriter) NewSession(ctx context.Context, cred reverseResolvedCredential) (ReverseRecordSession, error) {
 	client, err := w.createSession(ctx, cred)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := atproto.RepoCreateRecord(ctx, client, &atproto.RepoCreateRecord_Input{
+	return &atprotoReverseSession{client: client, did: cred.DID}, nil
+}
+
+func (s *atprotoReverseSession) UploadBlob(ctx context.Context, input io.Reader, mimeType string) (*lexutil.LexBlob, error) {
+	resp, err := atproto.RepoUploadBlobWithMime(ctx, s.client, mimeType, input)
+	if err != nil {
+		return nil, fmt.Errorf("upload blob for %s: %w", s.did, err)
+	}
+	if resp == nil || resp.Blob == nil {
+		return nil, fmt.Errorf("upload blob for %s: empty response", s.did)
+	}
+	return resp.Blob, nil
+}
+
+func (s *atprotoReverseSession) CreateRecord(ctx context.Context, collection string, record any) (*ReverseCreatedRecord, error) {
+	resp, err := atproto.RepoCreateRecord(ctx, s.client, &atproto.RepoCreateRecord_Input{
 		Collection: collection,
-		Repo:       client.Auth.Did,
+		Repo:       s.client.Auth.Did,
 		Record:     &lexutil.LexiconTypeDecoder{Val: record},
 	})
 	if err != nil {
-		return nil, fmt.Errorf("create record %s for %s: %w", collection, cred.DID, err)
+		return nil, fmt.Errorf("create record %s for %s: %w", collection, s.did, err)
 	}
 	rawRecordJSON, _ := json.Marshal(record)
 	return &ReverseCreatedRecord{
@@ -717,11 +1139,7 @@ func (w *ATProtoReverseWriter) CreateRecord(ctx context.Context, cred reverseRes
 	}, nil
 }
 
-func (w *ATProtoReverseWriter) DeleteRecord(ctx context.Context, cred reverseResolvedCredential, atURI string) error {
-	client, err := w.createSession(ctx, cred)
-	if err != nil {
-		return err
-	}
+func (s *atprotoReverseSession) DeleteRecord(ctx context.Context, atURI string) error {
 	parsed, err := syntax.ParseATURI(atURI)
 	if err != nil {
 		return fmt.Errorf("parse at uri %s: %w", atURI, err)
@@ -729,13 +1147,13 @@ func (w *ATProtoReverseWriter) DeleteRecord(ctx context.Context, cred reverseRes
 	if parsed.Collection().String() == "" || parsed.RecordKey().String() == "" {
 		return fmt.Errorf("at uri %s is missing collection or rkey", atURI)
 	}
-	_, err = atproto.RepoDeleteRecord(ctx, client, &atproto.RepoDeleteRecord_Input{
+	_, err = atproto.RepoDeleteRecord(ctx, s.client, &atproto.RepoDeleteRecord_Input{
 		Collection: parsed.Collection().String(),
-		Repo:       client.Auth.Did,
+		Repo:       s.client.Auth.Did,
 		Rkey:       parsed.RecordKey().String(),
 	})
 	if err != nil {
-		return fmt.Errorf("delete record %s for %s: %w", atURI, cred.DID, err)
+		return fmt.Errorf("delete record %s for %s: %w", atURI, s.did, err)
 	}
 	return nil
 }
@@ -843,6 +1261,20 @@ func boolValue(v any) bool {
 	default:
 		return false
 	}
+}
+
+func firstNonBlank(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func isHTTPURL(value string) bool {
+	value = strings.TrimSpace(strings.ToLower(value))
+	return strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://")
 }
 
 func int64Ptr(v int64) *int64 {

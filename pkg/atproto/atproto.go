@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"strings"
 
 	cbornode "github.com/ipfs/go-ipld-cbor"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/lexutil"
@@ -220,8 +221,15 @@ func SyncGetBlob(ctx context.Context, client lexutil.LexClient, cid string, did 
 }
 
 func RepoUploadBlob(ctx context.Context, client lexutil.LexClient, input io.Reader) (*RepoUploadBlob_Output, error) {
+	return RepoUploadBlobWithMime(ctx, client, "application/octet-stream", input)
+}
+
+func RepoUploadBlobWithMime(ctx context.Context, client lexutil.LexClient, mimeType string, input io.Reader) (*RepoUploadBlob_Output, error) {
 	var out RepoUploadBlob_Output
-	if err := client.LexDo(ctx, lexutil.Procedure, "application/octet-stream", "com.atproto.repo.uploadBlob", nil, input, &out); err != nil {
+	if strings.TrimSpace(mimeType) == "" {
+		mimeType = "application/octet-stream"
+	}
+	if err := client.LexDo(ctx, lexutil.Procedure, mimeType, "com.atproto.repo.uploadBlob", nil, input, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

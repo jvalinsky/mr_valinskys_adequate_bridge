@@ -3,9 +3,12 @@ package livee2e
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"os"
@@ -243,6 +246,49 @@ func TestBridgeLiveInteropReverseSSBClient(t *testing.T) {
 	}
 	if replyPost.Reply.Root.Cid != rootEvent.ResultATCID || replyPost.Reply.Parent.Cid != rootEvent.ResultATCID {
 		t.Fatalf("unexpected reply CIDs: %#v", replyPost.Reply)
+	}
+
+	imageRef := uploadSSBClientBlob(ctx, t, clientBaseURL, testPNGData(), "reverse-image.png", &clientLogs)
+	imageRefSSB := publishSSBClientJSON(ctx, t, clientBaseURL, map[string]any{
+		"type": "post",
+		"text": fmt.Sprintf("ssb-client reverse image @target https://example.com ![preview](%s)", imageRef),
+		"mentions": []map[string]any{
+			{"link": targetAccount.SSBFeedID, "name": "@target"},
+			{"link": imageRef, "name": "live image", "type": "image/png"},
+		},
+	}, &clientLogs)
+	imageEvent := waitForReverseEventState(ctx, t, database, imageRefSSB, db.ReverseEventStatePublished, &bridgeLogs)
+	imageRecord := waitForATRecord(ctx, t, xrpcc, imageEvent.ResultATURI, &bridgeLogs)
+	imagePost, ok := imageRecord.Value.Val.(*appbsky.FeedPost)
+	if !ok {
+		t.Fatalf("expected image record to be feed post, got %T", imageRecord.Value.Val)
+	}
+	if imagePost.Embed == nil || imagePost.Embed.EmbedImages == nil || len(imagePost.Embed.EmbedImages.Images) != 1 {
+		t.Fatalf("expected one reverse image embed, got %#v", imagePost.Embed)
+	}
+	if imagePost.Embed.EmbedImages.Images[0].Alt != "live image" {
+		t.Fatalf("unexpected reverse image alt: %#v", imagePost.Embed.EmbedImages.Images[0])
+	}
+	if imagePost.Text != "ssb-client reverse image @target https://example.com" {
+		t.Fatalf("unexpected image post text: %#v", imagePost)
+	}
+	mentionFacet := false
+	linkFacet := false
+	for _, facet := range imagePost.Facets {
+		for _, feature := range facet.Features {
+			if feature == nil {
+				continue
+			}
+			if feature.RichtextFacet_Mention != nil && strings.TrimSpace(feature.RichtextFacet_Mention.Did) == targetDID {
+				mentionFacet = true
+			}
+			if feature.RichtextFacet_Link != nil && strings.TrimSpace(feature.RichtextFacet_Link.Uri) == "https://example.com" {
+				linkFacet = true
+			}
+		}
+	}
+	if !mentionFacet || !linkFacet {
+		t.Fatalf("expected mention and link facets, got %#v", imagePost.Facets)
 	}
 
 	followRef := publishSSBClientJSON(ctx, t, clientBaseURL, map[string]any{
@@ -485,6 +531,64 @@ func publishSSBClientJSON(ctx context.Context, t *testing.T, baseURL string, con
 	return strings.TrimSpace(payload.Key)
 }
 
+func uploadSSBClientBlob(ctx context.Context, t *testing.T, baseURL string, payload []byte, filename string, clientLogs *bytes.Buffer) string {
+	t.Helper()
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", filename)
+	if err != nil {
+		t.Fatalf("create multipart form: %v", err)
+	}
+	if _, err := part.Write(payload); err != nil {
+		t.Fatalf("write multipart payload: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/blobs/upload", &body)
+	if err != nil {
+		t.Fatalf("build ssb-client blob upload request: %v", err)
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	client := &http.Client{
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("upload blob via ssb-client: %v\nclient logs:\n%s", err, summarizeLogs(clientLogs.String()))
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusSeeOther {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		t.Fatalf(
+			"unexpected ssb-client blob upload response: status=%d body=%q\nclient logs:\n%s",
+			resp.StatusCode,
+			strings.TrimSpace(string(bodyBytes)),
+			summarizeLogs(clientLogs.String()),
+		)
+	}
+
+	sum := sha256.Sum256(payload)
+	return "&" + base64.RawStdEncoding.EncodeToString(sum[:]) + ".sha256"
+}
+
+func testPNGData() []byte {
+	return []byte{
+		0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+		0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+		0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53, 0xde, 0x00, 0x00, 0x00,
+		0x0c, 0x49, 0x44, 0x41, 0x54, 0x08, 0xd7, 0x63, 0xf8, 0xcf, 0xc0, 0x00,
+		0x00, 0x00, 0x03, 0x00, 0x01, 0x00, 0x05, 0xfe, 0xd4, 0xee, 0x00, 0x00,
+		0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+	}
+}
+
 func waitForPublishedMessage(ctx context.Context, t *testing.T, database *db.DB, atURI string, bridgeLogs *bytes.Buffer) *db.Message {
 	t.Helper()
 
@@ -513,6 +617,7 @@ func waitForReverseEventState(ctx context.Context, t *testing.T, database *db.DB
 
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
+	var lastEvent *db.ReverseEvent
 
 	for {
 		event, err := database.GetReverseEvent(ctx, sourceRef)
@@ -520,6 +625,7 @@ func waitForReverseEventState(ctx context.Context, t *testing.T, database *db.DB
 			t.Fatalf("get reverse event %s: %v", sourceRef, err)
 		}
 		if event != nil {
+			lastEvent = event
 			if event.EventState == wantState {
 				return event
 			}
@@ -530,7 +636,7 @@ func waitForReverseEventState(ctx context.Context, t *testing.T, database *db.DB
 
 		select {
 		case <-ctx.Done():
-			t.Fatalf("timed out waiting for reverse event %s state=%s\nbridge logs:\n%s", sourceRef, wantState, summarizeLogs(bridgeLogs.String()))
+			t.Fatalf("timed out waiting for reverse event %s state=%s last_event=%#v\nbridge logs:\n%s", sourceRef, wantState, lastEvent, summarizeLogs(bridgeLogs.String()))
 		case <-ticker.C:
 		}
 	}

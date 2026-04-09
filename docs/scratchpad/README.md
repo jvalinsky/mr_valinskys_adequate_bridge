@@ -63,6 +63,7 @@ These drafts were incorporated into the main README:
 | [040-ssbc-compliance-merge.md](040-ssbc-compliance-merge.md) | Replay plan and implementation notes for merging `codex/ssbc-compliance` onto current `main` | — | Historical |
 | [041-ssbc-compliance-remediation-2026-04.md](041-ssbc-compliance-remediation-2026-04.md) | Execution log for SIP-004 and SIP-007 conformance remediations (Bendy signatures/previous, Rooms2 metadata, alias URL normalization) | 959+ | Active |
 | [042-two-way-bridge-reverse-sync.md](042-two-way-bridge-reverse-sync.md) | Reverse-sync implementation log for allowlisted SSB-to-ATProto posts/replies/follows, durable queue state, admin UI, loop suppression, and both interop E2E targets | 999-1035 | Historical |
+| [043-reverse-sync-v2-media-facets.md](043-reverse-sync-v2-media-facets.md) | Reverse-sync v2 implementation log for image embeds, text shaping, and rich-text facets on reverse-created ATProto posts and replies | 1041-1061 | Active |
 
 ## Understanding Scratchpad Status
 

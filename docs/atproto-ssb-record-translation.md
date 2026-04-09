@@ -142,3 +142,53 @@ So the bridge preserves ATProto identifiers first, resolves them only when the c
 - [`internal/db/schema.sql`](../internal/db/schema.sql)
 - [`internal/mapper/mapper_test.go`](../internal/mapper/mapper_test.go)
 - [`internal/bridge/processor_test.go`](../internal/bridge/processor_test.go)
+
+## Reverse sync v2: SSB to ATProto media and facets
+
+Reverse sync now has a second content-fidelity pass for SSB `post` and `reply` messages in [`internal/bridge/reverse_sync.go`](../internal/bridge/reverse_sync.go).
+
+### Canonical reverse media source
+
+Reverse media only looks at structured SSB `mentions` entries shaped like:
+
+- `{"link":"&...sha256","name":"alt text","type":"image/png"}`
+
+Rules:
+
+- only blob refs in `mentions[].link` are eligible for reverse media
+- only `image/*` is supported
+- duplicate blob refs are deduplicated in mention order
+- more than 4 unique image refs defers the whole reverse event
+- missing blob bytes, unsupported MIME, MIME mismatches, and upload failures defer the whole reverse event
+
+A bare `&blob...` token in text without a matching structured `mentions` entry stays plain text and does not create an ATProto embed.
+
+### Reverse text shaping
+
+When a structured image blob mention is embedded as `app.bsky.embed.images`, the reverse path removes markdown segments that point at that blob ref from the ATProto text body.
+
+Examples:
+
+- `![Preview](&blob...)`
+- `[Preview](&blob...)`
+
+Other markdown and prose remain unchanged. After stripping those segments, the reverse path trims immediate whitespace artifacts before computing facet byte ranges.
+
+### Reverse facet generation
+
+Facet byte ranges are computed against the final UTF-8 bytes of the shaped ATProto text.
+
+The reverse processor builds facets from:
+
+- structured SSB feed mentions, if the feed resolves to an AT DID
+- structured `#tag` mentions
+- structured `http(s)` link mentions
+- bare `http(s)` URLs still present in text after structured facets are placed
+
+Placement is conservative:
+
+- use `mentions[].name` as the visible token when present
+- otherwise fall back to the link literal (`@feed`, `#tag`, or URL)
+- claim the first non-overlapping exact match in the final text
+- if a structured token cannot be placed, skip that facet instead of deferring the whole event
+- if an SSB feed mention cannot be mapped to an AT DID, publish the rest of the post and leave that token as plain text

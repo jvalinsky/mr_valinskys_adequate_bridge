@@ -112,3 +112,35 @@ func TestVerifySignedMessageJSONPreservesContentOrder(t *testing.T) {
 		t.Fatalf("message ref = %s, want %s", got, want)
 	}
 }
+
+func TestVerifySignedMessageJSONWithMentionsArray(t *testing.T) {
+	aliceKeys, _ := keys.Generate()
+
+	msg := &Message{
+		Author:    aliceKeys.FeedRef(),
+		Sequence:  1,
+		Timestamp: 1775699200000,
+		Hash:      "sha256",
+		Content: map[string]interface{}{
+			"type": "post",
+			"text": "hello @bob https://example.com",
+			"mentions": []map[string]interface{}{
+				{"link": "@bob.ed25519", "name": "@bob"},
+				{"link": "&abc.sha256", "name": "preview", "type": "image/png"},
+			},
+		},
+	}
+
+	_, sig, err := msg.Sign(aliceKeys, nil)
+	if err != nil {
+		t.Fatalf("sign message: %v", err)
+	}
+	raw, err := msg.MarshalWithSignature(sig)
+	if err != nil {
+		t.Fatalf("marshal signed message: %v", err)
+	}
+
+	if _, err := VerifySignedMessageJSON(raw); err != nil {
+		t.Fatalf("verify complex signed message: %v\nraw=%s", err, string(raw))
+	}
+}

@@ -24,6 +24,10 @@ ROOM_TUNNEL_VERIFY_BIN="${ROOM_TUNNEL_VERIFY_BIN:-/bridge-data/tools/room-tunnel
 
 log() { echo "[e2e-tf] $(date +%H:%M:%S) $*"; }
 
+room_curl() {
+  curl -sS -H "X-Forwarded-Proto: https" "$@"
+}
+
 gh_warn() {
   if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
     echo "::warning file=infra/e2e-tildefriends/test_runner.sh,line=${BASH_LINENO[0]}::$*"
@@ -215,8 +219,8 @@ assert_active_bridged_room_peers() {
   fi
 
   local attendants_json tunnels_json
-  attendants_json="$(curl -sS -f "http://${BRIDGE_HTTP_ADDR}/api/room/status/attendants")" || die "failed to fetch room attendants status"
-  tunnels_json="$(curl -sS -f "http://${BRIDGE_HTTP_ADDR}/api/room/status/tunnels")" || die "failed to fetch room tunnel endpoints status"
+  attendants_json="$(room_curl -f "http://${BRIDGE_HTTP_ADDR}/api/room/status/attendants")" || die "failed to fetch room attendants status"
+  tunnels_json="$(room_curl -f "http://${BRIDGE_HTTP_ADDR}/api/room/status/tunnels")" || die "failed to fetch room tunnel endpoints status"
 
   local -a active_feeds
   mapfile -t active_feeds < <(sqlite3 "${BRIDGE_DB_PATH}" "SELECT ssb_feed_id FROM bridged_accounts WHERE active=1 AND ssb_feed_id IS NOT NULL AND TRIM(ssb_feed_id) <> '' ORDER BY ssb_feed_id;" | sed '/^[[:space:]]*$/d')
@@ -256,7 +260,7 @@ parse_host_port "${BRIDGE_MUXRPC_ADDR}" EXPECTED_ROOM_HOST EXPECTED_ROOM_PORT
 log "waiting for bridge room healthz at http://${BRIDGE_HTTP_ADDR}/healthz ..."
 deadline=$((SECONDS + MAX_WAIT_SECS))
 while true; do
-  if curl -sS -f "http://${BRIDGE_HTTP_ADDR}/healthz" >/dev/null 2>&1; then
+  if room_curl -f "http://${BRIDGE_HTTP_ADDR}/healthz" >/dev/null 2>&1; then
     log "bridge room is healthy"
     break
   fi
@@ -343,7 +347,7 @@ fi
 # 7. Create + consume invite and derive strict TF connection target
 # ------------------------------------------------------------------
 log "creating invite via room facade ..."
-invite_resp="$(curl -sS -f -X POST "http://${BRIDGE_HTTP_ADDR}/create-invite" -H "Accept: application/json")"
+invite_resp="$(room_curl -f -X POST "http://${BRIDGE_HTTP_ADDR}/create-invite" -H "Accept: application/json")"
 invite_url="$(echo "${invite_resp}" | jq -r '.url // empty')"
 if [[ -z "${invite_url}" ]]; then
   die "create-invite response missing url: ${invite_resp}"
@@ -360,7 +364,7 @@ fi
 log "invite created"
 
 consume_payload="$(jq -cn --arg invite "${INVITE_TOKEN}" --arg id "${TF_IDENTITY}" '{invite:$invite,id:$id}')"
-consume_http="$(curl -sS -o /tmp/invite-consume.json -w "%{http_code}" -X POST "http://${BRIDGE_HTTP_ADDR}/invite/consume" -H "Content-Type: application/json" -H "Accept: application/json" --data "${consume_payload}")"
+consume_http="$(room_curl -o /tmp/invite-consume.json -w "%{http_code}" -X POST "http://${BRIDGE_HTTP_ADDR}/invite/consume" -H "Content-Type: application/json" -H "Accept: application/json" --data "${consume_payload}")"
 consume_body="$(cat /tmp/invite-consume.json)"
 if [[ "${consume_http}" != "200" ]]; then
   die "invite consume failed: http=${consume_http} body=${consume_body}"
@@ -377,7 +381,7 @@ fi
 log "invite consumed: multiserverAddress=${MULTISERVER_ADDR}"
 
 join_query_token="$(printf "%s" "${INVITE_TOKEN}" | jq -sRr @uri)"
-join_after_status="$(curl -sS -o /tmp/invite-join-after-consume.txt -w "%{http_code}" "http://${BRIDGE_HTTP_ADDR}/join?token=${join_query_token}")"
+join_after_status="$(room_curl -o /tmp/invite-join-after-consume.txt -w "%{http_code}" "http://${BRIDGE_HTTP_ADDR}/join?token=${join_query_token}")"
 if [[ "${join_after_status}" != "404" ]]; then
   join_after_body="$(cat /tmp/invite-join-after-consume.txt)"
   die "expected consumed invite token to return 404 from /join, got ${join_after_status} body=${join_after_body}"

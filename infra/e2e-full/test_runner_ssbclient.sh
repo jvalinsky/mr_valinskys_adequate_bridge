@@ -148,6 +148,22 @@ ssb_client_publish() {
     -d "${payload}" | jq -r '.key // empty'
 }
 
+ssb_client_upload_blob() {
+  local file_path="$1"
+  local headers="/tmp/ssb-client-upload-blob.headers"
+  local http_code
+  http_code="$(curl -sS -D "${headers}" -o /tmp/ssb-client-upload-blob.body -w "%{http_code}" \
+    -X POST \
+    -F "file=@${file_path}" \
+    "${SSB_CLIENT_BASE_URL}/blobs/upload")"
+  if [[ "${http_code}" != "303" ]]; then
+    die "ssb-client blob upload failed: http=${http_code} body=$(cat /tmp/ssb-client-upload-blob.body)"
+  fi
+  local blob_hash
+  blob_hash="$(openssl dgst -sha256 -binary "${file_path}" | openssl base64 -A | tr -d '=')"
+  echo "&${blob_hash}.sha256"
+}
+
 wait_for_reverse_event_published() {
   local source_ref="$1"
   local source_ref_escaped
@@ -305,6 +321,35 @@ if [[ "$(echo "${reply_record}" | jq -r '.value.reply.root.cid // empty')" != "$
   die "reply root cid mismatch"
 fi
 
+log "publishing reverse image post from repo ssb-client ..."
+media_image_path="/tmp/ssb-client-reverse-image.png"
+printf '%s' 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVQI12P4z8AAAwABAAX+1O4AAAAASUVORK5CYII=' | base64 -d > "${media_image_path}"
+media_blob_ref="$(ssb_client_upload_blob "${media_image_path}")"
+media_marker="ssb-client reverse image $(date +%s)"
+media_key="$(ssb_client_publish "$(jq -cn \
+  --arg text "ssb-client reverse image @target https://example.com ![preview](${media_blob_ref})" \
+  --arg target "${REVERSE_TARGET_FEED}" \
+  --arg blob "${media_blob_ref}" \
+  '{type:"post",text:$text,mentions:[{link:$target,name:"@target"},{link:$blob,name:"live image",type:"image/png"}]}')")"
+media_row="$(wait_for_reverse_event_published "${media_key}")"
+MEDIA_AT_URI="$(echo "${media_row}" | cut -d'|' -f2)"
+media_record="$(atproto_get_record "${SOURCE_ACCESS_JWT}" "${MEDIA_AT_URI}")"
+if [[ "$(echo "${media_record}" | jq -r '.value.text // empty')" != "ssb-client reverse image @target https://example.com" ]]; then
+  die "reverse image post text mismatch"
+fi
+if [[ "$(echo "${media_record}" | jq -r '.value.embed.images | length // 0')" != "1" ]]; then
+  die "reverse image post missing embed.images"
+fi
+if [[ "$(echo "${media_record}" | jq -r '.value.embed.images[0].alt // empty')" != "live image" ]]; then
+  die "reverse image post alt mismatch"
+fi
+if ! echo "${media_record}" | jq -e --arg did "${E2E_REVERSE_TARGET_DID}" 'any(.value.facets[]?; any(.features[]?; .did? == $did))' >/dev/null; then
+  die "reverse image post missing mention facet"
+fi
+if ! echo "${media_record}" | jq -e 'any(.value.facets[]?; any(.features[]?; .uri? == "https://example.com"))' >/dev/null; then
+  die "reverse image post missing link facet"
+fi
+
 follow_key="$(ssb_client_publish "$(jq -cn --arg contact "${REVERSE_TARGET_FEED}" '{type:"contact",contact:$contact,following:true,blocking:false}')")"
 follow_row="$(wait_for_reverse_event_published "${follow_key}")"
 FOLLOW_AT_URI="$(echo "${follow_row}" | cut -d'|' -f2)"
@@ -321,4 +366,4 @@ if [[ "${UNFOLLOW_AT_URI}" != "${FOLLOW_AT_URI}" ]]; then
 fi
 wait_for_record_deleted "${SOURCE_ACCESS_JWT}" "${FOLLOW_AT_URI}"
 
-log "reverse sync verified for repo ssb-client root/reply/follow/unfollow"
+log "reverse sync verified for repo ssb-client root/reply/image/follow/unfollow"
