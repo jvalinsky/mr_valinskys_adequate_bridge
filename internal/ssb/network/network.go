@@ -250,7 +250,7 @@ func (s *Server) newManifest() *muxrpc.Manifest {
 	m := muxrpc.NewManifest()
 	m.RegisterSource("createHistoryStream")
 	m.RegisterAsync("gossip.ping")
-	m.RegisterAsync("blobs.get")
+	m.RegisterSource("blobs.get")
 	m.RegisterAsync("blobs.has")
 	m.RegisterAsync("blobs.size")
 	m.RegisterSink("blobs.add")

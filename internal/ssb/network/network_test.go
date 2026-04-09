@@ -2,6 +2,7 @@ package network
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -82,5 +83,45 @@ func TestGetFeedRefFromAddr(t *testing.T) {
 
 	if string(ref.PubKey()) != string(pub) {
 		t.Errorf("unexpected pubkey: %x", ref.PubKey())
+	}
+}
+
+func TestNetworkManifestBlobsGet(t *testing.T) {
+	s := &Server{}
+	m := s.newManifest()
+
+	b, err := m.ToJSON()
+	if err != nil {
+		t.Fatalf("ToJSON failed: %v", err)
+	}
+
+	type manifestEntry struct {
+		Type  string   `json:"type"`
+		Names []string `json:"names"`
+	}
+	var entries []manifestEntry
+	if err := json.Unmarshal(b, &entries); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+
+	typeMap := make(map[string][]string)
+	for _, e := range entries {
+		typeMap[e.Type] = e.Names
+	}
+
+	names, ok := typeMap["source"]
+	if !ok {
+		t.Fatal("missing source in manifest")
+	}
+
+	var found bool
+	for _, n := range names {
+		if n == "blobs.get" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("blobs.get should be registered as source")
 	}
 }
