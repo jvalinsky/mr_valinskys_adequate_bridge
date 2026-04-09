@@ -84,3 +84,7 @@ DG Nodes: `#1041-#1065`
 
 - Exact-match facet placement is based on the final UTF-8 text bytes after stripping embedded image blob markdown.
 - A bare `&blob...` in text without a structured mention remains plain text and does not create an embed.
+
+## Completion Log
+
+- **2026-04-09**: All implementation complete. E2E tests in infra/e2e-full/test_runner.sh verify image embeds work. Live test in internal/livee2e/live_reverse_ssb_client_test.go covers ssb-client blob fetch. Closed outcomes 1062-1066 and actions 1061, 1065, 1068. Goal 1041 marked complete.
