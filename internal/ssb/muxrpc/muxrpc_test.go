@@ -163,6 +163,64 @@ func TestManifest(t *testing.T) {
 	}
 }
 
+func TestManifestAllCallTypes(t *testing.T) {
+	m := NewManifest()
+	m.RegisterAsync("test.async")
+	m.RegisterSource("test.source")
+	m.RegisterSink("test.sink")
+	m.RegisterDuplex("test.duplex")
+	m.RegisterSync("test.sync")
+
+	b, err := m.ToJSON()
+	if err != nil {
+		t.Fatalf("ToJSON failed: %v", err)
+	}
+
+	type manifestEntry struct {
+		Type  string   `json:"type"`
+		Names []string `json:"names"`
+	}
+	var entries []manifestEntry
+	if err := json.Unmarshal(b, &entries); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+
+	typeMap := make(map[string][]string)
+	for _, e := range entries {
+		typeMap[e.Type] = e.Names
+	}
+
+	if names, ok := typeMap["async"]; !ok {
+		t.Error("missing async in manifest")
+	} else if len(names) != 1 || names[0] != "test.async" {
+		t.Errorf("unexpected async names: %v", names)
+	}
+
+	if names, ok := typeMap["source"]; !ok {
+		t.Error("missing source in manifest")
+	} else if len(names) != 1 || names[0] != "test.source" {
+		t.Errorf("unexpected source names: %v", names)
+	}
+
+	if names, ok := typeMap["sink"]; !ok {
+		t.Error("missing sink in manifest")
+	} else if len(names) != 1 || names[0] != "test.sink" {
+		t.Errorf("unexpected sink names: %v", names)
+	}
+
+	if names, ok := typeMap["duplex"]; !ok {
+		t.Error("missing duplex in manifest")
+	} else if len(names) != 1 || names[0] != "test.duplex" {
+		t.Errorf("unexpected duplex names: %v", names)
+	}
+
+	if names, ok := typeMap["sync"]; !ok {
+		t.Error("missing sync in manifest")
+	} else if len(names) != 1 || names[0] != "test.sync" {
+		t.Errorf("unexpected sync names: %v", names)
+	}
+}
+
 func TestMuxrpcMisc(t *testing.T) {
 	m := Method{"a", "b"}
 	if m.String() != "a.b" {

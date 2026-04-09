@@ -662,5 +662,13 @@ func (m *Manifest) ToJSON() ([]byte, error) {
 		entries = append(entries, manifestEntry{Type: "duplex", Names: duplexNames})
 	}
 
+	var syncNames []string
+	for k := range m.sync {
+		syncNames = append(syncNames, k)
+	}
+	if len(syncNames) > 0 {
+		entries = append(entries, manifestEntry{Type: "sync", Names: syncNames})
+	}
+
 	return json.Marshal(entries)
 }
