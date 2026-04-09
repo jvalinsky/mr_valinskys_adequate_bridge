@@ -1,9 +1,12 @@
 package sbot
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"time"
@@ -256,11 +259,10 @@ func newManifest(enableEBT, enableRoom bool) *muxrpc.Manifest {
 	m.RegisterSource("replicate.upto")
 
 	if enableRoom {
-		m.RegisterAsync("room.attendants")
+		m.RegisterSource("room.attendants")
 		m.RegisterAsync("room.listAliases")
 		m.RegisterAsync("room.registerAlias")
 		m.RegisterAsync("room.revokeAlias")
-		m.RegisterAsync("room.members")
 		m.RegisterSource("room.members")
 		m.RegisterAsync("room.metadata")
 
@@ -473,6 +475,108 @@ func (s *Sbot) NetServer() *network.Server {
 
 func (s *Sbot) BlobStore() *blobs.Store {
 	return s.blobs
+}
+
+func (s *Sbot) EnsureBlob(ctx context.Context, ref *refs.BlobRef) error {
+	if s == nil || s.blobs == nil {
+		return fmt.Errorf("sbot: blob store not initialized")
+	}
+	if ref == nil {
+		return fmt.Errorf("sbot: blob ref is nil")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	has, err := s.blobs.BlobStore().Has(ref.Hash())
+	if err != nil {
+		return fmt.Errorf("sbot: check blob %s: %w", ref.Ref(), err)
+	}
+	if has {
+		return nil
+	}
+
+	if wantManager := s.blobs.WantManager(); wantManager != nil {
+		_ = wantManager.Want(ref)
+	}
+
+	var lastErr error
+	for _, peer := range s.Peers() {
+		if peer == nil || peer.RPC() == nil {
+			continue
+		}
+		if err := s.fetchBlobFromPeer(ctx, peer, ref); err == nil {
+			if wantManager := s.blobs.WantManager(); wantManager != nil {
+				_ = wantManager.CancelWant(ref)
+			}
+			return nil
+		} else {
+			lastErr = err
+		}
+	}
+
+	if lastErr != nil {
+		return fmt.Errorf("sbot: fetch blob %s: %w", ref.Ref(), lastErr)
+	}
+	return fmt.Errorf("sbot: no peers available for blob %s", ref.Ref())
+}
+
+func (s *Sbot) fetchBlobFromPeer(ctx context.Context, peer *network.Peer, ref *refs.BlobRef) error {
+	if s == nil || s.blobs == nil {
+		return fmt.Errorf("sbot: blob store not initialized")
+	}
+	if peer == nil || peer.RPC() == nil {
+		return fmt.Errorf("sbot: peer RPC unavailable")
+	}
+
+	fetchCtx := ctx
+	cancel := func() {}
+	if _, hasDeadline := fetchCtx.Deadline(); !hasDeadline {
+		fetchCtx, cancel = context.WithTimeout(fetchCtx, 10*time.Second)
+	}
+	defer cancel()
+
+	src, err := peer.RPC().Source(fetchCtx, muxrpc.TypeBinary, muxrpc.Method{"blobs", "get"}, map[string]string{
+		"hash": ref.Ref(),
+	})
+	if err != nil {
+		return err
+	}
+
+	var payload bytes.Buffer
+	for src.Next(fetchCtx) {
+		chunk, err := src.Bytes()
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return err
+		}
+		if len(chunk) > 0 {
+			if _, err := payload.Write(chunk); err != nil {
+				return err
+			}
+		}
+	}
+	if err := src.Err(); err != nil {
+		return err
+	}
+	if payload.Len() == 0 {
+		return fmt.Errorf("empty blob response")
+	}
+
+	sum := sha256.Sum256(payload.Bytes())
+	if !bytes.Equal(sum[:], ref.Hash()) {
+		return fmt.Errorf("blob hash mismatch")
+	}
+	storedHash, err := s.blobs.BlobStore().Put(bytes.NewReader(payload.Bytes()))
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(storedHash, ref.Hash()) {
+		return fmt.Errorf("stored blob hash mismatch")
+	}
+	return nil
 }
 
 func (s *Sbot) Publisher() (*publisher.Publisher, error) {
