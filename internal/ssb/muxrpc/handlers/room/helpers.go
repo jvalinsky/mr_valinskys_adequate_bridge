@@ -94,7 +94,7 @@ func isInternalMember(s *RoomServer, ctx context.Context, feed refs.FeedRef) boo
 }
 
 func roomFeatures(mode roomdb.PrivacyMode) []string {
-	features := []string{"tunnel", "room2", "httpInvite"}
+	features := []string{"tunnel", "room2", "httpInvite", "httpAuth"}
 	if mode != roomdb.ModeRestricted {
 		features = append(features, "alias")
 	}

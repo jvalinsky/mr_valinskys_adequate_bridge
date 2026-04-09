@@ -1552,7 +1552,7 @@ func TestRuntimeRoomMetadataReportsAuthenticatedMembership(t *testing.T) {
 	if !memberMeta.Membership {
 		t.Fatalf("expected member metadata membership=true for internal member: %+v", memberMeta)
 	}
-	for _, want := range []string{"tunnel", "room2", "httpInvite", "alias"} {
+	for _, want := range []string{"tunnel", "room2", "httpInvite", "httpAuth", "alias"} {
 		if !containsString(memberMeta.Features, want) {
 			t.Fatalf("member metadata missing feature %q: %+v", want, memberMeta.Features)
 		}
