@@ -130,9 +130,54 @@ Those strings come from the code path in [`internal/bridge/reverse_sync.go`](../
 - Credentials should stay in environment variables or secret files, not in the JSON file itself.
 - Keep `--atproto-insecure` off outside local and test stacks.
 
+## Follow-Back (Bot Follower Tracking)
+
+When an SSB user follows the bridge bot's feed, the bridge can automatically follow them back on ATProto. This is separate from reverse sync and operates independently.
+
+### How It Works
+
+The `FollowerTracker` component:
+1. Receives announcements when the SSB bot feed gains a new follower
+2. Debounces events (5s default) to batch rapid changes
+3. Rate-limits follow-backs (10 follows per 60s window by default)
+4. Resolves the SSB feed to a DID via `com.atproto.identity.resolveHandle`
+5. Publishes `app.bsky.graph.follow` record to ATProto
+6. Records synced followers in `ssb_follower_sync` table to avoid duplicates
+
+### Preconditions
+
+- Bridge must be running with a configured bot identity (`--bot-did` and `--bot-ssb-feed`)
+- XRPC client must be configured for the bot's PDS
+- Bot feed must be reachable via SSB replication
+
+### Behavior
+
+| Condition | Action |
+| --- | --- |
+| SSB user follows bot | Bot follows user on ATProto |
+| User already synced | Skipped (tracked in `ssb_follower_sync`) |
+| Bot follows itself | Skipped |
+| Rate limit reached | Skipped with log message |
+| DID resolution fails | Skipped with log message |
+
+### Configuration
+
+The follower tracker is initialized with default settings:
+- `DebounceDelay`: 5s (batches rapid follow/unfollow sequences)
+- `RateLimitDur`: 60s (rate limit window)
+- `MaxFollowsPer`: 10 (max follows per window)
+
+These are wired into the bridge startup via `BridgeApp.initFollowerTracker()`.
+
+### See Also
+
+- [`internal/bridge/follower_tracker.go`](../internal/bridge/follower_tracker.go)
+- [`internal/bridge/follower_tracker_test.go`](../internal/bridge/follower_tracker_test.go)
+
 ## See Also
 
 - [Bridge Operator Runbook](./runbook.md)
 - [ATProto to SSB Translation Overview](./atproto-ssb-translation-overview.md)
 - [`internal/bridge/reverse_sync.go`](../internal/bridge/reverse_sync.go)
+- [`internal/bridge/follower_tracker.go`](../internal/bridge/follower_tracker.go)
 - [`internal/db/schema.sql`](../internal/db/schema.sql)
