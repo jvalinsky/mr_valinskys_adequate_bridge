@@ -107,12 +107,14 @@ func TestBridgeLiveInterop(t *testing.T) {
 	// Use pre-built binary to avoid signal handling issues with 'go run' in background.
 	// The binary is built by the test runner or the E2E script.
 	binaryPath := filepath.Join(moduleRoot, "bridge-cli")
-	if _, err := os.Stat(binaryPath); os.IsNotExist(err) {
-		// Fallback to go run if binary doesn't exist (e.g., during development)
-		binaryPath = "go"
-		startArgs = append([]string{"run", "./cmd/bridge-cli"}, startArgs...)
+	var bridgeProc *exec.Cmd
+	if _, err := os.Stat(binaryPath); err == nil {
+		t.Logf("using pre-built binary: %s", binaryPath)
+		bridgeProc = exec.CommandContext(ctx, binaryPath, startArgs...)
+	} else {
+		t.Logf("pre-built binary not found at %s, falling back to go run", binaryPath)
+		bridgeProc = exec.CommandContext(ctx, "go", append([]string{"run", "./cmd/bridge-cli"}, startArgs...)...)
 	}
-	bridgeProc := exec.CommandContext(ctx, binaryPath, startArgs...)
 	bridgeProc.Dir = moduleRoot
 	bridgeProc.Stdout = &bridgeLogs
 	bridgeProc.Stderr = &bridgeLogs

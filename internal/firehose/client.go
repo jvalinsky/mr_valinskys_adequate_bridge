@@ -118,8 +118,9 @@ func (c *Client) Run(ctx context.Context) error {
 				_ = con.Close()
 				return
 			case <-ticker.C:
+				start := time.Now()
 				if err := con.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(10*time.Second)); err != nil {
-					slog.Warn("firehose: ping failed", "error", err)
+					slog.Warn("firehose: ping failed", "error", err, "failures", failures+1)
 					failures++
 					if failures >= 4 {
 						_ = con.Close()
@@ -127,6 +128,7 @@ func (c *Client) Run(ctx context.Context) error {
 					}
 					continue
 				}
+				slog.Debug("firehose: ping sent", "elapsed", time.Since(start))
 				failures = 0
 			}
 		}
