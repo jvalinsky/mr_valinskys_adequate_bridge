@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"sync"
 
@@ -31,9 +32,9 @@ func NewBoxerEngine(nonce *[24]byte, secret *[32]byte) *BoxerEngine {
 	}
 }
 
-func (b *BoxerEngine) EncryptMessage(msg []byte) []byte {
+func (b *BoxerEngine) EncryptMessage(msg []byte) ([]byte, error) {
 	if len(msg) > MaxSegmentSize {
-		panic("message exceeds maximum segment size")
+		return nil, fmt.Errorf("message exceeds maximum segment size (%d > %d)", len(msg), MaxSegmentSize)
 	}
 
 	headerNonce := b.nonce
@@ -52,7 +53,7 @@ func (b *BoxerEngine) EncryptMessage(msg []byte) []byte {
 	out := make([]byte, 0, len(headerBox)+len(body))
 	out = append(out, headerBox...)
 	out = append(out, body...)
-	return out
+	return out, nil
 }
 
 func (b *BoxerEngine) EncryptGoodbye() []byte {
@@ -98,8 +99,11 @@ func (b *Boxer) WriteMessage(msg []byte) error {
 	b.l.Lock()
 	defer b.l.Unlock()
 
-	out := b.engine.EncryptMessage(msg)
-	_, err := b.w.Write(out)
+	out, err := b.engine.EncryptMessage(msg)
+	if err != nil {
+		return err
+	}
+	_, err = b.w.Write(out)
 	return err
 }
 

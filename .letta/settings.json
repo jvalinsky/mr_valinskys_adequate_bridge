@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(deciduous nodes --branch main | head -50)",
+      "Bash(wc:*)",
+      "Bash(SPLIT_DIR=/tmp/history-splits\nmkdir -p \"$SPLIT_DIR\"\n\n# Split Claude history into even chunks\nLINES=$(wc -l < ~/.claude/history.jsonl)\nCHUNK_SIZE=$(( LINES / 3 + 1 ))\nsplit -l $CHUNK_SIZE ~/.claude/history.jsonl \"$SPLIT_DIR/claude-\"\n\n# Split Codex history\nLINES=$(wc -l < ~/.codex/history.jsonl)\nCHUNK_SIZE=$(( LINES / 4 + 1 ))\nsplit -l $CHUNK_SIZE ~/.codex/history.jsonl \"$SPLIT_DIR/codex-\"\n\n# Rename to .jsonl\nfor f in \"$SPLIT_DIR\"/*; do mv \"$f\" \"$f.jsonl\" 2>/dev/null; done\n\necho \"Split files:\"\nls -la \"$SPLIT_DIR\")",
+      "Bash(go version 2>&1 || echo \"Go not found\")",
+      "Bash(cat:*)",
+      "Bash(deciduous nodes --branch main | tail -50)",
+      "Bash(git merge:*)",
+      "Bash(cd /Users/jack/Software/mr_valinskys_adequate_bridge && GOFLAGS=-mod=mod go test ./internal/bridge -run FollowerTracker -count=1)"
+    ]
+  }
+}

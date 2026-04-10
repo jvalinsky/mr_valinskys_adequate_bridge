@@ -136,31 +136,6 @@ func (c *Client) Run(ctx context.Context) error {
 }
 
 func (c *Client) handleStream(ctx context.Context, con *websocket.Conn) error {
-	go func() {
-		ticker := time.NewTicker(30 * time.Second)
-		defer ticker.Stop()
-
-		failures := 0
-		for {
-			select {
-			case <-ctx.Done():
-				_ = con.Close()
-				return
-			case <-ticker.C:
-				if err := con.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(10*time.Second)); err != nil {
-					slog.Warn("firehose: ping failed", "error", err)
-					failures++
-					if failures >= 4 {
-						_ = con.Close()
-						return
-					}
-					continue
-				}
-				failures = 0
-			}
-		}
-	}()
-
 	con.SetPingHandler(func(message string) error {
 		err := con.WriteControl(websocket.PongMessage, []byte(message), time.Now().Add(60*time.Second))
 		if err == websocket.ErrCloseSent {
