@@ -340,7 +340,7 @@ func (r *rpc) serve() {
 	for {
 		pkt, err := r.packer.NextPacket(r.ctx)
 		if err != nil {
-			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, context.Canceled) {
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, context.Canceled) || errors.Is(err, net.ErrClosed) {
 				return
 			}
 			errCount++
