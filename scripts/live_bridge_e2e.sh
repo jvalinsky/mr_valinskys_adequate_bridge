@@ -18,7 +18,7 @@ if [[ -n "${ENV_FILE}" ]]; then
 fi
 
 EXPECT="${E2E_EXPECT:-pass}"
-TEST_PATTERN="${LIVE_E2E_TEST_PATTERN:-TestBridgeLiveInterop}"
+TEST_PATTERN="${LIVE_E2E_TEST_PATTERN:-^TestBridgeLiveInterop$}"
 TEST_LABEL="${LIVE_E2E_LABEL:-live relay + room interoperability tests}"
 case "${EXPECT}" in
   pass|fail)
