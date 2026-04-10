@@ -107,8 +107,14 @@ func (c *Client) Run(ctx context.Context) error {
 	}
 
 	// Keepalive ping loop
+	//
+	// Ping interval matches official @atproto/sync WebSocketKeepAlive
+	// implementation (10 seconds). Relays expect client-to-server pings
+	// to detect "zombie" connections. If no ping is received within the
+	// relay's timeout, the relay closes the connection.
+	// See: https://github.com/bluesky-social/indigo/issues/1279
 	go func() {
-		ticker := time.NewTicker(25 * time.Second)
+		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
 
 		failures := 0
