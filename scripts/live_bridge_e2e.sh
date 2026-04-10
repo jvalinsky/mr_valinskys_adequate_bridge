@@ -39,6 +39,12 @@ if [[ "${GOFLAGS:-}" != *"-mod="* ]]; then
   export GOFLAGS="-mod=mod ${GOFLAGS:-}"
 fi
 
+# Pre-build bridge-cli binary to avoid signal handling issues with 'go run' in background.
+# The live E2E test spawns the bridge as a subprocess, and using a pre-built binary
+# ensures the process handles signals and context cancellation correctly.
+echo "[live-e2e] building bridge-cli binary..."
+go build -o ./bridge-cli ./cmd/bridge-cli
+
 echo "[live-e2e] running ${TEST_LABEL} (pattern=${TEST_PATTERN} expect=${EXPECT})"
 set +e
 go test ./internal/livee2e -run "${TEST_PATTERN}" -count=1
