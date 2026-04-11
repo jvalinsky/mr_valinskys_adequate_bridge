@@ -39,8 +39,40 @@ LOCAL_ATPROTO_PDS_SERVICE_HOST="${LOCAL_ATPROTO_PDS_SERVICE_HOST:-pds.test}"
 echo "[local-atproto] seeding relay with PDS host (${LOCAL_ATPROTO_PDS_SERVICE_HOST})"
 docker exec local-atproto-relay_pg-1 psql -U relay -d relay -c \
   "INSERT INTO host (hostname, no_ssl, status, account_limit, trusted, last_seq, account_count, created_at, updated_at)
-   VALUES ('${LOCAL_ATPROTO_PDS_SERVICE_HOST}', true, 'active', 1000, true, 0, 0, NOW(), NOW())
-   ON CONFLICT (hostname) DO UPDATE SET status = 'active', no_ssl = true, last_seq = 0, updated_at = NOW();" \
+   VALUES ('${LOCAL_ATPROTO_PDS_SERVICE_HOST}', true, 'active', 10000, true, 0, 0, NOW(), NOW())
+   ON CONFLICT (hostname) DO UPDATE SET status = 'active', no_ssl = true, account_limit = 10000, last_seq = 0, updated_at = NOW();" \
   >/dev/null
+
+# Also reset any accounts that were marked as host-throttled during previous failed connections
+docker exec local-atproto-relay_pg-1 psql -U relay -d relay -c \
+  "UPDATE account SET status = 'active' WHERE status = 'host-throttled';" \
+  >/dev/null
+
+# Wait for pds-proxy to be fully ready (not just healthy, but serving requests on port 80)
+echo "[local-atproto] waiting for pds-proxy to be ready..."
+for i in {1..30}; do
+  if docker exec local-atproto-relay-1 wget -q -O /dev/null "http://${LOCAL_ATPROTO_PDS_SERVICE_HOST}/" 2>/dev/null; then
+    echo "[local-atproto] pds-proxy ready"
+    break
+  fi
+  sleep 1
+done
+
+# Now restart relay to pick up the PDS connection with fresh DNS
 docker restart local-atproto-relay-1 >/dev/null 2>&1
 "${ROOT_DIR}/scripts/local_atproto_wait.sh"
+
+# Wait for slurper to connect to PDS (check for "persisting cursors" logs AFTER restart)
+echo "[local-atproto] waiting for relay slurper to connect to PDS..."
+sleep 3  # Give slurper time to start connection attempts
+for i in {1..30}; do
+  if docker logs local-atproto-relay-1 --since 10s 2>&1 | grep -q "finished persisting cursors"; then
+    echo "[local-atproto] relay connected to PDS"
+    break
+  fi
+  # Also check for dialing success (connected to correct IP)
+  if docker logs local-atproto-relay-1 --since 10s 2>&1 | grep -qE 'dial tcp 192\.168\.|dial tcp 10\.'; then
+    echo "[local-atproto] relay dialing PDS (may be connecting...)"
+  fi
+  sleep 1
+done

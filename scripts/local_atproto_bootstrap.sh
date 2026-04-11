@@ -94,6 +94,25 @@ if [[ -z "${source_did}" || -z "${target_did}" ]]; then
   exit 1
 fi
 
+# Wait for accounts to be active in relay (not host-throttled)
+# Relay must have successfully connected to PDS before publishing records
+echo "[local-atproto] waiting for relay to sync accounts..."
+sleep 5
+for i in {1..30}; do
+  status=$(docker exec local-atproto-relay_pg-1 psql -U relay -d relay -t -c \
+    "SELECT status FROM account WHERE did = '${source_did}' OR did = '${target_did}' LIMIT 1;" 2>/dev/null | tr -d ' ')
+  if [[ "${status}" == "active" ]]; then
+    echo "[local-atproto] accounts active in relay"
+    break
+  fi
+  if [[ "${status}" == "host-throttled" ]]; then
+    echo "[local-atproto] accounts throttled, resetting..."
+    docker exec local-atproto-relay_pg-1 psql -U relay -d relay -c \
+      "UPDATE account SET status = 'active' WHERE status = 'host-throttled';" >/dev/null 2>&1 || true
+  fi
+  sleep 1
+done
+
 mkdir -p "$(dirname "${ENV_OUT_PATH}")"
 cat > "${ENV_OUT_PATH}" <<VARS
 LIVE_E2E_ENABLED=1

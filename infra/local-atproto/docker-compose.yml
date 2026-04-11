@@ -58,6 +58,9 @@ services:
       RELAY_INITIAL_SEQ_NUMBER: "1"
       RELAY_TRUSTED_DOMAINS: ""
       RELAY_ALLOW_INSECURE_HOSTS: "true"
+      # Allow private IPs (SSRF protection bypass) for local development
+      # See: https://github.com/bluesky-social/indigo/issues/1217
+      INDIGO_SSRF_PUBLIC_ONLY_SCENARIO: "false"
     ports:
       - "2584:2470"
     volumes:
@@ -76,7 +79,7 @@ services:
     environment:
       PGPASSWORD: relay
     command: >
-      /bin/sh -c "psql -h relay_pg -U relay -d relay -c \"INSERT INTO host (hostname, status, no_ssl) VALUES ('pds.test', 'active', true) ON CONFLICT (hostname) DO UPDATE SET no_ssl = true;\""
+      /bin/sh -c "psql -h relay_pg -U relay -d relay -c \"INSERT INTO host (hostname, status, no_ssl, account_limit, trusted) VALUES ('pds.test', 'active', true, 10000, true) ON CONFLICT (hostname) DO UPDATE SET no_ssl = true, account_limit = 10000, trusted = true;\""
     networks:
       - default
 
