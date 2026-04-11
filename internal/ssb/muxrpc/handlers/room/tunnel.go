@@ -109,19 +109,36 @@ func (h *TunnelHandler) handleAnnounce(ctx context.Context, req *muxrpc.Request)
 		return
 	}
 
+	// Check if peer is denied (always applies)
+	if h.server.denied.HasFeed(ctx, feedRef) {
+		req.CloseWithError(fmt.Errorf("tunnel.announce: denied"))
+		return
+	}
+
 	var hookFailed bool
 
 	memberCheckStart := time.Now()
 	isMember := isInternalMember(h.server, ctx, feedRef)
 	memberCheckMs := time.Since(memberCheckStart).Milliseconds()
-	if !isMember {
-		req.CloseWithError(fmt.Errorf("tunnel.announce: membership required"))
-		return
-	}
 
-	if h.server.denied.HasFeed(ctx, feedRef) {
-		req.CloseWithError(fmt.Errorf("tunnel.announce: denied"))
-		return
+	// In open mode, allow anonymous announcements; otherwise require membership
+	if !isMember {
+		if h.server.config != nil {
+			mode, err := h.server.config.GetPrivacyMode(ctx)
+			if err != nil {
+				req.CloseWithError(fmt.Errorf("tunnel.announce: get privacy mode: %w", err))
+				return
+			}
+			if mode != roomdb.ModeOpen {
+				req.CloseWithError(fmt.Errorf("tunnel.announce: membership required"))
+				return
+			}
+			// Open mode: allow anonymous peer
+		} else {
+			// No config available: require membership
+			req.CloseWithError(fmt.Errorf("tunnel.announce: membership required"))
+			return
+		}
 	}
 
 	addr := tunnelAddress(*h.server.keyPair, feedRef)
@@ -162,9 +179,24 @@ func (h *TunnelHandler) handleLeave(ctx context.Context, req *muxrpc.Request) {
 		req.CloseWithError(fmt.Errorf("tunnel.leave: get caller: %w", err))
 		return
 	}
+
+	// In open mode, allow anonymous peers to leave; otherwise require membership
 	if !isInternalMember(h.server, ctx, feedRef) {
-		req.CloseWithError(fmt.Errorf("tunnel.leave: membership required"))
-		return
+		if h.server.config != nil {
+			mode, err := h.server.config.GetPrivacyMode(ctx)
+			if err != nil {
+				req.CloseWithError(fmt.Errorf("tunnel.leave: get privacy mode: %w", err))
+				return
+			}
+			if mode != roomdb.ModeOpen {
+				req.CloseWithError(fmt.Errorf("tunnel.leave: membership required"))
+				return
+			}
+			// Open mode: allow anonymous peer to leave
+		} else {
+			req.CloseWithError(fmt.Errorf("tunnel.leave: membership required"))
+			return
+		}
 	}
 
 	h.server.state.RemovePeer(feedRef)

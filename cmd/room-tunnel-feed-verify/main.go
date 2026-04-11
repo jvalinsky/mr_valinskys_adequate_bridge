@@ -16,13 +16,9 @@ import (
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/keys"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
-	"github.com/ssbc/go-muxrpc/v2"
-	"github.com/ssbc/go-muxrpc/v2/typemux"
-	"github.com/ssbc/go-netwrap"
-	"github.com/ssbc/go-secretstream"
-	shs "github.com/ssbc/go-secretstream/secrethandshake"
-	kitlog "go.mindeco.de/log"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/secretstream"
 )
 
 const defaultSHSCap = "1KHLiKZvAvjbY1ziZEHMXawbCEIM6qwjCDm3VYRan/s="
@@ -97,46 +93,17 @@ func runServe(args []string) error {
 	expectedURIs := splitCSV(cfg.ExpectedURIs)
 
 	serveDone := make(chan serveResult, 1)
-	handler := typemux.New(kitlog.NewNopLogger())
-	handler.RegisterAsync(muxrpc.Method{"whoami"}, typemux.AsyncFunc(func(context.Context, *muxrpc.Request) (interface{}, error) {
-		return map[string]interface{}{"id": keyPair.FeedRef()}, nil
-	}))
-	handler.RegisterDuplex(muxrpc.Method{"tunnel", "connect"}, typemux.DuplexFunc(
-		func(callCtx context.Context, req *muxrpc.Request, peerSrc *muxrpc.ByteSource, peerSnk *muxrpc.ByteSink) error {
-			_ = peerSrc
-			entries, err := loadPublishedEntries(callCtx, cfg.DBPath, cfg.SourceDID, expectedURIs)
-			if err != nil {
-				return err
-			}
+	handler := &tunnelServeHandler{
+		keyPair:      keyPair,
+		dbPath:       cfg.DBPath,
+		sourceDID:    cfg.SourceDID,
+		expectedURIs: expectedURIs,
+		sourceFeed:   sourceFeed,
+		hasSourceFeed: hasSourceFeed,
+		serveDone:    serveDone,
+	}
 
-			snapshot := tunnelSnapshot{
-				ExpectedCount: len(expectedURIs),
-				GeneratedAt:   time.Now().UTC().Format(time.RFC3339Nano),
-				Entries:       entries,
-			}
-			if hasSourceFeed {
-				snapshot.SourceFeed = sourceFeed.String()
-			}
-			payload, err := json.Marshal(snapshot)
-			if err != nil {
-				return fmt.Errorf("marshal snapshot: %w", err)
-			}
-			if _, err := peerSnk.Write(payload); err != nil {
-				return fmt.Errorf("write snapshot payload: %w", err)
-			}
-			if err := peerSnk.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
-				return fmt.Errorf("close snapshot sink: %w", err)
-			}
-
-			select {
-			case serveDone <- serveResult{EntryCount: len(entries)}:
-			default:
-			}
-			return nil
-		},
-	))
-
-	conn, err := openRoomEndpoint(ctx, keyPair, *roomFeed, cfg.RoomAddr, cfg.SHSCap, &handler)
+	conn, err := openRoomEndpoint(ctx, keyPair, *roomFeed, cfg.RoomAddr, cfg.SHSCap, handler)
 	if err != nil {
 		return err
 	}
@@ -201,12 +168,9 @@ func runRead(args []string) error {
 		return fmt.Errorf("parse --target-feed: %v", err)
 	}
 
-	handler := typemux.New(kitlog.NewNopLogger())
-	handler.RegisterAsync(muxrpc.Method{"whoami"}, typemux.AsyncFunc(func(context.Context, *muxrpc.Request) (interface{}, error) {
-		return map[string]interface{}{"id": keyPair.FeedRef()}, nil
-	}))
+	handler := &whoamiHandler{keyPair: keyPair}
 
-	conn, err := openRoomEndpoint(ctx, keyPair, *roomFeed, cfg.RoomAddr, cfg.SHSCap, &handler)
+	conn, err := openRoomEndpoint(ctx, keyPair, *roomFeed, cfg.RoomAddr, cfg.SHSCap, handler)
 	if err != nil {
 		return err
 	}
@@ -282,12 +246,9 @@ func runProbe(args []string) error {
 		return fmt.Errorf("parse --target-feed: %v", err)
 	}
 
-	handler := typemux.New(kitlog.NewNopLogger())
-	handler.RegisterAsync(muxrpc.Method{"whoami"}, typemux.AsyncFunc(func(context.Context, *muxrpc.Request) (interface{}, error) {
-		return map[string]interface{}{"id": keyPair.FeedRef()}, nil
-	}))
+	handler := &whoamiHandler{keyPair: keyPair}
 
-	conn, err := openRoomEndpoint(ctx, keyPair, *roomFeed, cfg.RoomAddr, cfg.SHSCap, &handler)
+	conn, err := openRoomEndpoint(ctx, keyPair, *roomFeed, cfg.RoomAddr, cfg.SHSCap, handler)
 	if err != nil {
 		return err
 	}
@@ -431,6 +392,98 @@ func (c *roomConn) Close() error {
 	return nil
 }
 
+// whoamiHandler responds to "whoami" RPC calls
+type whoamiHandler struct {
+	keyPair *keys.KeyPair
+}
+
+func (h *whoamiHandler) Handled(m muxrpc.Method) bool {
+	return len(m) == 1 && m[0] == "whoami"
+}
+
+func (h *whoamiHandler) HandleCall(ctx context.Context, req *muxrpc.Request) {
+	req.Return(ctx, map[string]interface{}{"id": h.keyPair.FeedRef().String()})
+}
+
+func (h *whoamiHandler) HandleConnect(ctx context.Context, edp muxrpc.Endpoint) {}
+
+// tunnelServeHandler handles tunnel.connect for the serve command
+type tunnelServeHandler struct {
+	keyPair      *keys.KeyPair
+	dbPath       string
+	sourceDID    string
+	expectedURIs []string
+	sourceFeed   refs.FeedRef
+	hasSourceFeed bool
+	serveDone    chan serveResult
+}
+
+func (h *tunnelServeHandler) Handled(m muxrpc.Method) bool {
+	if len(m) == 1 && m[0] == "whoami" {
+		return true
+	}
+	if len(m) == 2 && m[0] == "tunnel" && m[1] == "connect" {
+		return true
+	}
+	return false
+}
+
+func (h *tunnelServeHandler) HandleCall(ctx context.Context, req *muxrpc.Request) {
+	switch {
+	case len(req.Method) == 1 && req.Method[0] == "whoami":
+		req.Return(ctx, map[string]interface{}{"id": h.keyPair.FeedRef().String()})
+		return
+	case len(req.Method) == 2 && req.Method[0] == "tunnel" && req.Method[1] == "connect":
+		h.handleTunnelConnect(ctx, req)
+		return
+	default:
+		req.CloseWithError(fmt.Errorf("no such method: %s", req.Method))
+	}
+}
+
+func (h *tunnelServeHandler) handleTunnelConnect(ctx context.Context, req *muxrpc.Request) {
+	sink := req.Sink()
+	if sink == nil {
+		req.CloseWithError(fmt.Errorf("tunnel.connect requires a sink"))
+		return
+	}
+
+	entries, err := loadPublishedEntries(ctx, h.dbPath, h.sourceDID, h.expectedURIs)
+	if err != nil {
+		req.CloseWithError(err)
+		return
+	}
+
+	snapshot := tunnelSnapshot{
+		ExpectedCount: len(h.expectedURIs),
+		GeneratedAt:   time.Now().UTC().Format(time.RFC3339Nano),
+		Entries:       entries,
+	}
+	if h.hasSourceFeed {
+		snapshot.SourceFeed = h.sourceFeed.String()
+	}
+	payload, err := json.Marshal(snapshot)
+	if err != nil {
+		req.CloseWithError(fmt.Errorf("marshal snapshot: %w", err))
+		return
+	}
+	if _, err := sink.Write(payload); err != nil {
+		req.CloseWithError(fmt.Errorf("write snapshot payload: %w", err))
+		return
+	}
+	if err := sink.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+		req.CloseWithError(fmt.Errorf("close snapshot sink: %w", err))
+		return
+	}
+
+	select {
+	case h.serveDone <- serveResult{EntryCount: len(entries)}:
+	default:
+	}
+}
+
+func (h *tunnelServeHandler) HandleConnect(ctx context.Context, edp muxrpc.Endpoint) {}
+
 type roomMetadata struct {
 	Name       string   `json:"name"`
 	Membership bool     `json:"membership"`
@@ -457,7 +510,8 @@ func verifyRoomConn(ctx context.Context, endpoint muxrpc.Endpoint) (*roomMetadat
 
 func announce(ctx context.Context, endpoint muxrpc.Endpoint) error {
 	var announced bool
-	if err := endpoint.Async(ctx, &announced, muxrpc.TypeJSON, muxrpc.Method{"tunnel", "announce"}); err != nil {
+	err := endpoint.Sync(ctx, &announced, muxrpc.TypeJSON, muxrpc.Method{"tunnel", "announce"})
+	if err != nil {
 		return fmt.Errorf("room tunnel.announce failed: %w", err)
 	}
 	if !announced {
@@ -471,61 +525,48 @@ func openRoomEndpoint(
 	localKey *keys.KeyPair,
 	roomFeed refs.FeedRef,
 	roomAddr string,
-	shsCap string,
+	appKeyStr string,
 	handler muxrpc.Handler,
 ) (*roomConn, error) {
-	capBytes, err := base64.StdEncoding.DecodeString(strings.TrimSpace(shsCap))
+	// Parse app key
+	appKeyBytes, err := base64.StdEncoding.DecodeString(strings.TrimSpace(appKeyStr))
 	if err != nil {
-		return nil, fmt.Errorf("decode shs cap: %w", err)
+		return nil, fmt.Errorf("decode app key: %w", err)
 	}
-	if len(capBytes) != 32 {
-		return nil, fmt.Errorf("decode shs cap: expected 32 bytes, got %d", len(capBytes))
-	}
+	var appKey secretstream.AppKey
+	copy(appKey[:], appKeyBytes)
 
-	pub := localKey.Public()
-	localSHS := shs.EdKeyPair{
-		Public: pub[:],
-		Secret: localKey.Private(),
-	}
-	shsClient, err := secretstream.NewClient(localSHS, capBytes)
-	if err != nil {
-		return nil, fmt.Errorf("create secretstream client: %w", err)
-	}
-
+	// Dial TCP
 	tcpAddr, err := net.ResolveTCPAddr("tcp", strings.TrimSpace(roomAddr))
 	if err != nil {
 		return nil, fmt.Errorf("resolve room tcp addr: %w", err)
 	}
-	conn, err := netwrap.Dial(netwrap.GetAddr(tcpAddr, "tcp"), shsClient.ConnWrapper(roomFeed.PubKey()))
+	tcpConn, err := net.DialTCP("tcp", nil, tcpAddr)
 	if err != nil {
-		return nil, fmt.Errorf("dial room endpoint: %w", err)
+		return nil, fmt.Errorf("dial room tcp: %w", err)
 	}
 
+	// Create internal secretstream client and perform handshake
+	client, err := secretstream.NewClient(tcpConn, appKey, localKey.Private(), roomFeed.PubKey())
+	if err != nil {
+		tcpConn.Close()
+		return nil, fmt.Errorf("create secretstream client: %w", err)
+	}
+	if err := client.Handshake(); err != nil {
+		tcpConn.Close()
+		return nil, fmt.Errorf("secretstream handshake: %w", err)
+	}
+	// client now implements net.Conn with boxstream encryption
+
+	// Create internal muxrpc server
 	if handler == nil {
-		h := typemux.New(kitlog.NewNopLogger())
-		handler = &h
+		handler = &muxrpc.HandlerMux{}
 	}
-	endpoint := muxrpc.Handle(
-		muxrpc.NewPacker(conn),
-		handler,
-		muxrpc.WithIsServer(true),
-		muxrpc.WithContext(ctx),
-		muxrpc.WithRemoteAddr(conn.RemoteAddr()),
-	)
-
-	server, ok := endpoint.(muxrpc.Server)
-	if !ok {
-		conn.Close()
-		return nil, fmt.Errorf("connect room endpoint: muxrpc endpoint is not a server")
-	}
-	go func() {
-		_ = server.Serve()
-		conn.Close()
-	}()
+	srv := muxrpc.NewServer(ctx, client, handler, &muxrpc.Manifest{})
 
 	return &roomConn{
-		Endpoint: endpoint,
-		netConn:  conn,
+		Endpoint: srv,
+		netConn:  tcpConn,
 	}, nil
 }
 

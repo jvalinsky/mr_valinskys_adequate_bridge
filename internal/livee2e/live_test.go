@@ -75,7 +75,7 @@ func TestBridgeLiveInterop(t *testing.T) {
 	repoPath := filepath.Join(tempDir, "ssb-repo")
 	roomMuxAddr := getEnvDefault("LIVE_ROOM_MUXRPC_ADDR", "127.0.0.1:9898")
 	roomHTTPAddr := getEnvDefault("LIVE_ROOM_HTTP_ADDR", "127.0.0.1:9876")
-	roomMode := strings.TrimSpace(getEnvDefault("LIVE_ROOM_MODE", "community"))
+	roomMode := strings.TrimSpace(getEnvDefault("LIVE_ROOM_MODE", "open"))
 
 	runBridgeCommand(ctx, t, moduleRoot, "account add source", []string{
 		"--db", dbPath,
