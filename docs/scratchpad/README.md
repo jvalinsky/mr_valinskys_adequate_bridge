@@ -12,7 +12,7 @@ Scratchpads are created during implementation sessions. Each file corresponds to
 |------|-------------|----------|--------|
 | [022-ebt-replication-debugging.md](022-ebt-replication-debugging.md) | EBT debugging plan, 5 hypotheses, ByteSink buffering bug, message format issues, 7+ fixes | — | Historical |
 | [030-ebt-debugging-session-report.md](030-ebt-debugging-session-report.md) | Comprehensive debugging report: 9 bugs found and fixed | — | Historical |
-| [031-tildefriends-signature-fix-plan.md](031-tildefriends-signature-fix-plan.md) | Signature format analysis: JSON field ordering, base64 format, detailed C code references | — | **Pending** |
+| [031-tildefriends-signature-fix-plan.md](031-tildefriends-signature-fix-plan.md) | Signature format analysis: JSON field ordering, base64 format, detailed C code references | — | Historical |
 | [032-protocol-audit-fixes.md](032-protocol-audit-fixes.md) | Protocol audit findings: `key` field root cause, real signature verification, 5 protocol fixes | 638, 642 | Historical |
 
 ## Project Milestones (Historical)
@@ -36,7 +36,7 @@ Scratchpads are created during implementation sessions. Each file corresponds to
 | [014-exposed-surface-security.md](014-exposed-surface-security.md) | HTTP Basic auth with fail-fast guardrails for non-loopback binds | Nodes 79-85 |
 | [015-publish-retry-workers.md](015-publish-retry-workers.md) | Worker-lane publisher with per-DID ordering, bounded retry, `retry-failures` command | Nodes 86-92 |
 | [016-release-smoke-and-runbook.md](016-release-smoke-and-runbook.md) | Deterministic smoke test harness, CI gate workflow, operational runbook | Nodes 93-106 |
-| [017-next-cycle-scope.md](017-next-cycle-scope.md) | Next milestone plan: profile/block record type expansion (deferred) | Node 117+ |
+| [017-next-cycle-scope.md](017-next-cycle-scope.md) | Next milestone plan: profile/block record type expansion (completed) | Node 117+ |
 
 ## README Section Drafts (Completed)
 
@@ -59,11 +59,11 @@ These drafts were incorporated into the main README:
 | [036-bridge-cutover-off-indigo.md](036-bridge-cutover-off-indigo.md) | Bridge/runtime/UI/operator cutover notes, cursor semantics, and backfill consumer restoration | 695, 698, 700, 722, 723 | Historical |
 | [037-indigo-test-fixture-migration.md](037-indigo-test-fixture-migration.md) | Final Indigo test-fixture and module cleanup notes, including vendoring removal and verification | 706-721, 724 | Historical |
 | [038-local-atproto-support-files.md](038-local-atproto-support-files.md) | Local ATProto deployment support files, bootstrap/export notes, and attached review/test follow-ups | — | Historical |
-| [039-ssb-module-test-fixes.md](039-ssb-module-test-fixes.md) | Verification notes for the nested `internal/ssb` module test pass and any resulting fixes | — | Active |
+| [039-ssb-module-test-fixes.md](039-ssb-module-test-fixes.md) | Verification notes for the nested `internal/ssb` module test pass and any resulting fixes | — | Historical |
 | [040-ssbc-compliance-merge.md](040-ssbc-compliance-merge.md) | Replay plan and implementation notes for merging `codex/ssbc-compliance` onto current `main` | — | Historical |
-| [041-ssbc-compliance-remediation-2026-04.md](041-ssbc-compliance-remediation-2026-04.md) | Execution log for SIP-004 and SIP-007 conformance remediations (Bendy signatures/previous, Rooms2 metadata, alias URL normalization) | 959+ | Active |
+| [041-ssbc-compliance-remediation-2026-04.md](041-ssbc-compliance-remediation-2026-04.md) | Execution log for SIP-004 and SIP-007 conformance remediations (Bendy signatures/previous, Rooms2 metadata, alias URL normalization) | 959+ | Historical |
 | [042-two-way-bridge-reverse-sync.md](042-two-way-bridge-reverse-sync.md) | Reverse-sync implementation log for allowlisted SSB-to-ATProto posts/replies/follows, durable queue state, admin UI, loop suppression, and both interop E2E targets | 999-1035 | Historical |
-| [043-reverse-sync-v2-media-facets.md](043-reverse-sync-v2-media-facets.md) | Reverse-sync v2 implementation log for image embeds, text shaping, and rich-text facets on reverse-created ATProto posts and replies | 1041-1061 | Active |
+| [043-reverse-sync-v2-media-facets.md](043-reverse-sync-v2-media-facets.md) | Reverse-sync v2 implementation log for image embeds, text shaping, and rich-text facets on reverse-created ATProto posts and replies | 1041-1061 | Historical |
 
 ## Understanding Scratchpad Status
 
