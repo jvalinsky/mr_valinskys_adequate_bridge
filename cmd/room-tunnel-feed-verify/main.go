@@ -539,7 +539,8 @@ func ensureKeyPair(path string) (*keys.KeyPair, error) {
 	if err == nil {
 		return kp, nil
 	}
-	if !os.IsNotExist(err) {
+	// Use errors.Is to handle wrapped errors from keys.Load
+	if !errors.Is(err, os.ErrNotExist) && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("load keypair: %w", err)
 	}
 

@@ -44,8 +44,13 @@ if [[ -z "${SOURCE_FEED}" ]]; then
   exit 1
 fi
 
-mapfile -t ACTIVE_FEEDS < <(sqlite3 "${BRIDGE_DB_PATH}" "select ssb_feed_id from bridged_accounts where active=1 and ssb_feed_id is not null and trim(ssb_feed_id) <> '' order by ssb_feed_id;" | sed '/^[[:space:]]*$/d')
-if [[ "${#ACTIVE_FEEDS[@]}" -eq 0 ]]; then
+# Read active feeds into an array (compatible with bash 3.2)
+# Store in a temp file to avoid mapfile (bash 4+ only)
+ACTIVE_FEEDS_FILE="$(mktemp)"
+sqlite3 "${BRIDGE_DB_PATH}" "select ssb_feed_id from bridged_accounts where active=1 and ssb_feed_id is not null and trim(ssb_feed_id) <> '' order by ssb_feed_id;" | sed '/^[[:space:]]*$/d' > "${ACTIVE_FEEDS_FILE}"
+ACTIVE_FEED_COUNT="$(wc -l < "${ACTIVE_FEEDS_FILE}" | tr -d '[:space:]')"
+if [[ "${ACTIVE_FEED_COUNT}" -eq 0 ]]; then
+  rm -f "${ACTIVE_FEEDS_FILE}"
   echo "[local-room-verify] no active bridged account feeds found in DB" >&2
   exit 1
 fi
@@ -61,7 +66,7 @@ fi
 echo "[local-room-verify] source feed: ${SOURCE_FEED}"
 echo "[local-room-verify] expecting at least ${EXPECTED_COUNT} messages"
 if [[ "${REQUIRE_ACTIVE_BRIDGED_PEERS}" == "1" ]]; then
-  echo "[local-room-verify] strict bridged-peer presence check enabled for ${#ACTIVE_FEEDS[@]} active feed(s)"
+  echo "[local-room-verify] strict bridged-peer presence check enabled for ${ACTIVE_FEED_COUNT} active feed(s)"
 else
   echo "[local-room-verify] strict bridged-peer presence check disabled"
 fi
@@ -73,7 +78,7 @@ READ_LOG="${BIN_DIR}/read.log"
 PROBE_LOG="${BIN_DIR}/probe.log"
 
 cleanup() {
-  rm -rf "${PEER_DIR}" "${BIN_DIR}"
+  rm -rf "${PEER_DIR}" "${BIN_DIR}" "${ACTIVE_FEEDS_FILE}"
 }
 trap cleanup EXIT
 
@@ -193,7 +198,8 @@ while [[ "${attempt}" -le "${ATTEMPTS}" ]]; do
       }
 
       strict_failed=0
-      for expected_feed in "${ACTIVE_FEEDS[@]}"; do
+      while IFS= read -r expected_feed; do
+        [[ -z "${expected_feed}" ]] && continue
         if ! echo "${attendants_json}" | jq -e --arg feed "${expected_feed}" '.attendants | any(.id == $feed)' >/dev/null; then
           echo "[local-room-verify] attempt ${attempt}/${ATTEMPTS}: active attendant missing feed ${expected_feed}" >&2
           strict_failed=1
@@ -212,7 +218,7 @@ while [[ "${attempt}" -le "${ATTEMPTS}" ]]; do
           echo "[local-room-verify] attempt ${attempt}/${ATTEMPTS}: tunnel.connect probe failed for ${expected_feed}" >&2
           strict_failed=1
         fi
-      done
+      done < "${ACTIVE_FEEDS_FILE}"
 
       if [[ "${strict_failed}" -ne 0 ]]; then
         sed -n '1,160p' "${PROBE_LOG}" >&2 || true

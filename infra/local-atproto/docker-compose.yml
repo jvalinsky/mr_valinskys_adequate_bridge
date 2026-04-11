@@ -61,6 +61,9 @@ services:
       # Allow private IPs (SSRF protection bypass) for local development
       # See: https://github.com/bluesky-social/indigo/issues/1217
       INDIGO_SSRF_PUBLIC_ONLY_SCENARIO: "false"
+      # Skip prevData validation for Cocoon PDS compatibility
+      # Cocoon doesn't include prevData in commit events
+      RELAY_SKIP_PREVDATA_CHECK: "true"
     ports:
       - "2584:2470"
     volumes:

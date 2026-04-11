@@ -162,7 +162,7 @@ func TestBridgeLiveInterop(t *testing.T) {
 	expectedURIs := []string{postURI, likeURI, followURI}
 	waitForPublishedRecords(ctx, t, dbPath, expectedURIs, &bridgeLogs)
 
-	verify := exec.CommandContext(ctx, "sh", "-lc", peerVerifyCmd)
+	verify := exec.CommandContext(ctx, "bash", "-lc", peerVerifyCmd)
 	verify.Dir = moduleRoot
 	verify.Env = append(os.Environ(),
 		fmt.Sprintf("LIVE_ROOM_MUXRPC_ADDR=%s", roomMuxAddr),
