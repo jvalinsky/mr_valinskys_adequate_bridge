@@ -4,11 +4,18 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
-	"unicode"
 )
 
 // Spec-compliant regex patterns per atproto.com/specs
 var (
+	// DID: https://atproto.com/specs/did
+	// Max 2048 chars, format: did:method:identifier
+	didRegex = regexp.MustCompile(`^did:[a-z]+:[a-zA-Z0-9._:%-]*[a-zA-Z0-9._-]$`)
+
+	// Handle: https://atproto.com/specs/handle
+	// Max 253 chars, domain format with segments max 63 chars
+	handleRegex = regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$`)
+
 	// NSID: https://atproto.com/specs/nsid
 	// Max 317 chars, segments max 63 chars, at least 2 segments
 	nsidRegex = regexp.MustCompile(`^[a-zA-Z]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+(\.[a-zA-Z]([a-zA-Z0-9]{0,62})?)$`)
@@ -36,12 +43,28 @@ type ATURI struct {
 
 func ParseDID(raw string) (DID, error) {
 	raw = strings.TrimSpace(raw)
-	if !strings.HasPrefix(raw, "did:") {
-		return "", fmt.Errorf("invalid did %q", raw)
+	if raw == "" {
+		return "", fmt.Errorf("invalid did: empty string")
 	}
-	parts := strings.Split(raw, ":")
-	if len(parts) < 3 || strings.TrimSpace(parts[1]) == "" || strings.TrimSpace(parts[2]) == "" {
-		return "", fmt.Errorf("invalid did %q", raw)
+	if len(raw) > 2048 {
+		return "", fmt.Errorf("invalid did: too long (max 2048 chars)")
+	}
+	// Fast-path for did:plc (most common case)
+	if len(raw) == 32 && strings.HasPrefix(raw, "did:plc:") {
+		// Validate base32-ish chars in ID portion
+		isPlc := true
+		for _, c := range raw[8:] {
+			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) {
+				isPlc = false
+				break
+			}
+		}
+		if isPlc {
+			return DID(raw), nil
+		}
+	}
+	if !didRegex.MatchString(raw) {
+		return "", fmt.Errorf("invalid did %q: doesn't match required format", raw)
 	}
 	return DID(raw), nil
 }
@@ -60,21 +83,39 @@ func (d DID) Method() string {
 
 func ParseHandle(raw string) (Handle, error) {
 	raw = strings.TrimSpace(strings.ToLower(raw))
-	if raw == "" || !strings.Contains(raw, ".") {
-		return "", fmt.Errorf("invalid handle %q", raw)
+	if raw == "" {
+		return "", fmt.Errorf("invalid handle: empty string")
 	}
-	for _, r := range raw {
-		switch {
-		case unicode.IsLower(r), unicode.IsDigit(r), r == '-', r == '.':
-		default:
-			return "", fmt.Errorf("invalid handle %q", raw)
-		}
+	if len(raw) > 253 {
+		return "", fmt.Errorf("invalid handle: too long (max 253 chars)")
+	}
+	if !handleRegex.MatchString(raw) {
+		return "", fmt.Errorf("invalid handle %q: doesn't match required format", raw)
 	}
 	return Handle(raw), nil
 }
 
 func (h Handle) String() string {
 	return string(h)
+}
+
+// TLD returns the top-level domain of the handle.
+func (h Handle) TLD() string {
+	parts := strings.Split(string(h), ".")
+	if len(parts) < 2 {
+		return ""
+	}
+	return parts[len(parts)-1]
+}
+
+// AllowedTLD returns false for disallowed TLDs per atproto spec.
+// Disallowed: .local, .arpa, .invalid, .localhost, .internal, .example, .onion, .alt
+func (h Handle) AllowedTLD() bool {
+	switch h.TLD() {
+	case "local", "arpa", "invalid", "localhost", "internal", "example", "onion", "alt":
+		return false
+	}
+	return true
 }
 
 func ParseNSID(raw string) (NSID, error) {
