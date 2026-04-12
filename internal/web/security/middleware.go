@@ -218,12 +218,16 @@ func sameOriginRequest(r *http.Request) bool {
 	}
 	targetHost := strings.TrimSpace(r.Host)
 	if targetHost == "" {
+		log.Printf("event=same_origin_check reason=empty_host r.Host=%q r.Header.Host=%q", r.Host, r.Header.Get("Host"))
 		return false
 	}
+	log.Printf("event=same_origin_check target_scheme=%q target_host=%q", targetScheme, targetHost)
 
 	origin := strings.TrimSpace(r.Header.Get("Origin"))
 	if origin != "" {
-		return originMatchesRequest(origin, targetScheme, targetHost)
+		match := originMatchesRequest(origin, targetScheme, targetHost)
+		log.Printf("event=same_origin_check origin_header=%q match=%t", origin, match)
+		return match
 	}
 
 	referer := strings.TrimSpace(r.Header.Get("Referer"))
@@ -243,15 +247,21 @@ func sameOriginRequest(r *http.Request) bool {
 func originMatchesRequest(rawOrigin, scheme, host string) bool {
 	originURL, err := url.Parse(strings.TrimSpace(rawOrigin))
 	if err != nil {
+		log.Printf("event=origin_check reason=parse_failed origin=%q err=%v", rawOrigin, err)
 		return false
 	}
 	if originURL.Scheme == "" || originURL.Host == "" {
+		log.Printf("event=origin_check reason=empty_scheme_or_host origin=%q parsed_scheme=%q parsed_host=%q", rawOrigin, originURL.Scheme, originURL.Host)
 		return false
 	}
-	if !strings.EqualFold(originURL.Scheme, scheme) {
+	schemeMatch := strings.EqualFold(originURL.Scheme, scheme)
+	hostMatch := strings.EqualFold(originURL.Host, host)
+	log.Printf("event=origin_check origin=%q scheme=%q target=%q match=%t host_origin=%q host_target=%q match=%t",
+		rawOrigin, originURL.Scheme, scheme, schemeMatch, originURL.Host, host, hostMatch)
+	if !schemeMatch {
 		return false
 	}
-	return strings.EqualFold(originURL.Host, host)
+	return hostMatch
 }
 
 // RequestLogMiddleware logs request metadata with sensitive query values redacted.
