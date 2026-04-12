@@ -266,7 +266,7 @@ func (l *Log) Append(msg interface{}) (int64, error) {
 		nextSeq = currentSeq.Int64 + 1
 	}
 
-	key := fmt.Sprintf("%x", data)[:32]
+	key := fmt.Sprintf("%x", sha256.Sum256(data))
 
 	result, err := l.db.Exec(
 		"INSERT INTO messages (feed_id, seq, key, value_json, created_at) VALUES (?, ?, ?, ?, ?)",
@@ -360,7 +360,7 @@ func (l *ReceiveLog) Append(msg interface{}) (int64, error) {
 		nextSeq = currentSeq.Int64 + 1
 	}
 
-	key := fmt.Sprintf("%x", data)[:32]
+	key := fmt.Sprintf("%x", sha256.Sum256(data))
 
 	_, err = l.db.Exec(
 		"INSERT INTO receive_log (seq, key, value_json, created_at) VALUES (?, ?, ?, ?)",

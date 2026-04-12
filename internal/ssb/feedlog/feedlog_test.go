@@ -2,7 +2,9 @@ package feedlog
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -365,4 +367,146 @@ func createTestSignedMessage(t *testing.T, kp *keys.KeyPair, seq int64) ([]byte,
 	}
 
 	return signedJSON, metadata
+}
+
+// createTestStore is a helper that creates a temporary store for testing
+func createTestStore(t *testing.T) *StoreImpl {
+	t.Helper()
+	tempDir, err := os.MkdirTemp("", "feedlog-key-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(tempDir) })
+
+	store, err := NewStore(Config{
+		DBPath:   filepath.Join(tempDir, "test.sqlite"),
+		RepoPath: tempDir,
+	})
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+	return store
+}
+
+// TestMessageKeyUniqueness verifies that two distinct messages produce different SQL keys
+func TestMessageKeyUniqueness(t *testing.T) {
+	store := createTestStore(t)
+
+	logs := store.Logs()
+	l, err := logs.Create("@alice.ed25519")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	msg1 := []byte(`{"type":"post","text":"message one"}`)
+	msg2 := []byte(`{"type":"post","text":"message two"}`)
+	meta1 := &Metadata{Author: "@alice.ed25519", Sequence: 1, Hash: "%h1"}
+	meta2 := &Metadata{Author: "@alice.ed25519", Sequence: 2, Hash: "%h2"}
+
+	if _, err := l.Append(msg1, meta1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Append(msg2, meta2); err != nil {
+		t.Fatal(err)
+	}
+
+	// Query the SQL key column directly to verify uniqueness
+	rows, err := store.db.Query("SELECT key FROM messages ORDER BY seq ASC")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+
+	var keys []string
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			t.Fatal(err)
+		}
+		keys = append(keys, k)
+	}
+
+	if len(keys) != 2 {
+		t.Fatalf("expected 2 keys, got %d", len(keys))
+	}
+	if keys[0] == keys[1] {
+		t.Errorf("distinct messages produced identical SQL keys: %s", keys[0])
+	}
+}
+
+// TestMessageKeyCollisionPrevention is a regression test for the truncated-hex
+// key bug. Two messages sharing an identical 16-byte prefix must produce
+// distinct keys under SHA-256 hashing.
+func TestMessageKeyCollisionPrevention(t *testing.T) {
+	store := createTestStore(t)
+
+	logs := store.Logs()
+	l, err := logs.Create("@bob.ed25519")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// These two messages share the same first 30+ characters (the JSON prefix),
+	// which would collide under the old truncated-hex scheme.
+	msg1 := []byte(`{"type":"post","text":"aaa","seq":1}`)
+	msg2 := []byte(`{"type":"post","text":"aaa","seq":2}`)
+	meta1 := &Metadata{Author: "@bob.ed25519", Sequence: 1, Hash: "%h1"}
+	meta2 := &Metadata{Author: "@bob.ed25519", Sequence: 2, Hash: "%h2"}
+
+	if _, err := l.Append(msg1, meta1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Append(msg2, meta2); err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify we have 2 distinct entries in messages_key_idx
+	var count int
+	err = store.db.QueryRow("SELECT COUNT(DISTINCT key) FROM messages_key_idx").Scan(&count)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Errorf("expected 2 distinct keys in index, got %d (collision detected)", count)
+	}
+}
+
+// TestMessageKeyIsSHA256 verifies the key column contains the full SHA-256 hex
+// of the stored data, not a truncated prefix.
+func TestMessageKeyIsSHA256(t *testing.T) {
+	store := createTestStore(t)
+
+	logs := store.Logs()
+	l, err := logs.Create("@charlie.ed25519")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	content := []byte(`{"type":"post","text":"hash me"}`)
+	meta := &Metadata{Author: "@charlie.ed25519", Sequence: 1, Hash: "%h1"}
+
+	if _, err := l.Append(content, meta); err != nil {
+		t.Fatal(err)
+	}
+
+	// Read back the key from SQL
+	var sqlKey string
+	err = store.db.QueryRow("SELECT key FROM messages WHERE seq = 1").Scan(&sqlKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The key should be 64 hex chars (32 bytes SHA-256)
+	if len(sqlKey) != 64 {
+		t.Errorf("expected 64-char hex key, got %d chars: %s", len(sqlKey), sqlKey)
+	}
+
+	// Recompute: the stored data is json.Marshal of storedMessageWrapper
+	wrapper := &storedMessageWrapper{Content: content, Metadata: meta}
+	data, _ := json.Marshal(wrapper)
+	expected := fmt.Sprintf("%x", sha256.Sum256(data))
+	if sqlKey != expected {
+		t.Errorf("key mismatch:\n  got:    %s\n  expect: %s", sqlKey, expected)
+	}
 }

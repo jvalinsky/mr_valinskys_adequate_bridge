@@ -652,7 +652,7 @@ func (l *logAdapter) Append(content []byte, metadata *Metadata) (int64, error) {
 		if currentSeq.Valid {
 			nextSeq = currentSeq.Int64 + 1
 		}
-		key = fmt.Sprintf("%x", data)[:32]
+		key = fmt.Sprintf("%x", sha256.Sum256(data))
 
 		if _, err := tx.Exec(
 			"INSERT INTO messages (feed_id, seq, key, value_json, created_at) VALUES (?, ?, ?, ?, ?)",
@@ -879,7 +879,7 @@ func (l *receiveLog) Append(content []byte, metadata *Metadata) (int64, error) {
 			nextSeq = currentSeq.Int64 + 1
 		}
 
-		key = fmt.Sprintf("%x", data)[:32]
+		key = fmt.Sprintf("%x", sha256.Sum256(data))
 		if _, err := tx.Exec(
 			"INSERT INTO receive_log (seq, key, value_json, created_at) VALUES (?, ?, ?, ?)",
 			nextSeq, key, data, now(),
