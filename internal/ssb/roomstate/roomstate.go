@@ -44,27 +44,25 @@ func NewManager() *Manager {
 
 func (m *Manager) AddPeer(id refs.FeedRef, addr string) {
 	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	info := PeerInfo{
 		ID:        id,
 		Addr:      addr,
 		Connected: time.Now(),
 	}
 	m.peers[id.String()] = info
-	subscribers := m.snapshotTunnelSubscribersLocked()
-	m.mu.Unlock()
-
-	m.broadcastTunnel(subscribers, TunnelEvent{Type: "joined", Info: info})
+	m.broadcastTunnelLocked(TunnelEvent{Type: "joined", Info: info})
 }
 
 func (m *Manager) RemovePeer(id refs.FeedRef) {
 	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	info, existed := m.peers[id.String()]
 	delete(m.peers, id.String())
-	subscribers := m.snapshotTunnelSubscribersLocked()
-	m.mu.Unlock()
-
 	if existed {
-		m.broadcastTunnel(subscribers, TunnelEvent{Type: "left", Info: info})
+		m.broadcastTunnelLocked(TunnelEvent{Type: "left", Info: info})
 	}
 }
 
@@ -94,29 +92,27 @@ func (m *Manager) HasPeer(id refs.FeedRef) bool {
 
 func (m *Manager) AddAttendant(id refs.FeedRef, addr string) {
 	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	_, existed := m.attendants[id.String()]
 	m.attendants[id.String()] = PeerInfo{
 		ID:        id,
 		Addr:      addr,
 		Connected: time.Now(),
 	}
-	subscribers := m.snapshotSubscribersLocked()
-	m.mu.Unlock()
-
 	if !existed {
-		m.broadcast(subscribers, AttendantEvent{Type: "joined", ID: id})
+		m.broadcastAttendantLocked(AttendantEvent{Type: "joined", ID: id})
 	}
 }
 
 func (m *Manager) RemoveAttendant(id refs.FeedRef) {
 	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	_, existed := m.attendants[id.String()]
 	delete(m.attendants, id.String())
-	subscribers := m.snapshotSubscribersLocked()
-	m.mu.Unlock()
-
 	if existed {
-		m.broadcast(subscribers, AttendantEvent{Type: "left", ID: id})
+		m.broadcastAttendantLocked(AttendantEvent{Type: "left", ID: id})
 	}
 }
 
@@ -216,24 +212,8 @@ func (m *Manager) AliasCount() int {
 	return len(m.aliases)
 }
 
-func (m *Manager) snapshotSubscribersLocked() []chan AttendantEvent {
-	subscribers := make([]chan AttendantEvent, 0, len(m.subscribers))
+func (m *Manager) broadcastAttendantLocked(event AttendantEvent) {
 	for ch := range m.subscribers {
-		subscribers = append(subscribers, ch)
-	}
-	return subscribers
-}
-
-func (m *Manager) snapshotTunnelSubscribersLocked() []chan TunnelEvent {
-	subscribers := make([]chan TunnelEvent, 0, len(m.tunnelSubs))
-	for ch := range m.tunnelSubs {
-		subscribers = append(subscribers, ch)
-	}
-	return subscribers
-}
-
-func (m *Manager) broadcast(subscribers []chan AttendantEvent, event AttendantEvent) {
-	for _, ch := range subscribers {
 		select {
 		case ch <- event:
 		default:
@@ -241,8 +221,8 @@ func (m *Manager) broadcast(subscribers []chan AttendantEvent, event AttendantEv
 	}
 }
 
-func (m *Manager) broadcastTunnel(subscribers []chan TunnelEvent, event TunnelEvent) {
-	for _, ch := range subscribers {
+func (m *Manager) broadcastTunnelLocked(event TunnelEvent) {
+	for ch := range m.tunnelSubs {
 		select {
 		case ch <- event:
 		default:
