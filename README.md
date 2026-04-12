@@ -155,6 +155,20 @@ Global flags include `--db`, `--relay-url`, `--bot-seed`, `--otel-logs-*`, `--lo
 - peer and room helpers (`peers`, `room`)
 - feed, message, and replication inspection commands
 
+Auth notes for `serve`:
+- loopback binds (for example `127.0.0.1:8080`) do not require auth by default.
+- non-loopback binds require `--ui-auth-user` and `--ui-auth-pass-env`; startup fails otherwise.
+
+Example non-loopback serve invocation:
+
+```bash
+export SSB_CLIENT_UI_PASSWORD="dev-ui-password"
+GOFLAGS=-mod=mod go run ./cmd/ssb-client serve \
+  --http-listen-addr 0.0.0.0:8080 \
+  --ui-auth-user admin \
+  --ui-auth-pass-env SSB_CLIENT_UI_PASSWORD
+```
+
 Run `GOFLAGS=-mod=mod go run ./cmd/ssb-client --help` for the full surface.
 
 ## Architecture
