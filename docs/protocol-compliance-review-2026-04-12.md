@@ -106,8 +106,8 @@
 | **Spec Reference** | https://atproto.com/specs/at-uri-scheme |
 | **Local File** | `pkg/atproto/syntax/syntax.go:92-156` |
 | **Test File** | `pkg/atproto/syntax/syntax_test.go` |
-| **Status** | **Non-Compliant** |
-| **Severity** | **P0** |
+| **Status** | **✅ FIXED** (commit 4fd0d5d) |
+| **Severity** | ~~P0~~ |
 
 **Problem**: Local AT-URI parser uses permissive string splitting without proper validation.
 
@@ -134,8 +134,8 @@
 | **Spec Reference** | https://atproto.com/specs/nsid |
 | **Local File** | `pkg/atproto/syntax/syntax.go:64-69` |
 | **Test File** | `pkg/atproto/syntax/syntax_test.go` |
-| **Status** | **Non-Compliant** |
-| **Severity** | **P0** |
+| **Status** | **✅ FIXED** (commit 4fd0d5d) |
+| **Severity** | ~~P0~~ |
 
 **Problem**: Parser only checks for non-empty string containing a period.
 
@@ -158,8 +158,8 @@
 | **Spec Reference** | https://atproto.com/specs/record-key |
 | **Local File** | `pkg/atproto/syntax/syntax.go:76-81` |
 | **Test File** | `pkg/atproto/syntax/syntax_test.go` |
-| **Status** | **Non-Compliant** |
-| **Severity** | **P0** |
+| **Status** | **✅ FIXED** (commit 4fd0d5d) |
+| **Severity** | ~~P0~~ |
 
 **Problem**: Parser only checks for non-empty and no `/`.
 
@@ -182,14 +182,12 @@
 |-------|-------|
 | **Category** | firehose |
 | **Spec Reference** | com.atproto.sync.subscribeRepos lexicon |
-| **Local File** | `pkg/atproto/firehose/firehose.go:89-121` |
+| **Local File** | `pkg/atproto/firehose/firehose.go:96-101` |
 | **Test File** | `pkg/atproto/firehose/firehose_test.go` |
-| **Status** | **Missing** |
-| **Severity** | **P1** |
+| **Status** | **✅ Already Implemented** |
+| **Severity** | ~~P1~~ (audit subagent error) |
 
-**Problem**: Firehose event parser does NOT handle `#sync` events. The switch statement handles `#commit`, `#identity`, `#account`, `#info` but NOT `#sync`.
-
-**Impact**: Cannot process sync events which indicate repo state recovery. May lose track of repos after data recovery events.
+**Note**: The `#sync` case was found at `firehose.go:96-101` with full handling. This was an audit subagent false positive.
 
 ---
 
@@ -199,15 +197,14 @@
 |-------|-------|
 | **Category** | uri-parsing |
 | **Spec Reference** | https://atproto.com/specs/did |
-| **Local File** | `pkg/atproto/syntax/syntax.go:21-31` |
-| **Status** | Partially Compliant |
-| **Severity** | **P1** |
+| **Local File** | `pkg/atproto/syntax/syntax.go:37-46` |
+| **Status** | **✅ FIXED** (commit 9fb3758) |
+| **Severity** | ~~P1~~ |
 
-**Missing**:
-1. 2048 char limit
-2. Regex validation: `^did:[a-z]+:[a-zA-Z0-9._:%-]*[a-zA-Z0-9._-]$`
-3. PLC fast-path optimization
-4. Method name validation (lowercase only)
+**Fixed in commit 9fb3758**:
+- Added 2048-char limit
+- Added regex validation: `^did:[a-z]+:[a-zA-Z0-9._:%-]*[a-zA-Z0-9._-]$`
+- Added did:plc fast-path optimization from Indigo
 
 ---
 
@@ -217,17 +214,14 @@
 |-------|-------|
 | **Category** | uri-parsing |
 | **Spec Reference** | https://atproto.com/specs/handle |
-| **Local File** | `pkg/atproto/syntax/syntax.go:45-57` |
-| **Status** | Partially Compliant |
-| **Severity** | **P1** |
+| **Local File** | `pkg/atproto/syntax/syntax.go:61-73` |
+| **Status** | **✅ FIXED** (commit 9fb3758) |
+| **Severity** | ~~P1~~ |
 
-**Missing**:
-1. 253 char limit
-2. Strict regex: `^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$`
-3. Segment length validation (63 chars max)
-4. TLD validation for disallowed TLDs (`.local`, `.arpa`, `.invalid`, etc.)
-
-**Correct**: Normalizes to lowercase.
+**Fixed in commit 9fb3758**:
+- Added 253-char limit
+- Added regex validation: `^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$`
+- Added `Handle.TLD()` and `AllowedTLD()` methods for TLD blacklist
 
 ---
 
@@ -253,12 +247,18 @@
 | **Category** | repo |
 | **Local File** | `pkg/atproto/repo/repo.go` |
 | **Test File** | `pkg/atproto/repo/repo_test.go` |
-| **Status** | Partially Compliant |
-| **Severity** | **P2** |
+| **Status** | **Known Limitation (test-only)** |
+| **Severity** | ~~P2~~ |
 
-**Problem**: MST implementation uses simplified construction (`buildMST` creates flat entries, not properly fanout-based tree). KeySuffix/PrefixLen handling during loading appears correct but construction during writes may not produce valid fanout structure.
+**Problem**: MST implementation uses simplified construction (`buildMST` creates flat entries, not properly fanout-based tree).
 
-**Impact**: May generate MSTs that don't match Indigo's fanout structure. Could cause verification issues.
+**Analysis**:
+- `WriteRepo` is only used in test files (grep verification)
+- Bridge doesn't write repos to other PDS servers in production
+- Read path correctly parses fanout structure via `PrefixLen`/`KeySuffix`
+- Tests pass
+
+**Decision**: Document as known limitation. No fix needed because bridge doesn't produce MSTs that other services consume.
 
 ---
 
@@ -444,14 +444,26 @@ Correctly parses args array, supports `id`, `seq`, `limit`, `live`, `keys` flags
 | **Category** | sip-009 |
 | **Spec Reference** | SIP-009 |
 | **Local File** | `internal/ssb/muxrpc/handlers/room/auth.go:84-124` |
-| **Status** | **Partially Compliant** |
-| **Severity** | **P2** |
+| **Status** | **✅ Compliant** |
+| **Severity** | ~~P2~~ (audit false positive) |
 
-**Problem**: Role reversal issue. `RequestSolution` is called BY server ON client (per spec), but local impl appears to be client-side handler.
+**Analysis** (verified against go-ssb-room reference):
 
-**Missing**: `sendSolution` implementation for server-initiated flow.
+The audit incorrectly flagged this as "role reversal". The actual spec flow:
+1. Server calls `httpAuth.requestSolution(sc, cc)` ON client
+2. Client handles request, signs challenge, **returns solution directly**
+3. Server receives solution as async call return value
 
-**Impact**: HTTP authentication for SSB peers needs verification with actual SSB clients.
+Reference: `go-ssb-room/web/handlers/auth/withssb.go:305`:
+```go
+err = edp.Async(ctx, &solution, muxrpc.TypeString, muxrpc.Method{"httpAuth", "requestSolution"}, sc, cc)
+```
+
+The solution is the RETURN VALUE, not a separate `sendSolution` call.
+
+Bridge's implementation (auth.go:123) returns `sig` directly → **CORRECT**.
+
+The `sendSolution` method in go-ssb-room (`muxrpc/handlers/signinwithssb/withssb.go:61`) is for a DIFFERENT scenario where clients proactively send solutions.
 
 ---
 

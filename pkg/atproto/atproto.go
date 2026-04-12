@@ -3,11 +3,13 @@ package atproto
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"strings"
 
 	cbornode "github.com/ipfs/go-ipld-cbor"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/lexutil"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/syntax"
 )
 
 type RepoStrongRef struct {
@@ -185,6 +187,21 @@ func RepoDeleteRecord(ctx context.Context, client lexutil.LexClient, input *Repo
 }
 
 func RepoGetRecord(ctx context.Context, client lexutil.LexClient, cid string, collection string, repo string, rkey string) (*RepoGetRecord_Output, error) {
+	// Validate repo parameter (DID or Handle)
+	if _, err := syntax.ParseDID(repo); err != nil {
+		if _, err2 := syntax.ParseHandle(repo); err2 != nil {
+			return nil, fmt.Errorf("repo must be valid DID or handle: %w", err)
+		}
+	}
+	// Validate collection parameter (NSID)
+	if _, err := syntax.ParseNSID(collection); err != nil {
+		return nil, fmt.Errorf("collection must be valid NSID: %w", err)
+	}
+	// Validate rkey parameter (RecordKey)
+	if _, err := syntax.ParseRecordKey(rkey); err != nil {
+		return nil, fmt.Errorf("rkey must be valid record key: %w", err)
+	}
+
 	var out RepoGetRecord_Output
 	params := map[string]any{
 		"collection": collection,
