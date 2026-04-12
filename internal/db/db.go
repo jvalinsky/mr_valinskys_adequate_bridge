@@ -134,7 +134,8 @@ const (
 
 // Open opens (and initializes) the bridge database at dbPath.
 func Open(dbPath string) (*DB, error) {
-	conn, err := sql.Open("sqlite3", dbPath)
+	dsn := dbPath + "?_journal_mode=WAL&_busy_timeout=60000"
+	conn, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
