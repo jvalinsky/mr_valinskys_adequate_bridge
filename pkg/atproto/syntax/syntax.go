@@ -2,8 +2,24 @@ package syntax
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"unicode"
+)
+
+// Spec-compliant regex patterns per atproto.com/specs
+var (
+	// NSID: https://atproto.com/specs/nsid
+	// Max 317 chars, segments max 63 chars, at least 2 segments
+	nsidRegex = regexp.MustCompile(`^[a-zA-Z]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+(\.[a-zA-Z]([a-zA-Z0-9]{0,62})?)$`)
+
+	// RecordKey: https://atproto.com/specs/record-key
+	// Max 512 chars, allowed chars: a-zA-Z0-9_~.:-, forbidden: "." and ".."
+	recordKeyRegex = regexp.MustCompile(`^[a-zA-Z0-9_~.:-]{1,512}$`)
+
+	// AT-URI: https://atproto.com/specs/at-uri-scheme
+	// Max 8192 chars, structure: at://authority[/collection[/rkey]]
+	aturiRegex = regexp.MustCompile(`^at://([a-zA-Z0-9._:%-]+)(/[a-zA-Z0-9-.]+(/[a-zA-Z0-9_~.:-]+)?)?$`)
 )
 
 type DID string
@@ -63,8 +79,14 @@ func (h Handle) String() string {
 
 func ParseNSID(raw string) (NSID, error) {
 	raw = strings.TrimSpace(raw)
-	if raw == "" || !strings.Contains(raw, ".") {
-		return "", fmt.Errorf("invalid nsid %q", raw)
+	if raw == "" {
+		return "", fmt.Errorf("invalid nsid: empty string")
+	}
+	if len(raw) > 317 {
+		return "", fmt.Errorf("invalid nsid: too long (max 317 chars)")
+	}
+	if !nsidRegex.MatchString(raw) {
+		return "", fmt.Errorf("invalid nsid %q: doesn't match required format", raw)
 	}
 	return NSID(raw), nil
 }
@@ -75,8 +97,17 @@ func (n NSID) String() string {
 
 func ParseRecordKey(raw string) (RecordKey, error) {
 	raw = strings.TrimSpace(raw)
-	if raw == "" || strings.Contains(raw, "/") {
-		return "", fmt.Errorf("invalid record key %q", raw)
+	if raw == "" {
+		return "", fmt.Errorf("invalid record key: empty string")
+	}
+	if raw == "." || raw == ".." {
+		return "", fmt.Errorf("invalid record key: %q is reserved", raw)
+	}
+	if len(raw) > 512 {
+		return "", fmt.Errorf("invalid record key: too long (max 512 chars)")
+	}
+	if !recordKeyRegex.MatchString(raw) {
+		return "", fmt.Errorf("invalid record key %q: doesn't match required format", raw)
 	}
 	return RecordKey(raw), nil
 }
@@ -91,20 +122,30 @@ func (id Identifier) String() string {
 
 func ParseATURI(raw string) (ATURI, error) {
 	raw = strings.TrimSpace(raw)
+	
+	// Length limit per spec
+	if len(raw) > 8192 {
+		return ATURI{}, fmt.Errorf("invalid at-uri: too long (max 8192 chars)")
+	}
+	
 	if !strings.HasPrefix(raw, "at://") {
-		return ATURI{}, fmt.Errorf("invalid at-uri %q", raw)
+		return ATURI{}, fmt.Errorf("invalid at-uri %q: missing 'at://' prefix", raw)
 	}
 
 	rest := strings.TrimPrefix(raw, "at://")
+	// Strip query/fragment for parsing
 	if idx := strings.IndexAny(rest, "?#"); idx >= 0 {
 		rest = rest[:idx]
 	}
-	if strings.TrimSpace(rest) == "" {
+	if rest == "" {
 		return ATURI{}, fmt.Errorf("invalid at-uri %q: missing authority", raw)
 	}
 
+	// Split path - check for double-slash (empty segments)
 	parts := strings.Split(rest, "/")
-	authorityRaw := strings.TrimSpace(parts[0])
+	
+	// Validate authority
+	authorityRaw := parts[0]
 	if authorityRaw == "" {
 		return ATURI{}, fmt.Errorf("invalid at-uri %q: missing authority", raw)
 	}
@@ -119,32 +160,35 @@ func ParseATURI(raw string) (ATURI, error) {
 		}
 	}
 
-	pathParts := make([]string, 0, 2)
-	for _, part := range parts[1:] {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		pathParts = append(pathParts, part)
-	}
-	if len(pathParts) > 2 {
-		return ATURI{}, fmt.Errorf("invalid at-uri %q: too many path segments", raw)
-	}
-
+	// Process path segments - detect empty segments (double-slash)
 	var collection NSID
 	var rkey RecordKey
-	if len(pathParts) > 0 {
-		var err error
-		collection, err = ParseNSID(pathParts[0])
-		if err != nil {
-			return ATURI{}, err
-		}
-	}
-	if len(pathParts) > 1 {
-		var err error
-		rkey, err = ParseRecordKey(pathParts[1])
-		if err != nil {
-			return ATURI{}, err
+	
+	if len(parts) > 1 {
+		// Check for empty segments indicating double-slash
+		for i, part := range parts[1:] {
+			if part == "" {
+				// Empty segment means double-slash - invalid
+				return ATURI{}, fmt.Errorf("invalid at-uri %q: empty path segment", raw)
+			}
+			if i == 0 {
+				// First path segment is collection (NSID)
+				var err error
+				collection, err = ParseNSID(part)
+				if err != nil {
+					return ATURI{}, fmt.Errorf("invalid at-uri %q: invalid collection: %w", raw, err)
+				}
+			} else if i == 1 {
+				// Second path segment is record key
+				var err error
+				rkey, err = ParseRecordKey(part)
+				if err != nil {
+					return ATURI{}, fmt.Errorf("invalid at-uri %q: invalid record key: %w", raw, err)
+				}
+			} else {
+				// More than 2 path segments - invalid
+				return ATURI{}, fmt.Errorf("invalid at-uri %q: too many path segments", raw)
+			}
 		}
 	}
 

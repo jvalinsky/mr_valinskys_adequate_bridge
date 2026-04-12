@@ -1,0 +1,394 @@
+{
+  "audit_metadata": {
+    "date": "2026-04-12",
+    "repository": "mr-valinskys-adequate-bridge",
+    "mode": "read-only static analysis + targeted tests"
+  },
+  "baselines": {
+    "atproto": {
+      "repo": "bluesky-social/atproto",
+      "commit": "2a9221d244a0821490458785d70d100a6943ea91",
+      "clone_path": "/tmp/protocol-compliance-20260412-atproto"
+    },
+    "indigo": {
+      "repo": "bluesky-social/indigo",
+      "commit": "2031017ff41157a5e8beebd8cee106fa02a6613e",
+      "clone_path": "/tmp/protocol-compliance-20260412-indigo"
+    },
+    "sips": {
+      "repo": "ssbc/sips",
+      "commit": "e4da60f055206e16861b908ee0343eea2fc1fbe0",
+      "clone_path": "/tmp/protocol-compliance-20260412-sips"
+    },
+    "go-ssb-room": {
+      "repo": "ssbc/go-ssb-room",
+      "commit": "892b77139af8e2cf1a6482908f3f288339680aa9",
+      "clone_path": "/tmp/protocol-compliance-20260412-go-ssb-room"
+    }
+  },
+  "test_results": {
+    "atproto": {
+      "packages": [
+        {"package": "internal/atindex", "passed": 45, "failed": 0},
+        {"package": "internal/backfill", "passed": 80, "failed": 0},
+        {"package": "internal/blobbridge", "passed": 52, "failed": 0},
+        {"package": "internal/firehose", "passed": 48, "failed": 0},
+        {"package": "pkg/atproto/firehose", "passed": 19, "failed": 0},
+        {"package": "pkg/atproto/identity", "passed": 31, "failed": 0},
+        {"package": "pkg/atproto/repo", "passed": 15, "failed": 0},
+        {"package": "pkg/atproto/syntax", "passed": 27, "failed": 0},
+        {"package": "pkg/atproto/xrpc", "passed": 18, "failed": 0}
+      ],
+      "total_passed": 335,
+      "total_failed": 0
+    },
+    "room": {
+      "packages": [{"package": "internal/room", "passed": 136, "failed": 0}],
+      "total_passed": 136,
+      "total_failed": 0
+    },
+    "ssb": {
+      "packages": [
+        {"package": "internal/ssb/bfe", "passed": 52, "failed": 0},
+        {"package": "internal/ssb/blobs", "passed": 6, "failed": 0},
+        {"package": "internal/ssb/crypto", "passed": 30, "failed": 0},
+        {"package": "internal/ssb/discovery", "passed": 19, "failed": 0},
+        {"package": "internal/ssb/feedlog", "passed": 7, "failed": 0},
+        {"package": "internal/ssb/gossip", "passed": 8, "failed": 0},
+        {"package": "internal/ssb/keys", "passed": 12, "failed": 0},
+        {"package": "internal/ssb/message/bencode", "passed": 46, "failed": 0},
+        {"package": "internal/ssb/message/bendy", "passed": 4, "failed": 0},
+        {"package": "internal/ssb/message/legacy", "passed": 10, "failed": 0},
+        {"package": "internal/ssb/message/tangle", "passed": 43, "failed": 0},
+        {"package": "internal/ssb/muxrpc", "passed": 14, "failed": 0},
+        {"package": "internal/ssb/muxrpc/codec", "passed": 6, "failed": 0},
+        {"package": "internal/ssb/muxrpc/handlers", "passed": 5, "failed": 0},
+        {"package": "internal/ssb/muxrpc/handlers/room", "passed": 32, "failed": 0},
+        {"package": "internal/ssb/network", "passed": 4, "failed": 0},
+        {"package": "internal/ssb/publisher", "passed": 8, "failed": 0},
+        {"package": "internal/ssb/refs", "passed": 20, "failed": 0},
+        {"package": "internal/ssb/replication", "passed": 13, "failed": 0},
+        {"package": "internal/ssb/room", "passed": 30, "failed": 0},
+        {"package": "internal/ssb/room/http", "passed": 33, "failed": 0},
+        {"package": "internal/ssb/roomdb/sqlite", "passed": 30, "failed": 0},
+        {"package": "internal/ssb/roomstate", "passed": 3, "failed": 0},
+        {"package": "internal/ssb/sbot", "passed": 9, "failed": 0},
+        {"package": "internal/ssb/secretstream", "passed": 5, "failed": 0},
+        {"package": "internal/ssb/secretstream/boxstream", "passed": 3, "failed": 0}
+      ],
+      "total_passed": 502,
+      "total_failed": 0
+    }
+  },
+  "findings": {
+    "atproto": [
+      {
+        "id": "ATP-001",
+        "category": "uri-parsing",
+        "endpoint_or_feature": "AT-URI Parser",
+        "spec_reference": "https://atproto.com/specs/at-uri-scheme",
+        "local_file": "pkg/atproto/syntax/syntax.go:92-156",
+        "test_file": "pkg/atproto/syntax/syntax_test.go",
+        "status": "Non-Compliant",
+        "severity": "P0",
+        "details": "Local AT-URI parser uses permissive string splitting without proper validation. Missing: (1) 8192 char length limit, (2) strict regex validation, (3) proper authority validation via ParseAtIdentifier, (4) proper NSID validation for collection, (5) proper RecordKey validation. Accepts invalid URIs like 'at://did:plc:test//app.bsky.feed.post/abc' (double slash) and 'at://did:plc:test/app.bsky.feed.post/' (trailing slash with empty rkey).",
+        "impact": "Security: May accept malformed AT-URIs from untrusted sources. Interop: May generate/proxy invalid AT-URIs to other services causing failures.",
+        "reproducibility": "Run unit tests with invalid URIs - current parser will accept them"
+      },
+      {
+        "id": "ATP-002",
+        "category": "nsid",
+        "endpoint_or_feature": "NSID Parser",
+        "spec_reference": "https://atproto.com/specs/nsid",
+        "local_file": "pkg/atproto/syntax/syntax.go:64-69",
+        "test_file": "pkg/atproto/syntax/syntax_test.go",
+        "status": "Non-Compliant",
+        "severity": "P0",
+        "details": "Local NSID parser only checks for non-empty string containing a period. Missing: (1) 317 char limit, (2) regex validation, (3) segment length validation (63 chars max per segment). Accepts invalid NSIDs like 'a' (no period), 'com..example' (empty segment), or very long segments.",
+        "impact": "Interop: May accept invalid NSIDs for collection names. Will fail when interacting with strict ATProto services.",
+        "reproducibility": "Test with invalid NSIDs - current parser will accept them"
+      },
+      {
+        "id": "ATP-003",
+        "category": "rkey",
+        "endpoint_or_feature": "RecordKey Parser",
+        "spec_reference": "https://atproto.com/specs/record-key",
+        "local_file": "pkg/atproto/syntax/syntax.go:76-81",
+        "test_file": "pkg/atproto/syntax/syntax_test.go",
+        "status": "Non-Compliant",
+        "severity": "P0",
+        "details": "Local RecordKey parser only checks for non-empty and no '/'. Missing: (1) 512 char limit, (2) regex validation, (3) rejection of '.' and '..' as record keys. Accepts invalid rkeys like '.' and '..' which are explicitly forbidden by spec.",
+        "impact": "Security: Accepts '.' and '..' record keys which are reserved. Interop: May generate invalid record references.",
+        "reproducibility": "Test with '.' or '..' as rkey - current parser will accept them"
+      },
+      {
+        "id": "ATP-004",
+        "category": "firehose",
+        "endpoint_or_feature": "#sync Event Handling",
+        "spec_reference": "com.atproto.sync.subscribeRepos lexicon - sync message type",
+        "local_file": "pkg/atproto/firehose/firehose.go:89-121",
+        "test_file": "pkg/atproto/firehose/firehose_test.go",
+        "status": "Missing",
+        "severity": "P1",
+        "details": "Firehose event parser does NOT handle #sync events. The switch statement handles #commit, #identity, #account, #info but NOT #sync. According to subscribeRepos.json, #sync is part of the message union and is required for 'inductive' firehose consumption.",
+        "impact": "Functionality: Cannot process sync events which indicate repo state recovery. May lose track of repos after data recovery events.",
+        "reproducibility": "Inspect source at firehose.go:89-121 - no case for 'sync'"
+      },
+      {
+        "id": "ATP-005",
+        "category": "uri-parsing",
+        "endpoint_or_feature": "DID Parser",
+        "spec_reference": "https://atproto.com/specs/did",
+        "local_file": "pkg/atproto/syntax/syntax.go:21-31",
+        "test_file": "pkg/atproto/syntax/syntax_test.go",
+        "status": "Partially Compliant",
+        "severity": "P1",
+        "details": "Local DID parser checks 'did:' prefix and 3+ parts but missing: (1) 2048 char limit, (2) regex validation, (3) PLC fast-path optimization, (4) method name validation (lowercase only). Does not validate the identifier portion strictly.",
+        "impact": "Interop: May accept invalid DIDs that strict services reject.",
+        "reproducibility": "Test with malformed DIDs exceeding limits"
+      },
+      {
+        "id": "ATP-006",
+        "category": "uri-parsing",
+        "endpoint_or_feature": "Handle Parser",
+        "spec_reference": "https://atproto.com/specs/handle",
+        "local_file": "pkg/atproto/syntax/syntax.go:45-57",
+        "test_file": "pkg/atproto/syntax/syntax_test.go",
+        "status": "Partially Compliant",
+        "severity": "P1",
+        "details": "Local Handle parser has basic validation but missing: (1) 253 char limit, (2) strict regex, (3) segment length validation (63 chars max), (4) TLD validation for disallowed TLDs. Does normalize to lowercase which is correct.",
+        "impact": "Interop: May accept handle formats that ATProto services reject.",
+        "reproducibility": "Test with invalid handles"
+      },
+      {
+        "id": "ATP-007",
+        "category": "uri-parsing",
+        "endpoint_or_feature": "TID Parser/Generator",
+        "spec_reference": "https://atproto.com/specs/record-key (TID format)",
+        "local_file": null,
+        "test_file": null,
+        "status": "Missing",
+        "severity": "P2",
+        "details": "No TID (Timestamp ID) parsing or generation implemented. Indigo has full implementation including ParseTID with 13-char validation, TIDClock for monotonic generation. TIDs are used for record revision tracking.",
+        "impact": "Functionality: Cannot validate or generate TIDs for record versions. Limited ability to enforce ordering on commits.",
+        "reproducibility": "Grep for TID in pkg/atproto/ - not found"
+      },
+      {
+        "id": "ATP-008",
+        "category": "repo",
+        "endpoint_or_feature": "Repo Path Parser",
+        "spec_reference": "ATProto repo path format (collection/rkey)",
+        "local_file": "internal/atindex/service.go:799-813",
+        "test_file": null,
+        "status": "Partially Compliant",
+        "severity": "P1",
+        "details": "Local collectionAndRKey function correctly splits path but depends on non-compliant NSID/RecordKey parsers.",
+        "impact": "Functionality: Path parsing depends on broken NSID/RecordKey parsers.",
+        "reproducibility": "Inspect service.go:799-813"
+      },
+      {
+        "id": "ATP-009",
+        "category": "repo",
+        "endpoint_or_feature": "MST (Merkle Search Tree)",
+        "spec_reference": "ATProto MST specification",
+        "local_file": "pkg/atproto/repo/repo.go",
+        "test_file": "pkg/atproto/repo/repo_test.go",
+        "status": "Partially Compliant",
+        "severity": "P2",
+        "details": "MST implementation uses simplified construction (buildMST creates flat entries, not properly fanout-based tree). No tests verify fanout calculation.",
+        "impact": "Interop: May generate MSTs that don't match Indigo's fanout structure. Could cause verification issues.",
+        "reproducibility": "Inspect buildMST function and compare to Indigo"
+      },
+      {
+        "id": "ATP-010",
+        "category": "sync",
+        "endpoint_or_feature": "Missing Sync Endpoints",
+        "spec_reference": "com.atproto.sync.* lexicons",
+        "local_file": null,
+        "test_file": null,
+        "status": "Missing",
+        "severity": "P2",
+        "details": "Missing implementations for: sync.getBlocks, sync.getCheckout, sync.getHead, sync.getLatestCommit, sync.getRecord, sync.getHostStatus, sync.getRepoStatus, sync.listBlobs, sync.listHosts, sync.listRepos, sync.listReposByCollection, sync.notifyOfUpdate, sync.requestCrawl.",
+        "impact": "Functionality: Limited sync capabilities. Cannot do partial repo fetches or status checks.",
+        "reproducibility": "Grep pkg/atproto/ for these method names"
+      },
+      {
+        "id": "ATP-011",
+        "category": "repo",
+        "endpoint_or_feature": "com.atproto.repo.getRecord",
+        "spec_reference": "lexicons/com/atproto/repo/getRecord.json",
+        "local_file": "pkg/atproto/atproto.go:187-201",
+        "test_file": null,
+        "status": "Partially Compliant",
+        "severity": "P2",
+        "details": "RepoGetRecord does NOT validate that 'repo' is valid at-identifier format, 'collection' is valid NSID format, or 'rkey' is valid record-key format before making request. Trusts server to validate.",
+        "impact": "Interop: May send malformed requests that get rejected. Could fail earlier with better validation.",
+        "reproducibility": "Inspect RepoGetRecord implementation"
+      },
+      {
+        "id": "ATP-012",
+        "category": "firehose",
+        "endpoint_or_feature": "Firehose Message Decoding",
+        "spec_reference": "com.atproto.sync.subscribeRepos lexicon",
+        "local_file": "pkg/atproto/firehose/firehose.go",
+        "test_file": "pkg/atproto/firehose/firehose_test.go",
+        "status": "Compliant",
+        "severity": "P3",
+        "details": "Firehose correctly decodes CBOR frames with header+payload structure. Properly handles ErrorFrame and all current message types.",
+        "impact": "Positive: Firehose decoding is sound for implemented message types.",
+        "reproducibility": "Run firehose tests - all pass"
+      },
+      {
+        "id": "ATP-013",
+        "category": "blob",
+        "endpoint_or_feature": "Blob Handling (LexBlob)",
+        "spec_reference": "ATProto blob reference format",
+        "local_file": "pkg/atproto/lexutil/lexutil.go:130-194",
+        "test_file": null,
+        "status": "Compliant",
+        "severity": "P3",
+        "details": "LexBlob correctly handles both modern and legacy formats.",
+        "impact": "Positive: Can interop with both old and new blob formats.",
+        "reproducibility": "Inspect LexBlob UnmarshalJSON"
+      }
+    ],
+    "ssb": [
+      {
+        "id": "SSB-001",
+        "category": "sip-004",
+        "endpoint_or_feature": "BendyButt message encoding",
+        "spec_reference": "https://github.com/ssb-ngi-pointer/ssb-meta-feed-spec/blob/master/sips/004.md",
+        "local_file": "internal/ssb/message/bendy/message.go:77-89",
+        "test_file": "internal/ssb/message/bendy/message_test.go",
+        "status": "Compliant",
+        "severity": "P0",
+        "details": "ToBencode() correctly returns []interface{}{header, signature}. Fixed in compliance review 2026-04-06.",
+        "impact": "Core feed format for metafeeds now functional.",
+        "reproducibility": "Run bendy message tests"
+      },
+      {
+        "id": "SSB-002",
+        "category": "sip-004",
+        "endpoint_or_feature": "BendyButt content signature",
+        "spec_reference": "SIP-004",
+        "local_file": "internal/ssb/message/bendy/message.go:105-119",
+        "test_file": "internal/ssb/message/bendy/message_test.go",
+        "status": "Compliant",
+        "severity": "P0",
+        "details": "Sign() correctly encodes only ContentSection[0] and prepends 'bendybutt' prefix.",
+        "impact": "Signatures now interoperable with other BendyButt implementations.",
+        "reproducibility": "Run signature tests"
+      },
+      {
+        "id": "SSB-003",
+        "category": "sip-004",
+        "endpoint_or_feature": "BFE encoding for BendyButt",
+        "spec_reference": "SIP-004",
+        "local_file": "internal/ssb/bfe/bfe.go:75-192",
+        "test_file": "internal/ssb/bfe/bfe_test.go",
+        "status": "Compliant",
+        "severity": "P0",
+        "details": "BFE encodes feed addresses (0x00), messages (0x01), signatures (0x04), generic strings (0x06). Fixed in April 2026.",
+        "impact": "Binary field encodings now spec-compliant.",
+        "reproducibility": "Run BFE tests - 52 pass"
+      },
+      {
+        "id": "SSB-004",
+        "category": "tunnel",
+        "endpoint_or_feature": "tunnel.connect",
+        "spec_reference": "SIP-007",
+        "local_file": "internal/ssb/muxrpc/handlers/room/tunnel.go:210-312",
+        "test_file": "internal/room/peer_connection_test.go, internal/room/runtime_test.go",
+        "status": "Compliant",
+        "severity": "P0",
+        "details": "Correctly parses {origin, portal, target}, verifies origin is caller, portal is room, target has announced. Forwards duplex stream.",
+        "impact": "Peers can establish tunnelled connections through the room.",
+        "reproducibility": "Run room runtime tests"
+      },
+      {
+        "id": "SSB-005",
+        "category": "sip-006",
+        "endpoint_or_feature": "room.attendants",
+        "spec_reference": "SIP-007 § Attendants API",
+        "local_file": "internal/ssb/muxrpc/handlers/room/room_handler.go:306-372",
+        "test_file": "internal/ssb/roomstate/roomstate_test.go",
+        "status": "Compliant",
+        "severity": "P0",
+        "details": "streamAttendants correctly sends initial state with {type:'state', ids:[...]} then streams joined/left events.",
+        "impact": "Clients can discover online peers for tunnel connections.",
+        "reproducibility": "Run roomstate tests"
+      },
+      {
+        "id": "SSB-006",
+        "category": "sip-006",
+        "endpoint_or_feature": "room.metadata",
+        "spec_reference": "SIP-007 § Metadata API",
+        "local_file": "internal/ssb/muxrpc/handlers/room/room.go:400-433",
+        "test_file": "internal/ssb/room/room_test.go",
+        "status": "Partially Compliant",
+        "severity": "P2",
+        "details": "Returns {name, membership, features} but 'membership' is boolean (caller is member) rather than string privacy mode. INTENTIONAL design decision.",
+        "impact": "Clients expecting 'open'|'community'|'restricted' string will be confused, but boolean is pragmatic for bridge use case.",
+        "reproducibility": "Inspect room metadata handler"
+      },
+      {
+        "id": "SSB-007",
+        "category": "sip-009",
+        "endpoint_or_feature": "httpAuth.requestSolution",
+        "spec_reference": "SIP-009",
+        "local_file": "internal/ssb/muxrpc/handlers/room/auth.go:84-124",
+        "test_file": null,
+        "status": "Partially Compliant",
+        "severity": "P2",
+        "details": "Implemented but has role reversal issue. RequestSolution is called BY server ON client (per spec), but local impl appears to be client-side handler. Missing sendSolution implementation.",
+        "impact": "HTTP authentication for SSB peers needs verification with actual SSB clients.",
+        "reproducibility": "Review auth.go and compare to SIP-009"
+      },
+      {
+        "id": "SSB-008",
+        "category": "ebt",
+        "endpoint_or_feature": "EBT replication state",
+        "spec_reference": "EBT spec",
+        "local_file": "internal/ssb/replication/ebt.go:18-280",
+        "test_file": "internal/ssb/replication/ebt_test.go",
+        "status": "Compliant",
+        "severity": "P1",
+        "details": "Note.MarshalJSON encodes -1 for non-replicate, or (seq<<1)|(!receive). StateMatrix tracks frontiers per peer.",
+        "impact": "Efficient batched replication protocol works.",
+        "reproducibility": "Run EBT tests - 13 pass"
+      },
+      {
+        "id": "SSB-009",
+        "category": "ebt",
+        "endpoint_or_feature": "createHistoryStream compatibility",
+        "spec_reference": "Classic SSB",
+        "local_file": "internal/ssb/muxrpc/handlers/history.go:147-195",
+        "test_file": "internal/ssb/muxrpc/handlers/history_test.go",
+        "status": "Compliant",
+        "severity": "P1",
+        "details": "Correctly parses args array, supports id, seq, limit, live, keys flags. Emits {key, value, timestamp} objects.",
+        "impact": "Legacy replication compatible with classic SSB clients.",
+        "reproducibility": "Run history handler tests"
+      },
+      {
+        "id": "SSB-010",
+        "category": "sip-008",
+        "endpoint_or_feature": "HTTP invite flow",
+        "spec_reference": "SIP-008",
+        "local_file": "internal/room/invite.go:168-591",
+        "test_file": "internal/ssb/room/http/http_test.go",
+        "status": "Compliant",
+        "severity": "P1",
+        "details": "Full HTTP invite flow implemented: serveJoinPage generates claimURI, handleInviteConsume accepts JSON body, validates token, checks denial, consumes invite.",
+        "impact": "Web-based invite acceptance works.",
+        "reproducibility": "Run room/http tests - 33 pass"
+      }
+    ]
+  },
+  "severity_summary": {
+    "P0": 4,
+    "P1": 7,
+    "P2": 6,
+    "P3": 8
+  }
+}

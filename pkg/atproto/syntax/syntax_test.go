@@ -43,16 +43,19 @@ func TestParseATURI_EdgeCases(t *testing.T) {
 		{"empty_string", "", false},
 		{"missing_at_prefix", "did:plc:test/app.bsky.feed.post/abc", false},
 		{"invalid_prefix", "http://did:plc:test/app.bsky.feed.post/abc", false},
-		{"just_at_prefix", "at://", false},                                 // Parser returns error - too few segments
-		{"single_segment", "at://did:plc:test", true},                      // Parser accepts - missing collection/rkey
-		{"empty_collection", "at://did:plc:test/", true},                   // Parser accepts - empty collection
-		{"empty_recordkey", "at://did:plc:test/app.bsky.feed.post/", true}, // Parser accepts
-		{"special_chars_in_rkey", "at://did:plc:test/app.bsky.feed.post/abc!def", true},
+		{"just_at_prefix", "at://", false},
+		{"single_segment", "at://did:plc:test", true}, // Valid: authority only, no collection/rkey
+		{"empty_collection", "at://did:plc:test/", false},                                  // INVALID: trailing slash without collection
+		{"empty_recordkey", "at://did:plc:test/app.bsky.feed.post/", false},                // INVALID: trailing slash without rkey
+		{"special_chars_in_rkey", "at://did:plc:test/app.bsky.feed.post/abc-def_123", true}, // Valid special chars
 		{"underscore_in_rkey", "at://did:plc:test/app.bsky.feed.post/abc_def", true},
 		{"numbers_in_rkey", "at://did:plc:test/app.bsky.feed.post/12345", true},
-		{"double_slash_in_authority", "at://did:plc:test//app.bsky.feed.post/abc", true}, // Parser accepts
+		{"double_slash_in_authority", "at://did:plc:test//app.bsky.feed.post/abc", false}, // INVALID: empty path segment
 		{"four_segments", "at://did:plc:test/a/b/c", false},
-		{"trailing_slash_rkey", "at://did:plc:test/app.bsky.feed.post/abc/", true},
+		{"trailing_slash_rkey", "at://did:plc:test/app.bsky.feed.post/abc/", false}, // INVALID: trailing slash creates empty segment
+		{"valid_full", "at://did:plc:test/app.bsky.feed.post/abc", true},
+		{"valid_no_rkey", "at://did:plc:test/app.bsky.feed.post", true},
+		{"handle_authority", "at://alice.test/app.bsky.feed.post/abc", true},
 	}
 
 	for _, tt := range tests {
