@@ -21,7 +21,7 @@ func init() {
 }
 
 func computeMultihash(data []byte) mh.Multihash {
-	h, _ := mh.Sum(data, mh.DBL_SHA2_256, -1)
+	h, _ := mh.Sum(data, mh.SHA2_256, -1)
 	return h
 }
 
