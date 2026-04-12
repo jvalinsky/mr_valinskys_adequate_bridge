@@ -212,20 +212,28 @@ func csrfPathExempt(path string, prefixes []string) bool {
 }
 
 func sameOriginRequest(r *http.Request) bool {
-	targetScheme := "http"
+	scheme := "http"
 	if r.TLS != nil {
-		targetScheme = "https"
+		scheme = "https"
 	}
-	targetHost := strings.TrimSpace(r.Host)
-	if targetHost == "" {
-		log.Printf("event=same_origin_check reason=empty_host r.Host=%q r.Header.Host=%q", r.Host, r.Header.Get("Host"))
+	if xfp := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")); xfp != "" {
+		scheme = xfp
+	}
+
+	host := strings.TrimSpace(r.Host)
+	if xfh := strings.TrimSpace(r.Header.Get("X-Forwarded-Host")); xfh != "" {
+		host = xfh
+	}
+
+	if host == "" {
+		log.Printf("event=same_origin_check reason=empty_host r.Host=%q X-Forwarded-Host=%q", r.Host, r.Header.Get("X-Forwarded-Host"))
 		return false
 	}
-	log.Printf("event=same_origin_check target_scheme=%q target_host=%q", targetScheme, targetHost)
+	log.Printf("event=same_origin_check target_scheme=%q target_host=%q", scheme, host)
 
 	origin := strings.TrimSpace(r.Header.Get("Origin"))
 	if origin != "" {
-		match := originMatchesRequest(origin, targetScheme, targetHost)
+		match := originMatchesRequest(origin, scheme, host)
 		log.Printf("event=same_origin_check origin_header=%q match=%t", origin, match)
 		return match
 	}
@@ -241,7 +249,7 @@ func sameOriginRequest(r *http.Request) bool {
 	if refURL.Scheme == "" || refURL.Host == "" {
 		return false
 	}
-	return originMatchesRequest(refURL.Scheme+"://"+refURL.Host, targetScheme, targetHost)
+	return originMatchesRequest(refURL.Scheme+"://"+refURL.Host, scheme, host)
 }
 
 func originMatchesRequest(rawOrigin, scheme, host string) bool {
