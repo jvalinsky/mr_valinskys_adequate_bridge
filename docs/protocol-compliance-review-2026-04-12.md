@@ -490,24 +490,25 @@ All verified compliant:
 
 ## Recommendations
 
-### Immediate (P0)
+### Completed ✅
 
-1. **Replace AT-URI parser** with Indigo's strict implementation from `/tmp/protocol-compliance-20260412-indigo/atproto/syntax/aturi.go`
-2. **Replace NSID parser** with Indigo's `nsid.go`
-3. **Replace RecordKey parser** with Indigo's `recordkey.go`
-4. **Add `#sync` case** to firehose event handler
+1. ~~Replace AT-URI parser~~ **Done** (commit 4fd0d5d)
+2. ~~Replace NSID parser~~ **Done** (commit 4fd0d5d)
+3. ~~Replace RecordKey parser~~ **Done** (commit 4fd0d5d)
+4. ~~Add `#sync` case~~ **Already existed** (audit error)
+5. ~~Add TID parser/generator~~ **Done** (commit eeb186f)
+6. ~~Strengthen DID/Handle validation~~ **Done** (commit 9fb3758)
+7. ~~Verify httpAuth flow~~ **Verified correct** (audit false positive)
 
-### Short-term (P1)
+### Documented Limitations
 
-5. **Add TID parser/generator** from Indigo
-6. **Strengthen DID/Handle validation** or import Indigo's implementations
-7. **Add MST fanout tests** to verify tree structure matches Indigo
+8. **MST fanout construction** — Known limitation, test-only usage, read path correct
+9. **Missing sync endpoints** — Not needed for bridge, document as known limitation
 
-### Medium-term (P2)
+### Future Work (Optional)
 
-8. **Implement missing sync endpoints** for improved PDS interop
-9. **Verify httpAuth flow** with actual SSB clients (Planetary, Manyverse)
-10. **Document room.metadata deviation** in project docs
+10. Add full MST fanout construction if bridge ever writes repos for PDS consumption
+11. Test with real SSB clients (Planetary, Manyverse) for end-to-end validation
 
 ---
 
