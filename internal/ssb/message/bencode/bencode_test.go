@@ -2,6 +2,7 @@ package bencode
 
 import (
 	"bytes"
+	"errors"
 	"math"
 	"testing"
 )
@@ -190,7 +191,7 @@ func TestEncodeDict_KeySortOrder(t *testing.T) {
 		t.Fatalf("Encode failed: %v", err)
 	}
 	// "ab" should come before "ba"
-	if !bytes.Contains(b, []byte("2:ab")) || bytes.Index(b, []byte("2:ab")) < bytes.Index(b, []byte("2:ba")) {
+	if !bytes.Contains(b, []byte("2:ab")) || bytes.Index(b, []byte("2:ab")) >= bytes.Index(b, []byte("2:ba")) {
 		t.Errorf("wrong key order: %s", string(b))
 	}
 }
@@ -201,7 +202,7 @@ func TestEncodeUnsupportedType(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unsupported type")
 	}
-	if err != ErrUnsupportedType {
+	if !errors.Is(err, ErrUnsupportedType) {
 		t.Errorf("wrong error: %v", err)
 	}
 }
@@ -346,7 +347,7 @@ func TestDecodeUnknownByte(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unknown byte")
 	}
-	if err != ErrInvalidBencode {
+	if !errors.Is(err, ErrInvalidBencode) {
 		t.Errorf("wrong error: %v", err)
 	}
 }

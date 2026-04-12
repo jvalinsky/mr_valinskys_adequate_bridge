@@ -48,7 +48,7 @@ func DecodeMultiserverAddress(addr string) (*MultiserverAddress, error) {
 
 	if idx := strings.Index(rest, "~"); idx > 0 {
 		hostPort := rest[:idx]
-		rest = rest[idx+4:]
+		rest = rest[idx+5:]
 		if sp := strings.LastIndex(hostPort, ":"); sp > 0 {
 			host = hostPort[:sp]
 			fmt.Sscanf(hostPort[sp+1:], "%d", &port)
