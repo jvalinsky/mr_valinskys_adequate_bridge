@@ -121,7 +121,7 @@ func CSRFMiddleware(cfg CSRFConfig) func(http.Handler) http.Handler {
 			if !sameOriginRequest(r) {
 				log.Printf("event=csrf_reject reason=no_valid_origin path=%s method=%s origin=%q referer=%q host=%s",
 					r.URL.Path, r.Method, r.Header.Get("Origin"), r.Header.Get("Referer"), r.Host)
-				http.Error(w, "Forbidden", http.StatusForbidden)
+				http.Error(w, "Forbidden: no valid origin", http.StatusForbidden)
 				return
 			}
 
@@ -129,7 +129,7 @@ func CSRFMiddleware(cfg CSRFConfig) func(http.Handler) http.Handler {
 			if !secureCompare(formToken, token) {
 				log.Printf("event=csrf_reject reason=token_mismatch path=%s method=%s has_cookie=%t has_form=%t",
 					r.URL.Path, r.Method, token != "", formToken != "")
-				http.Error(w, "Forbidden", http.StatusForbidden)
+				http.Error(w, "Forbidden: token mismatch", http.StatusForbidden)
 				return
 			}
 
