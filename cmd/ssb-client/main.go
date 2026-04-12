@@ -21,6 +21,8 @@ var (
 	roomMode       string
 	roomHTTPAddr   string
 	initialPeers   string
+	uiAuthUser     string
+	uiAuthPassEnv  string
 	localLogOutput string
 	logLevel       string
 	logJSON        bool
@@ -54,6 +56,16 @@ func main() {
 				Value:       defaultHTTPListen,
 				Usage:       "HTTP web UI listen address",
 				Destination: &httpListenAddr,
+			},
+			&cli.StringFlag{
+				Name:        "ui-auth-user",
+				Usage:       "HTTP Basic auth username for the web UI/API",
+				Destination: &uiAuthUser,
+			},
+			&cli.StringFlag{
+				Name:        "ui-auth-pass-env",
+				Usage:       "environment variable containing HTTP Basic auth password for the web UI/API",
+				Destination: &uiAuthPassEnv,
 			},
 			&cli.StringFlag{
 				Name:        "app-key",

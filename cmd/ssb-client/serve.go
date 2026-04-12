@@ -23,6 +23,32 @@ import (
 	"github.com/urfave/cli/v2"
 )
 
+func resolveServeUIAuthConfig(listenAddr, authUser, authPassEnv string, getenv func(string) string) (string, string, bool, error) {
+	authUser = strings.TrimSpace(authUser)
+	authPassEnv = strings.TrimSpace(authPassEnv)
+	authPass := ""
+	if authPassEnv != "" {
+		authPass = strings.TrimSpace(getenv(authPassEnv))
+		if authPass == "" {
+			return "", "", false, fmt.Errorf("ui auth password env %q is empty or unset", authPassEnv)
+		}
+	}
+
+	if authUser == "" && authPassEnv != "" {
+		return "", "", false, fmt.Errorf("--ui-auth-user is required when --ui-auth-pass-env is set")
+	}
+	if authUser != "" && authPassEnv == "" {
+		return "", "", false, fmt.Errorf("--ui-auth-pass-env is required when --ui-auth-user is set")
+	}
+
+	authConfigured := authUser != "" && authPass != ""
+	if websecurity.RequireAuthForBind(listenAddr) && !authConfigured {
+		return "", "", false, fmt.Errorf("refusing to serve UI/API on non-loopback address %q without auth; configure --ui-auth-user and --ui-auth-pass-env", listenAddr)
+	}
+
+	return authUser, authPass, authConfigured, nil
+}
+
 func runServe(c *cli.Context) error {
 	if repoPath == "" {
 		repoPath = defaultRepoPath
@@ -32,6 +58,15 @@ func runServe(c *cli.Context) error {
 	}
 	if httpListenAddr == "" {
 		httpListenAddr = defaultHTTPListen
+	}
+	authUser, authPass, authConfigured, err := resolveServeUIAuthConfig(
+		httpListenAddr,
+		c.String("ui-auth-user"),
+		c.String("ui-auth-pass-env"),
+		os.Getenv,
+	)
+	if err != nil {
+		return err
 	}
 
 	logger := log.New(os.Stdout, "ssb-client: ", log.LstdFlags)
@@ -94,6 +129,9 @@ func runServe(c *cli.Context) error {
 	r := chi.NewRouter()
 	r.Use(websecurity.RequestLogMiddleware(logger))
 	r.Use(websecurity.SecurityHeadersMiddleware(true))
+	if authConfigured {
+		r.Use(websecurity.BasicAuthMiddleware(authUser, authPass))
+	}
 
 	ui := newClientUIHandler(ssbClient, logger, slogger)
 	ui.Mount(r)
@@ -103,7 +141,7 @@ func runServe(c *cli.Context) error {
 		Handler: r,
 	}
 
-	slog.Info("SSB client serving", "http_addr", httpListenAddr)
+	slog.Info("SSB client serving", "http_addr", httpListenAddr, "auth", authConfigured)
 	slog.Info("SSB identity", "id", keyPair.FeedRef().String())
 	slog.Info("SSB muxrpc listening", "addr", listenAddr)
 
