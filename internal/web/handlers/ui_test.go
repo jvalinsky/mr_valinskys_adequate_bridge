@@ -3210,3 +3210,203 @@ func TestHandleConnectionConnect(t *testing.T) {
 		}
 	})
 }
+
+// TestHandleAccountsRemove tests account removal functionality
+func TestHandleAccountsRemove(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	ctx := context.Background()
+	err := database.AddBridgedAccount(ctx, db.BridgedAccount{
+		ATDID:     "did:plc:test123",
+		SSBFeedID: "@test.ed25519",
+		Active:    true,
+	})
+	if err != nil {
+		t.Fatalf("add account: %v", err)
+	}
+
+	router := chi.NewRouter()
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).Mount(router)
+
+	form := url.Values{}
+	form.Set("at_did", "did:plc:test123")
+
+	req := httptest.NewRequest(http.MethodPost, "/accounts/remove", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusSeeOther {
+		t.Errorf("expected 303, got %d", rr.Code)
+	}
+
+	location := rr.Header().Get("Location")
+	if location != "/accounts" {
+		t.Errorf("expected redirect to /accounts, got %s", location)
+	}
+}
+
+// TestHandleAccountsRemoveMissingDID tests remove without DID parameter
+func TestHandleAccountsRemoveMissingDID(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	router := chi.NewRouter()
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).Mount(router)
+
+	req := httptest.NewRequest(http.MethodPost, "/accounts/remove", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", rr.Code)
+	}
+}
+
+// TestHandleFeed tests global feed rendering
+func TestHandleFeed(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	ctx := context.Background()
+
+	// Add a test message
+	err := database.AddMessage(ctx, db.Message{
+		ATURI:        "at://did:plc:alice/app.bsky.feed.post/12345",
+		ATCID:        "bafytest123",
+		SSBMsgRef:    "%test123.sha256",
+		ATDID:        "did:plc:alice",
+		Type:         "app.bsky.feed.post",
+		MessageState: db.MessageStatePublished,
+		RawATJson:    `{"text":"hello world"}`,
+		RawSSBJson:   `{"text":"hello world"}`,
+	})
+	if err != nil {
+		t.Fatalf("add message: %v", err)
+	}
+
+	body := fetchUI(t, database, "/feed")
+	if !strings.Contains(body, "hello world") {
+		t.Errorf("feed page missing message text: %s", body)
+	}
+	if !strings.Contains(body, "Global Feed") {
+		t.Errorf("feed page missing title: %s", body)
+	}
+}
+
+// TestHandleFeedWithLimit tests feed pagination
+func TestHandleFeedWithLimit(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	ctx := context.Background()
+
+	// Add multiple messages
+	for i := 0; i < 5; i++ {
+		database.AddMessage(ctx, db.Message{
+			ATURI:        fmt.Sprintf("at://did:plc:alice/app.bsky.feed.post/%d", i),
+			ATCID:        fmt.Sprintf("bafy%d", i),
+			SSBMsgRef:    fmt.Sprintf("%%msg%d.sha256", i),
+			ATDID:        "did:plc:alice",
+			Type:         "app.bsky.feed.post",
+			MessageState: db.MessageStatePublished,
+			RawATJson:    `{"text":"msg"}`,
+			RawSSBJson:   `{"text":"msg"}`,
+		})
+	}
+
+	router := chi.NewRouter()
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).Mount(router)
+
+	req := httptest.NewRequest(http.MethodGet, "/feed?limit=2", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rr.Code)
+	}
+}
+
+// TestHandleATProtoHealth tests ATProto health endpoint
+func TestHandleATProtoHealth(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	router := chi.NewRouter()
+	mockStore := &mockATProtoStore{}
+	handler := NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{})
+	handler.atprotoStore = mockStore
+	handler.Mount(router)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/atproto/health", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rr.Code)
+	}
+
+	var result map[string]any
+	if err := json.NewDecoder(rr.Body).Decode(&result); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if status, ok := result["status"]; !ok || status != "ok" {
+		t.Errorf("expected status=ok, got %v", status)
+	}
+
+	if _, ok := result["tracked_repo_count"]; !ok {
+		t.Error("response missing tracked_repo_count")
+	}
+}
+
+// TestHandleATProtoEvents tests ATProto events endpoint
+func TestHandleATProtoEvents(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	router := chi.NewRouter()
+	mockStore := &mockATProtoStore{}
+	handler := NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{})
+	handler.atprotoStore = mockStore
+	handler.Mount(router)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/atproto/events", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rr.Code)
+	}
+
+	var result map[string]any
+	if err := json.NewDecoder(rr.Body).Decode(&result); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if _, ok := result["cursor"]; !ok {
+		t.Error("response missing cursor")
+	}
+	if _, ok := result["events"]; !ok {
+		t.Error("response missing events")
+	}
+}
+
+// mockATProtoStore implements ATProtoDebugStore for testing
+type mockATProtoStore struct{}
+
+func (m *mockATProtoStore) GetATProtoSource(ctx context.Context, key string) (*db.ATProtoSource, error) {
+	return &db.ATProtoSource{
+		SourceKey: key,
+		LastSeq:   12345,
+	}, nil
+}
+
+func (m *mockATProtoStore) ListTrackedATProtoRepos(ctx context.Context, syncState string) ([]db.ATProtoRepo, error) {
+	return []db.ATProtoRepo{}, nil
+}
+
+func (m *mockATProtoStore) ListATProtoEventsAfter(ctx context.Context, cursor int64, limit int) ([]db.ATProtoRecordEvent, error) {
+	return []db.ATProtoRecordEvent{}, nil
+}
