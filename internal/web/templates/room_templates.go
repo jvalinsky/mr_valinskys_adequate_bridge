@@ -89,10 +89,11 @@ const roomMembersRolesContent = `
                     <td class="mono">{{.ID}}</td>
                     <td class="mono"><span class="truncate" title="{{.FeedID}}">{{.FeedID}}</span></td>
                     <td><span class="pill state-pending">{{.Role}}</span></td>
-                    <td>
-                        <form method="post" action="/room/members/role" class="toolbar" style="justify-content:flex-start;margin:0">
-                            <input type="hidden" name="member_id" value="{{.ID}}">
-                            <label class="field" style="min-width:170px">
+	                    <td>
+	                        <form method="post" action="/room/members/role" class="toolbar" style="justify-content:flex-start;margin:0">
+	                            {{csrfField $.Chrome.CSRFToken}}
+	                            <input type="hidden" name="member_id" value="{{.ID}}">
+	                            <label class="field" style="min-width:170px">
                                 <span class="metric-label">Role</span>
                                 <select name="role">
                                     <option value="member" {{if eq .RoleRaw "member"}}selected{{end}}>member</option>
@@ -102,12 +103,13 @@ const roomMembersRolesContent = `
                             </label>
                             <button type="submit" class="button">Save</button>
                         </form>
-                    </td>
-                    <td>
-                        <form method="post" action="/room/members/remove" onsubmit="return confirm('Remove this member from room membership?')">
-                            <input type="hidden" name="member_id" value="{{.ID}}">
-                            <button type="submit" class="button">Remove</button>
-                        </form>
+	                    </td>
+	                    <td>
+	                        <form method="post" action="/room/members/remove" onsubmit="return confirm('Remove this member from room membership?')">
+	                            {{csrfField $.Chrome.CSRFToken}}
+	                            <input type="hidden" name="member_id" value="{{.ID}}">
+	                            <button type="submit" class="button">Remove</button>
+	                        </form>
                     </td>
                 </tr>
                 {{else}}
@@ -212,11 +214,12 @@ const roomAliasesInvitesContent = `
     <p class="subtitle">Mode: <strong>{{.ModeLabel}}</strong> · {{.ModeSummary}}</p>
     <p class="subtitle">{{.PolicyHint}}</p>
 
-    <h2 class="page-title" style="font-size:1.1rem">Create Invite</h2>
-    {{if .CanCreateInvite}}
-    <form method="post" action="/room/invites/create" onsubmit="return confirm('Create a new invite token?')">
-        <button type="submit" class="button-link">Create Invite</button>
-    </form>
+	    <h2 class="page-title" style="font-size:1.1rem">Create Invite</h2>
+	    {{if .CanCreateInvite}}
+	    <form method="post" action="/room/invites/create" onsubmit="return confirm('Create a new invite token?')">
+	        {{csrfField .Chrome.CSRFToken}}
+	        <button type="submit" class="button-link">Create Invite</button>
+	    </form>
     {{if .InviteJoinURL}}
     <div class="toolbar" style="justify-content:flex-start">
         <span class="metric-label">New Join URL</span>
@@ -241,12 +244,13 @@ const roomAliasesInvitesContent = `
                     <td>{{if .Active}}<span class="pill state-published">active</span>{{else}}<span class="pill state-deleted">consumed</span>{{end}}</td>
                     <td class="mono">{{.CreatedAt}}</td>
                     <td class="mono">{{.CreatedBy}}</td>
-                    <td>
-                        {{if and $.CanRevokeInvite .Active}}
-                        <form method="post" action="/room/invites/revoke" onsubmit="return confirm('Revoke this invite?')">
-                            <input type="hidden" name="invite_id" value="{{.ID}}">
-                            <button type="submit" class="button">Revoke</button>
-                        </form>
+	                    <td>
+	                        {{if and $.CanRevokeInvite .Active}}
+	                        <form method="post" action="/room/invites/revoke" onsubmit="return confirm('Revoke this invite?')">
+	                            {{csrfField $.Chrome.CSRFToken}}
+	                            <input type="hidden" name="invite_id" value="{{.ID}}">
+	                            <button type="submit" class="button">Revoke</button>
+	                        </form>
                         {{else}}
                         <span class="empty">-</span>
                         {{end}}
@@ -271,12 +275,13 @@ const roomAliasesInvitesContent = `
                     <td class="mono">{{.Name}}</td>
                     <td class="mono"><span class="truncate" title="{{.OwnerFeed}}">{{.OwnerFeed}}</span></td>
                     <td class="mono"><span class="truncate" title="{{.ReversePTR}}">{{.ReversePTR}}</span></td>
-                    <td>
-                        {{if $.CanRevokeAlias}}
-                        <form method="post" action="/room/aliases/revoke" onsubmit="return confirm('Revoke alias {{.Name}}?')">
-                            <input type="hidden" name="alias" value="{{.Name}}">
-                            <button type="submit" class="button">Revoke</button>
-                        </form>
+	                    <td>
+	                        {{if $.CanRevokeAlias}}
+	                        <form method="post" action="/room/aliases/revoke" onsubmit="return confirm('Revoke alias {{.Name}}?')">
+	                            {{csrfField $.Chrome.CSRFToken}}
+	                            <input type="hidden" name="alias" value="{{.Name}}">
+	                            <button type="submit" class="button">Revoke</button>
+	                        </form>
                         {{else}}
                         <span class="empty">blocked</span>
                         {{end}}
@@ -315,11 +320,12 @@ const roomModerationContent = `
     <p class="subtitle">Mode: <strong>{{.ModeLabel}}</strong> · {{.ModeSummary}}</p>
     <p class="subtitle">{{.PolicyHint}}</p>
 
-    <h2 class="page-title" style="font-size:1.1rem">Add Denied Key</h2>
-    {{if .CanMutateDenied}}
-    <form method="post" action="/room/denied/add" class="filter-grid" style="padding:0;grid-template-columns:repeat(auto-fit,minmax(240px,1fr))">
-        <label class="field">
-            <span>Feed ID</span>
+	    <h2 class="page-title" style="font-size:1.1rem">Add Denied Key</h2>
+	    {{if .CanMutateDenied}}
+	    <form method="post" action="/room/denied/add" class="filter-grid" style="padding:0;grid-template-columns:repeat(auto-fit,minmax(240px,1fr))">
+	        {{csrfField .Chrome.CSRFToken}}
+	        <label class="field">
+	            <span>Feed ID</span>
             <input type="text" name="feed_id" required placeholder="@...ed25519">
         </label>
         <label class="field">
@@ -348,12 +354,13 @@ const roomModerationContent = `
                     <td class="mono"><span class="truncate" title="{{.FeedID}}">{{.FeedID}}</span></td>
                     <td>{{.Comment}}</td>
                     <td class="mono">{{.AddedAt}}</td>
-                    <td>
-                        {{if $.CanMutateDenied}}
-                        <form method="post" action="/room/denied/remove" onsubmit="return confirm('Remove denied key {{.FeedID}}?')">
-                            <input type="hidden" name="denied_id" value="{{.ID}}">
-                            <button type="submit" class="button">Remove</button>
-                        </form>
+	                    <td>
+	                        {{if $.CanMutateDenied}}
+	                        <form method="post" action="/room/denied/remove" onsubmit="return confirm('Remove denied key {{.FeedID}}?')">
+	                            {{csrfField $.Chrome.CSRFToken}}
+	                            <input type="hidden" name="denied_id" value="{{.ID}}">
+	                            <button type="submit" class="button">Remove</button>
+	                        </form>
                         {{else}}
                         <span class="empty">blocked</span>
                         {{end}}

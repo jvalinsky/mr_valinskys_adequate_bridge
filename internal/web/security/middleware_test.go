@@ -75,6 +75,121 @@ func TestBasicAuthMiddleware(t *testing.T) {
 	})
 }
 
+func TestCSRFMiddlewareIssuesCookieOnSafeRequest(t *testing.T) {
+	handler := CSRFMiddleware(DefaultCSRFConfig())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token := CSRFTokenFromContext(r.Context())
+		if strings.TrimSpace(token) == "" {
+			t.Fatalf("expected csrf token in context")
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/accounts", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", rr.Code)
+	}
+	cookie := findCookieByName(rr.Result().Cookies(), DefaultCSRFCookieName)
+	if cookie == nil || strings.TrimSpace(cookie.Value) == "" {
+		t.Fatalf("expected csrf cookie %q to be set", DefaultCSRFCookieName)
+	}
+}
+
+func TestCSRFMiddlewareRejectsUnsafeWithoutToken(t *testing.T) {
+	handler := CSRFMiddleware(DefaultCSRFConfig())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	cookie := issueCSRFCookie(t, handler)
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/accounts/remove", strings.NewReader("at_did=did:plc:alice"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "http://example.com")
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", rr.Code)
+	}
+}
+
+func TestCSRFMiddlewareRejectsMismatchedToken(t *testing.T) {
+	handler := CSRFMiddleware(DefaultCSRFConfig())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	cookie := issueCSRFCookie(t, handler)
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/accounts/remove", strings.NewReader("csrf_token=wrong"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "http://example.com")
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", rr.Code)
+	}
+}
+
+func TestCSRFMiddlewareRejectsForeignOrigin(t *testing.T) {
+	handler := CSRFMiddleware(DefaultCSRFConfig())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	cookie := issueCSRFCookie(t, handler)
+	form := url.Values{}
+	form.Set(DefaultCSRFFormFieldName, cookie.Value)
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/accounts/remove", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "http://evil.example.com")
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", rr.Code)
+	}
+}
+
+func TestCSRFMiddlewareAllowsValidOriginAndToken(t *testing.T) {
+	handler := CSRFMiddleware(DefaultCSRFConfig())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	cookie := issueCSRFCookie(t, handler)
+	form := url.Values{}
+	form.Set(DefaultCSRFFormFieldName, cookie.Value)
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/accounts/remove", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "http://example.com")
+	req.AddCookie(cookie)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", rr.Code)
+	}
+}
+
+func TestCSRFMiddlewareAllowsUnsafeExemptPath(t *testing.T) {
+	cfg := DefaultCSRFConfig()
+	cfg.ExemptPathPrefixes = []string{"/api/atproto"}
+	handler := CSRFMiddleware(cfg)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/api/atproto/repos/track", strings.NewReader(`{"did":"did:plc:alice"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", rr.Code)
+	}
+}
+
 func TestRequestLogMiddlewareRedactsSensitiveQueryFields(t *testing.T) {
 	var buf bytes.Buffer
 	logger := logBuffer(&buf)
@@ -231,6 +346,31 @@ func TestSecurityHeadersMiddleware(t *testing.T) {
 
 func logBuffer(buf *bytes.Buffer) *log.Logger {
 	return log.New(buf, "", 0)
+}
+
+func issueCSRFCookie(t *testing.T, handler http.Handler) *http.Cookie {
+	t.Helper()
+
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("expected cookie issue request to return 204, got %d", rr.Code)
+	}
+	cookie := findCookieByName(rr.Result().Cookies(), DefaultCSRFCookieName)
+	if cookie == nil {
+		t.Fatalf("expected csrf cookie %q to be set", DefaultCSRFCookieName)
+	}
+	return cookie
+}
+
+func findCookieByName(cookies []*http.Cookie, name string) *http.Cookie {
+	for _, c := range cookies {
+		if c != nil && c.Name == name {
+			return c
+		}
+	}
+	return nil
 }
 
 func findExportedLogRecordByBody(req *collogsv1.ExportLogsServiceRequest, contains string) *logsv1.LogRecord {

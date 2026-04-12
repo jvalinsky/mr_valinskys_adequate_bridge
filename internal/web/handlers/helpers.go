@@ -15,8 +15,13 @@ import (
 	"time"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
+	websecurity "github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/web/security"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/web/templates"
 )
+
+func csrfToken(r *http.Request) string {
+	return websecurity.CSRFTokenFromContext(r.Context())
+}
 
 func (h *UIHandler) writeInternalError(w http.ResponseWriter, handler, message string, err error) {
 	h.logger.Printf("event=handler_error handler=%s error=%v", handler, err)

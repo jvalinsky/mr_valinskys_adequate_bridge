@@ -720,12 +720,13 @@ const connectionsContent = `
                     <td class="mono">{{.Addr}}</td>
                     <td class="mono truncate" title="{{.PubKey}}">{{.PubKey}}</td>
                     <td>{{fmtTime .CreatedAt}}</td>
-                    <td>
-                        <form action="/connections/connect" method="POST" style="margin:0">
-                            <input type="hidden" name="addr" value="{{.Addr}}">
-                            <input type="hidden" name="pubkey" value="{{.PubKey}}">
-                            <button type="submit" class="button button-small">Connect</button>
-                        </form>
+	                    <td>
+	                        <form action="/connections/connect" method="POST" style="margin:0">
+	                            {{csrfField $.Chrome.CSRFToken}}
+	                            <input type="hidden" name="addr" value="{{.Addr}}">
+	                            <input type="hidden" name="pubkey" value="{{.PubKey}}">
+	                            <button type="submit" class="button button-small">Connect</button>
+	                        </form>
                     </td>
                 </tr>
                 {{end}}
@@ -736,11 +737,12 @@ const connectionsContent = `
     <div class="empty">No known peers saved.</div>
     {{end}}
 
-    <div style="margin-top:24px; border-top:1px solid var(--line); padding-top:20px">
-        <h3 class="metric-label">Add Known Peer</h3>
-        <form action="/connections/add" method="POST" style="display:grid; gap:12px; grid-template-columns: 1fr 1fr auto; align-items: end; margin-top:8px">
-            <div class="field">
-                <label>Address (host:port)</label>
+	    <div style="margin-top:24px; border-top:1px solid var(--line); padding-top:20px">
+	        <h3 class="metric-label">Add Known Peer</h3>
+	        <form action="/connections/add" method="POST" style="display:grid; gap:12px; grid-template-columns: 1fr 1fr auto; align-items: end; margin-top:8px">
+	            {{csrfField .Chrome.CSRFToken}}
+	            <div class="field">
+	                <label>Address (host:port)</label>
                 <input type="text" name="addr" placeholder="1.2.3.4:8008" required>
             </div>
             <div class="field">
@@ -936,16 +938,18 @@ const accountsContent = `
                     <td class="{{if gt .DeferredMessages 0}}tone-warning{{end}}">{{.DeferredMessages}}</td>
                     <td>{{if .LastPublishedAt}}{{.LastPublishedAt}}{{else}}(none){{end}}</td>
                     <td style="font-size:0.8rem;white-space:nowrap">{{fmtTime .CreatedAt}}</td>
-                    <td>
-                        <div style="display:flex;gap:6px;align-items:center">
-                            <a class="button-link" href="{{.MessagesURL}}">Messages</a>
-                            <form method="POST" action="/accounts/backfill?at_did={{.ATDID}}" style="margin:0">
-                                <button type="submit" class="button-link tone-success" title="Force immediate backfill/resync">Backfill</button>
-                            </form>
-                            <form method="POST" action="/accounts/remove" onsubmit="return confirm('Remove this bridged account?')" style="margin:0">
-                                <input type="hidden" name="at_did" value="{{.ATDID}}">
-                                <button type="submit" class="button-link tone-danger">Remove</button>
-                            </form>
+	                    <td>
+	                        <div style="display:flex;gap:6px;align-items:center">
+	                            <a class="button-link" href="{{.MessagesURL}}">Messages</a>
+	                            <form method="POST" action="/accounts/backfill?at_did={{.ATDID}}" style="margin:0">
+	                                {{csrfField $.Chrome.CSRFToken}}
+	                                <button type="submit" class="button-link tone-success" title="Force immediate backfill/resync">Backfill</button>
+	                            </form>
+	                            <form method="POST" action="/accounts/remove" onsubmit="return confirm('Remove this bridged account?')" style="margin:0">
+	                                {{csrfField $.Chrome.CSRFToken}}
+	                                <input type="hidden" name="at_did" value="{{.ATDID}}">
+	                                <button type="submit" class="button-link tone-danger">Remove</button>
+	                            </form>
                         </div>
                     </td>
                 </tr>
@@ -957,11 +961,12 @@ const accountsContent = `
     </div>
 </section>
 
-<section class="section section-pad">
-    <h2 class="page-title" style="font-size:1.2rem">Add Bridged Account</h2>
-    <p class="subtitle">Register a new ATProto DID; the SSB feed identity will be derived automatically.</p>
-    <form action="/accounts" method="POST" style="display:grid; gap:12px; grid-template-columns: 1fr auto; align-items: end; margin-top:8px">
-        <div class="field">
+	<section class="section section-pad">
+	    <h2 class="page-title" style="font-size:1.2rem">Add Bridged Account</h2>
+	    <p class="subtitle">Register a new ATProto DID; the SSB feed identity will be derived automatically.</p>
+	    <form action="/accounts" method="POST" style="display:grid; gap:12px; grid-template-columns: 1fr auto; align-items: end; margin-top:8px">
+	        {{csrfField .Chrome.CSRFToken}}
+	        <div class="field">
             <label for="at_did">ATProto DID</label>
             <input type="text" id="at_did" name="at_did" placeholder="did:plc:abcdef..." required>
         </div>
@@ -1116,11 +1121,12 @@ const messageDetailContent = `
             {{if .ThreadURL}}
             <a href="{{.ThreadURL}}" class="button-link" style="margin-left:8px;font-weight:700;color:var(--brand);">View Thread</a>
             {{end}}
-            {{if or (eq .State "failed") (eq .State "deferred")}}
-            <form action="/messages/retry" method="POST" style="display:inline-block;margin-left:8px">
-                <input type="hidden" name="at_uri" value="{{.ATURI}}">
-                <button type="submit" class="button-link tone-success" style="cursor:pointer;font-weight:700">Retry Publishing</button>
-            </form>
+	            {{if or (eq .State "failed") (eq .State "deferred")}}
+	            <form action="/messages/retry" method="POST" style="display:inline-block;margin-left:8px">
+	                {{csrfField .Chrome.CSRFToken}}
+	                <input type="hidden" name="at_uri" value="{{.ATURI}}">
+	                <button type="submit" class="button-link tone-success" style="cursor:pointer;font-weight:700">Retry Publishing</button>
+	            </form>
             {{end}}
         </div>
     </div>
@@ -1538,6 +1544,7 @@ const reverseContent = `
 <section class="section section-pad" style="max-width:960px">
     <h2 class="page-title" style="font-size:1.2rem">Add Or Update Mapping</h2>
     <form action="/reverse/mappings" method="POST" style="display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));align-items:end">
+        {{csrfField .Chrome.CSRFToken}}
         <label>
             <span class="metric-label">SSB Feed</span>
             <input type="text" name="ssb_feed_id" placeholder="@alice.ed25519" style="width:100%;padding:12px;border:1px solid var(--line);border-radius:8px">
@@ -1570,6 +1577,7 @@ const reverseContent = `
                     <td>
                         {{if .Active}}
                         <form action="/reverse/mappings/remove" method="POST">
+                            {{csrfField $.Chrome.CSRFToken}}
                             <input type="hidden" name="ssb_feed_id" value="{{.SSBFeedID}}">
                             <button type="submit" class="button-link">Disable</button>
                         </form>
@@ -1629,6 +1637,7 @@ const reverseContent = `
                     <td>
                         {{if .Retryable}}
                         <form action="/reverse/events/retry" method="POST">
+                            {{csrfField $.Chrome.CSRFToken}}
                             <input type="hidden" name="source_ssb_msg_ref" value="{{.SourceSSBMsgRef}}">
                             <button type="submit" class="button-link">Retry</button>
                         </form>
@@ -1650,6 +1659,7 @@ type PageChrome struct {
 	ActiveNav   string
 	Status      PageStatus
 	Breadcrumbs []Breadcrumb
+	CSRFToken   string
 }
 
 // Breadcrumb is one segment of a navigation breadcrumb trail.
@@ -2053,6 +2063,7 @@ const postContent = `
     {{end}}
 
     <form action="/post" method="POST" enctype="multipart/form-data" style="display:grid;gap:20px">
+        {{csrfField .Chrome.CSRFToken}}
         <div class="form-group">
             <label class="metric-label" style="display:block;margin-bottom:8px">Author Account</label>
             <select name="at_did" required {{if not .PostingEnabled}}disabled{{end}} style="width:100%;padding:12px;border:1px solid var(--line);border-radius:8px">
@@ -2192,6 +2203,14 @@ func mustPageTemplate(name, content string) *template.Template {
 				return template.HTMLAttr(`aria-current="page"`)
 			}
 			return template.HTMLAttr("")
+		},
+		"csrfField": func(token string) template.HTML {
+			token = strings.TrimSpace(token)
+			if token == "" {
+				return ""
+			}
+			escaped := template.HTMLEscapeString(token)
+			return template.HTML(fmt.Sprintf(`<input type="hidden" name="csrf_token" value="%s">`, escaped))
 		},
 		"statusToneClass": func(tone string) string {
 			switch tone {
