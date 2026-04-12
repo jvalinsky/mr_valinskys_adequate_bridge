@@ -21,6 +21,7 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/mapper"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
+	websecurity "github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/web/security"
 	appbsky "github.com/jvalinsky/mr_valinskys_adequate_bridge/pkg/atproto/appbsky"
 )
 
@@ -67,6 +68,25 @@ func TestHandleConnections(t *testing.T) {
 	}
 	if !strings.Contains(body, "EBT Frontiers") || !strings.Contains(body, "10") {
 		t.Fatalf("connections page missing EBT state: %s", body)
+	}
+}
+
+func TestHandleConnectionsSetsContentType(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	router := chi.NewRouter()
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).Mount(router)
+
+	req := httptest.NewRequest(http.MethodGet, "/connections", nil)
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	if got := rr.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/html") {
+		t.Fatalf("expected text/html content type, got %q", got)
 	}
 }
 
@@ -866,6 +886,87 @@ func fetchUIPost(t *testing.T, database *db.DB, path string, formData url.Values
 	router.ServeHTTP(rr, req)
 
 	return rr.Body.String()
+}
+
+func TestCSRFProtectedUIRejectsMissingToken(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	router := chi.NewRouter()
+	csrfCfg := websecurity.DefaultCSRFConfig()
+	csrfCfg.ExemptPathPrefixes = []string{"/api/atproto"}
+	router.Use(websecurity.CSRFMiddleware(csrfCfg))
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).Mount(router)
+
+	form := url.Values{}
+	form.Set("at_did", "did:plc:alice")
+	req := httptest.NewRequest(http.MethodPost, "http://example.com/accounts/remove", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "http://example.com")
+
+	rr := httptest.NewRecorder()
+	router.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", rr.Code)
+	}
+}
+
+func TestCSRFProtectedUISucceedsWithValidToken(t *testing.T) {
+	database := openTestDB(t)
+	defer database.Close()
+
+	if err := database.AddBridgedAccount(context.Background(), db.BridgedAccount{
+		ATDID:     "did:plc:alice",
+		SSBFeedID: "@alice.test.ed25519",
+		Active:    true,
+	}); err != nil {
+		t.Fatalf("add account: %v", err)
+	}
+
+	router := chi.NewRouter()
+	csrfCfg := websecurity.DefaultCSRFConfig()
+	csrfCfg.ExemptPathPrefixes = []string{"/api/atproto"}
+	router.Use(websecurity.CSRFMiddleware(csrfCfg))
+	NewUIHandler(database, nil, nil, nil, &mockSSBStatus{}, &mockFeedIDProvider{}).Mount(router)
+
+	getReq := httptest.NewRequest(http.MethodGet, "http://example.com/accounts", nil)
+	getRR := httptest.NewRecorder()
+	router.ServeHTTP(getRR, getReq)
+	if getRR.Code != http.StatusOK {
+		t.Fatalf("expected account page 200, got %d", getRR.Code)
+	}
+	csrfCookie := findCookieByName(getRR.Result().Cookies(), websecurity.DefaultCSRFCookieName)
+	if csrfCookie == nil {
+		t.Fatalf("expected csrf cookie to be issued")
+	}
+
+	form := url.Values{}
+	form.Set("at_did", "did:plc:alice")
+	form.Set(websecurity.DefaultCSRFFormFieldName, csrfCookie.Value)
+	postReq := httptest.NewRequest(http.MethodPost, "http://example.com/accounts/remove", strings.NewReader(form.Encode()))
+	postReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	postReq.Header.Set("Origin", "http://example.com")
+	postReq.AddCookie(csrfCookie)
+
+	postRR := httptest.NewRecorder()
+	router.ServeHTTP(postRR, postReq)
+
+	if postRR.Code != http.StatusSeeOther {
+		t.Fatalf("expected 303, got %d body=%s", postRR.Code, postRR.Body.String())
+	}
+	if location := postRR.Header().Get("Location"); location != "/accounts" {
+		t.Fatalf("expected redirect to /accounts, got %q", location)
+	}
+}
+
+func findCookieByName(cookies []*http.Cookie, name string) *http.Cookie {
+	for _, c := range cookies {
+		if c != nil && c.Name == name {
+			return c
+		}
+	}
+	return nil
 }
 
 type erroringDB struct {
@@ -2055,6 +2156,12 @@ func TestHandleBlobView(t *testing.T) {
 	}
 	if rr.Header().Get("Content-Type") != "image/png" {
 		t.Fatalf("expected image/png, got %s", rr.Header().Get("Content-Type"))
+	}
+	if rr.Header().Get("Cache-Control") != "private, max-age=31536000, immutable" {
+		t.Fatalf("unexpected cache-control: %q", rr.Header().Get("Cache-Control"))
+	}
+	if rr.Header().Get("Vary") != "Authorization, Cookie" {
+		t.Fatalf("unexpected vary header: %q", rr.Header().Get("Vary"))
 	}
 }
 

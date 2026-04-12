@@ -53,6 +53,7 @@ func (h *UIHandler) handleConnections(w http.ResponseWriter, r *http.Request) {
 	data := templates.ConnectionsData{
 		Chrome: templates.PageChrome{
 			ActiveNav: "connections",
+			CSRFToken: csrfToken(r),
 			Breadcrumbs: []templates.Breadcrumb{
 				{Label: "Admin", Href: "/"},
 				{Label: "Connections"},
@@ -63,6 +64,7 @@ func (h *UIHandler) handleConnections(w http.ResponseWriter, r *http.Request) {
 		EBTState:   ebtState,
 	}
 
+	w.Header().Set("Content-Type", "text/html")
 	if err := templates.RenderConnections(w, data); err != nil {
 		h.writeInternalError(w, "handleConnections", "failed to render connections page", err)
 	}

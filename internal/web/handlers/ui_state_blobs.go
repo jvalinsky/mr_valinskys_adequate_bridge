@@ -32,6 +32,7 @@ func (h *UIHandler) handleBlobs(w http.ResponseWriter, r *http.Request) {
 	if err := templates.RenderBlobs(w, templates.BlobsData{
 		Chrome: templates.PageChrome{
 			ActiveNav: "blobs",
+			CSRFToken: csrfToken(r),
 			Breadcrumbs: []templates.Breadcrumb{
 				{Label: "Dashboard", Href: "/"},
 				{Label: "Blobs", Href: ""},
@@ -84,7 +85,8 @@ func (h *UIHandler) handleBlobView(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/octet-stream")
 	}
 	w.Header().Set("Content-Length", strconv.FormatInt(blobMeta.Size, 10))
-	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	w.Header().Set("Vary", "Authorization, Cookie")
 
 	if _, err := io.Copy(w, rc); err != nil {
 		h.logger.Printf("event=blob_serve_error ref=%s error=%v", refStr, err)
@@ -150,6 +152,7 @@ func (h *UIHandler) handleState(w http.ResponseWriter, r *http.Request) {
 	if err := templates.RenderState(w, templates.StateData{
 		Chrome: templates.PageChrome{
 			ActiveNav: "state",
+			CSRFToken: csrfToken(r),
 			Breadcrumbs: []templates.Breadcrumb{
 				{Label: "Dashboard", Href: "/"},
 				{Label: "State", Href: ""},
