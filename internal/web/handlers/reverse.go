@@ -109,6 +109,7 @@ func (h *UIHandler) handleReverse(w http.ResponseWriter, r *http.Request) {
 	if err := templates.RenderReverse(w, templates.ReverseData{
 		Chrome: templates.PageChrome{
 			ActiveNav: "reverse",
+			CSRFToken: csrfToken(r),
 			Breadcrumbs: []templates.Breadcrumb{
 				{Label: "Dashboard", Href: "/"},
 				{Label: "Reverse Sync", Href: ""},

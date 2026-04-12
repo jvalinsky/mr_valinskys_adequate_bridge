@@ -139,6 +139,7 @@ func (h *UIHandler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	data := templates.DashboardData{
 		Chrome: templates.PageChrome{
 			ActiveNav: "dashboard",
+			CSRFToken: csrfToken(r),
 			Breadcrumbs: []templates.Breadcrumb{
 				{Label: "Dashboard", Href: ""},
 			},

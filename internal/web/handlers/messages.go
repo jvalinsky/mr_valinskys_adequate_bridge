@@ -71,13 +71,14 @@ func (h *UIHandler) handleMessages(w http.ResponseWriter, r *http.Request) {
 	unsupportedKeysetSort := query.Sort != "newest" && query.Sort != "oldest"
 
 	w.Header().Set("Content-Type", "text/html")
-	if err := templates.RenderMessages(w, templates.MessagesData{
-		Chrome: templates.PageChrome{
-			ActiveNav: "messages",
-			Breadcrumbs: []templates.Breadcrumb{
-				{Label: "Dashboard", Href: "/"},
-				{Label: "Messages", Href: ""},
-			},
+		if err := templates.RenderMessages(w, templates.MessagesData{
+			Chrome: templates.PageChrome{
+				ActiveNav: "messages",
+				CSRFToken: csrfToken(r),
+				Breadcrumbs: []templates.Breadcrumb{
+					{Label: "Dashboard", Href: "/"},
+					{Label: "Messages", Href: ""},
+				},
 		},
 		Messages: rows,
 		Filters: templates.MessagesFilterState{
@@ -122,6 +123,7 @@ func (h *UIHandler) handleMessageDetail(w http.ResponseWriter, r *http.Request) 
 	data := templates.MessageDetailData{
 		Chrome: templates.PageChrome{
 			ActiveNav: "messages",
+			CSRFToken: csrfToken(r),
 			Breadcrumbs: []templates.Breadcrumb{
 				{Label: "Dashboard", Href: "/"},
 				{Label: "Messages", Href: "/messages"},
@@ -241,6 +243,7 @@ func (h *UIHandler) handleMessageThread(w http.ResponseWriter, r *http.Request) 
 	data := templates.ThreadData{
 		Chrome: templates.PageChrome{
 			ActiveNav: "messages",
+			CSRFToken: csrfToken(r),
 			Breadcrumbs: []templates.Breadcrumb{
 				{Label: "Dashboard", Href: "/"},
 				{Label: "Messages", Href: "/messages"},
@@ -427,6 +430,7 @@ func (h *UIHandler) handleFailures(w http.ResponseWriter, r *http.Request) {
 	if err := templates.RenderFailures(w, templates.FailuresData{
 		Chrome: templates.PageChrome{
 			ActiveNav: "failures",
+			CSRFToken: csrfToken(r),
 			Breadcrumbs: []templates.Breadcrumb{
 				{Label: "Dashboard", Href: "/"},
 				{Label: "Failures", Href: ""},

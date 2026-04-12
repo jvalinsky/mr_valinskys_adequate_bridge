@@ -20,6 +20,7 @@ func (h *UIHandler) handleAccounts(w http.ResponseWriter, r *http.Request) {
 	if err := templates.RenderAccounts(w, templates.AccountsData{
 		Chrome: templates.PageChrome{
 			ActiveNav: "accounts",
+			CSRFToken: csrfToken(r),
 			Breadcrumbs: []templates.Breadcrumb{
 				{Label: "Dashboard", Href: "/"},
 				{Label: "Accounts", Href: ""},

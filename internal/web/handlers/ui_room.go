@@ -15,6 +15,7 @@ func (h *UIHandler) handleRoomOverview(w http.ResponseWriter, r *http.Request) {
 	data := templates.RoomOverviewData{
 		Chrome: templates.PageChrome{
 			ActiveNav: "room",
+			CSRFToken: csrfToken(r),
 			Breadcrumbs: []templates.Breadcrumb{
 				{Label: "Dashboard", Href: "/"},
 				{Label: "Room", Href: ""},
@@ -65,6 +66,7 @@ func (h *UIHandler) handleRoomMembersRoles(w http.ResponseWriter, r *http.Reques
 	data := templates.RoomMembersRolesData{
 		Chrome: templates.PageChrome{
 			ActiveNav: "room",
+			CSRFToken: csrfToken(r),
 			Breadcrumbs: []templates.Breadcrumb{
 				{Label: "Dashboard", Href: "/"},
 				{Label: "Room", Href: "/room"},
@@ -115,6 +117,7 @@ func (h *UIHandler) handleRoomAttendantsTunnels(w http.ResponseWriter, r *http.R
 	data := templates.RoomAttendantsTunnelsData{
 		Chrome: templates.PageChrome{
 			ActiveNav: "room",
+			CSRFToken: csrfToken(r),
 			Breadcrumbs: []templates.Breadcrumb{
 				{Label: "Dashboard", Href: "/"},
 				{Label: "Room", Href: "/room"},
@@ -168,6 +171,7 @@ func (h *UIHandler) handleRoomAliasesInvites(w http.ResponseWriter, r *http.Requ
 	data := templates.RoomAliasesInvitesData{
 		Chrome: templates.PageChrome{
 			ActiveNav: "room",
+			CSRFToken: csrfToken(r),
 			Breadcrumbs: []templates.Breadcrumb{
 				{Label: "Dashboard", Href: "/"},
 				{Label: "Room", Href: "/room"},
@@ -213,6 +217,7 @@ func (h *UIHandler) handleRoomModeration(w http.ResponseWriter, r *http.Request)
 	data := templates.RoomModerationData{
 		Chrome: templates.PageChrome{
 			ActiveNav: "room",
+			CSRFToken: csrfToken(r),
 			Breadcrumbs: []templates.Breadcrumb{
 				{Label: "Dashboard", Href: "/"},
 				{Label: "Room", Href: "/room"},

@@ -24,6 +24,7 @@ func (h *UIHandler) handlePost(w http.ResponseWriter, r *http.Request) {
 	data := templates.PostData{
 		Chrome: templates.PageChrome{
 			ActiveNav: "post",
+			CSRFToken: csrfToken(r),
 			Breadcrumbs: []templates.Breadcrumb{
 				{Label: "Dashboard", Href: "/"},
 				{Label: "Compose Post", Href: ""},
@@ -153,6 +154,7 @@ func (h *UIHandler) handleFeed(w http.ResponseWriter, r *http.Request) {
 	data := templates.FeedData{
 		Chrome: templates.PageChrome{
 			ActiveNav: "feed",
+			CSRFToken: csrfToken(r),
 			Breadcrumbs: []templates.Breadcrumb{
 				{Label: "Dashboard", Href: "/"},
 				{Label: "Global Feed", Href: ""},
