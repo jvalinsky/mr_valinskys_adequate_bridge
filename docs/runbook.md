@@ -300,6 +300,18 @@ Notes:
 - `event=metrics_server_start` — dedicated metrics listener bound
 - `event=reverse_sync_batch` / `event=reverse_sync_batch_failed` — reverse-sync scan activity
 
+### Post-deploy panic watch (24-48h)
+After deploying commit `cd8388f` (roomstate subscriber close/send race fix), monitor logs for:
+- `panic: send on closed channel`
+- stack traces containing `internal/ssb/roomstate`
+
+Example check:
+
+```bash
+journalctl -u mr-valinskys-adequate-bridge --since "-48 hours" \
+  | rg -n "panic: send on closed channel|internal/ssb/roomstate"
+```
+
 ## Restart and Resume
 - `start` resumes firehose consumption from `bridge_state.firehose_seq`.
 - On shutdown, runtime teardown order is: firehose stop, room stop, SSB runtime close.
