@@ -101,6 +101,9 @@ func CSRFMiddleware(cfg CSRFConfig) func(http.Handler) http.Handler {
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			log.Printf("event=csrf_check path=%s method=%s origin=%q referer=%q host=%s ua=%s",
+				r.URL.Path, r.Method, r.Header.Get("Origin"), r.Header.Get("Referer"), r.Host, r.UserAgent())
+
 			token := csrfCookieValue(r, cfg.CookieName)
 			if !validCSRFToken(token) {
 				generated, err := newCSRFToken()
@@ -121,6 +124,7 @@ func CSRFMiddleware(cfg CSRFConfig) func(http.Handler) http.Handler {
 			if !sameOriginRequest(r) {
 				log.Printf("event=csrf_reject reason=no_valid_origin path=%s method=%s origin=%q referer=%q host=%s",
 					r.URL.Path, r.Method, r.Header.Get("Origin"), r.Header.Get("Referer"), r.Host)
+				w.Header().Set("X-CSRF-Reject-Reason", "no_valid_origin")
 				http.Error(w, "Forbidden: no valid origin", http.StatusForbidden)
 				return
 			}
