@@ -97,6 +97,10 @@ let
     ++ [
       "--max-msgs-per-did-per-min"
       (toString cfg.maxMsgsPerDIDPerMin)
+      "--http-timeout"
+      cfg.httpTimeout
+      "--ssb-dial-timeout"
+      cfg.ssbDialTimeout
     ]
     ++ optionals (cfg.mcpListenAddr != null) [
       "--mcp-listen-addr"
@@ -151,6 +155,10 @@ let
       cfg.ui.authUser
       "--ui-auth-pass-env"
       cfg.ui.authPasswordEnvVar
+    ]
+    ++ [
+      "--http-timeout"
+      cfg.httpTimeout
     ]
     ++ cfg.ui.extraArgs;
 
@@ -449,6 +457,27 @@ in
         Address for the Prometheus metrics HTTP endpoint (e.g. 127.0.0.1:2112).
         When set, passes --metrics-listen-addr to bridge-cli.
         Defaults to 127.0.0.1:2112 when observability.prometheus.enable is true.
+      '';
+    };
+
+    httpTimeout = mkOption {
+      type = types.str;
+      default = "30s";
+      example = "2m";
+      description = ''
+        HTTP client timeout for ATProto XRPC, blob, and backfill operations.
+        Passed via --http-timeout to bridge-cli start, backfill, and serve-ui.
+        Increase this value for high-latency connections or large repository downloads.
+      '';
+    };
+
+    ssbDialTimeout = mkOption {
+      type = types.str;
+      default = "10s";
+      example = "30s";
+      description = ''
+        TCP dial timeout for SSB peer connections.
+        Passed via --ssb-dial-timeout to bridge-cli start.
       '';
     };
   };

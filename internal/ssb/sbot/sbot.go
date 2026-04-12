@@ -39,7 +39,8 @@ type Options struct {
 	RoomMode     string
 	RoomHTTPAddr string
 
-	GossipDB gossip.Database
+	GossipDB     gossip.Database
+	DialTimeout  time.Duration
 }
 
 type Sbot struct {
@@ -128,11 +129,15 @@ func New(opts Options) (*Sbot, error) {
 
 	blobStore := blobs.NewStore(feedStore.Blobs())
 
+	dialTimeout := opts.DialTimeout
+	if dialTimeout <= 0 {
+		dialTimeout = 10 * time.Second
+	}
 	netServer, err := network.NewServer(network.Options{
 		ListenAddr: opts.ListenAddr,
 		KeyPair:    opts.KeyPair,
 		AppKey:     opts.AppKey,
-		Timeout:    30 * time.Second,
+		Timeout:    dialTimeout,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("sbot: failed to create server: %w", err)
@@ -141,6 +146,7 @@ func New(opts Options) (*Sbot, error) {
 	netClient := network.NewClient(network.Options{
 		KeyPair: opts.KeyPair,
 		AppKey:  opts.AppKey,
+		Timeout: dialTimeout,
 	})
 
 	manifest := newManifest(opts.EnableEBT, opts.EnableRoom)

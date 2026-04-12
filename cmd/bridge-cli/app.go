@@ -77,6 +77,8 @@ type AppConfig struct {
 	ReverseCredentialsFile  string
 	ReverseSyncScanInterval time.Duration
 	ReverseSyncBatchSize    int
+	HTTPTimeout             time.Duration
+	SSBDialTimeout          time.Duration
 }
 
 func (a *BridgeApp) MCPServer() *server.MCPServer {
@@ -105,12 +107,13 @@ func (a *BridgeApp) Init(ctx context.Context) error {
 	)
 
 	a.ssbRuntime, err = ssbruntime.Open(ctx, ssbruntime.Config{
-		RepoPath:   a.cfg.RepoPath,
-		ListenAddr: a.cfg.SSBListenAddr,
-		MasterSeed: []byte(a.cfg.BotSeed),
-		HMACKey:    a.cfg.HMACKey,
-		AppKey:     a.cfg.AppKey,
-		GossipDB:   a.db,
+		RepoPath:    a.cfg.RepoPath,
+		ListenAddr:  a.cfg.SSBListenAddr,
+		MasterSeed:  []byte(a.cfg.BotSeed),
+		HMACKey:     a.cfg.HMACKey,
+		AppKey:      a.cfg.AppKey,
+		GossipDB:    a.db,
+		DialTimeout: a.cfg.SSBDialTimeout,
 	}, a.logger)
 	if err != nil {
 		return fmt.Errorf("init ssb runtime: %w", err)
@@ -123,7 +126,7 @@ func (a *BridgeApp) Init(ctx context.Context) error {
 		return err
 	}
 
-	httpClient := newATProtoHTTPClient(a.cfg.AtprotoInsecure)
+	httpClient := newATProtoHTTPClient(a.cfg.AtprotoInsecure, a.cfg.HTTPTimeout)
 
 	xrpcClient := &xrpc.Client{
 		Host:   xrpcHost,

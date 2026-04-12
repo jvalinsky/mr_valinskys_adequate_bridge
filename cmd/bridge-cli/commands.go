@@ -433,7 +433,7 @@ func runServeUI(c *cli.Context) error {
 	}
 	roomHTTPBaseURL := strings.TrimSpace(c.String("room-http-base-url"))
 
-	httpClient := newATProtoHTTPClient(c.Bool("atproto-insecure"))
+	httpClient := newATProtoHTTPClient(c.Bool("atproto-insecure"), c.Duration("http-timeout"))
 	indexer := atindex.New(
 		database,
 		backfill.DIDPDSResolver{PLCURL: c.String("plc-url"), HTTPClient: httpClient},

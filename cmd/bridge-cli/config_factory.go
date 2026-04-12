@@ -60,8 +60,11 @@ func buildAppConfigFromCLI(c *cli.Context, mode appMode) (AppConfig, error) {
 		cfg.ReverseCredentialsFile = c.String("reverse-credentials-file")
 		cfg.ReverseSyncScanInterval = c.Duration("reverse-sync-scan-interval")
 		cfg.ReverseSyncBatchSize = c.Int("reverse-sync-batch-size")
+		cfg.HTTPTimeout = c.Duration("http-timeout")
+		cfg.SSBDialTimeout = c.Duration("ssb-dial-timeout")
 	case appModeBackfill:
 		cfg.XRPCReadHost = c.String("xrpc-host")
+		cfg.HTTPTimeout = c.Duration("http-timeout")
 	case appModeRetry:
 		// base shared fields only
 	default:
@@ -71,8 +74,11 @@ func buildAppConfigFromCLI(c *cli.Context, mode appMode) (AppConfig, error) {
 	return cfg, nil
 }
 
-func newATProtoHTTPClient(insecure bool) *http.Client {
-	client := &http.Client{Timeout: 30 * time.Second}
+func newATProtoHTTPClient(insecure bool, timeout time.Duration) *http.Client {
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	client := &http.Client{Timeout: timeout}
 	if insecure {
 		client.Transport = &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},

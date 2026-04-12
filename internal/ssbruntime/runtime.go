@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/bots"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
@@ -31,13 +32,14 @@ type Runtime struct {
 }
 
 type Config struct {
-	RepoPath   string
-	ListenAddr string
-	MasterSeed []byte
-	HMACKey    *[32]byte
-	KeyPair    *keys.KeyPair
-	AppKey     string
-	GossipDB   *db.DB
+	RepoPath    string
+	ListenAddr  string
+	MasterSeed  []byte
+	HMACKey     *[32]byte
+	KeyPair     *keys.KeyPair
+	AppKey      string
+	GossipDB    *db.DB
+	DialTimeout time.Duration
 }
 
 type GossipDBAdapter struct {
@@ -87,13 +89,14 @@ func Open(ctx context.Context, cfg Config, logger *log.Logger) (*Runtime, error)
 	}
 
 	node, err := sbot.New(sbot.Options{
-		RepoPath:   cfg.RepoPath,
-		ListenAddr: cfg.ListenAddr,
-		KeyPair:    cfg.KeyPair,
-		AppKey:     appKey,
-		EnableEBT:  true,
-		Hops:       2,
-		GossipDB:   gossipDB,
+		RepoPath:    cfg.RepoPath,
+		ListenAddr:  cfg.ListenAddr,
+		KeyPair:     cfg.KeyPair,
+		AppKey:      appKey,
+		EnableEBT:   true,
+		Hops:        2,
+		GossipDB:    gossipDB,
+		DialTimeout: cfg.DialTimeout,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("initialize sbot: %w", err)

@@ -287,7 +287,11 @@ func NewClient(opts Options) *Client {
 }
 
 func (c *Client) Connect(ctx context.Context, addr string, remote ed25519.PublicKey, handler muxrpc.Handler) (*Peer, error) {
-	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
+	dialTimeout := c.opts.Timeout
+	if dialTimeout <= 0 {
+		dialTimeout = 10 * time.Second
+	}
+	conn, err := net.DialTimeout("tcp", addr, dialTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("network: failed to dial %s: %w", addr, err)
 	}
