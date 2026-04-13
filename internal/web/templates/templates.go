@@ -810,20 +810,19 @@ const dashboardContent = `
 <section class="grid-two">
     <article class="section section-pad">
         <h2 class="page-title" style="font-size:1.2rem">Runtime Health</h2>
-        <p class="subtitle"><strong>{{.RuntimeHealth}}</strong> · {{.RuntimeHealthDescription}}</p>
+        <p class="subtitle" id="health-subtitle"><strong>{{.RuntimeHealth}}</strong> &middot; {{.RuntimeHealthDescription}}</p>
         <dl class="details-grid" style="margin-top:10px">
-            <div class="detail-card"><dt>Bridge Status</dt><dd>{{.BridgeStatus}}</dd></div>
-            <div class="detail-card"><dt>Last Heartbeat</dt><dd>{{if .LastHeartbeat}}{{.LastHeartbeat}}{{else}}(not set){{end}}</dd></div>
-            <div class="detail-card"><dt>Bridge Replay Cursor</dt><dd>{{if .BridgeReplayCursor}}{{.BridgeReplayCursor}}{{else}}(not set){{end}}</dd></div>
-            <div class="detail-card"><dt>Relay Source Cursor</dt><dd>{{if .RelaySourceCursor}}{{.RelaySourceCursor}}{{else}}(not set){{end}}</dd></div>
-            <div class="detail-card"><dt>Event-Log Head</dt><dd>{{if .EventLogHeadCursor}}{{.EventLogHeadCursor}}{{else}}(not set){{end}}</dd></div>
+            <div class="detail-card"><dt>Bridge Status</dt><dd id="health-bridge-status">{{.BridgeStatus}}</dd></div>
+            <div class="detail-card"><dt>Last Heartbeat</dt><dd id="health-last-heartbeat">{{if .LastHeartbeat}}{{.LastHeartbeat}}{{else}}(not set){{end}}</dd></div>
+            <div class="detail-card"><dt>Bridge Replay Cursor</dt><dd id="health-replay-cursor">{{if .BridgeReplayCursor}}{{.BridgeReplayCursor}}{{else}}(not set){{end}}</dd></div>
+            <div class="detail-card"><dt>Relay Source Cursor</dt><dd id="health-relay-cursor">{{if .RelaySourceCursor}}{{.RelaySourceCursor}}{{else}}(not set){{end}}</dd></div>
+            <div class="detail-card"><dt>Event-Log Head</dt><dd id="health-event-log-head">{{if .EventLogHeadCursor}}{{.EventLogHeadCursor}}{{else}}(not set){{end}}</dd></div>
         </dl>
     </article>
 
     <article class="section section-pad">
         <h2 class="page-title" style="font-size:1.2rem">Top Deferred Reasons</h2>
-        {{if .TopDeferredReasons}}
-        <ul class="mini-list" style="margin-top:10px">
+        <ul class="mini-list" style="margin-top:10px; {{if not .TopDeferredReasons}}display:none{{end}}" id="list-deferred-reasons">
             {{range .TopDeferredReasons}}
             <li>
                 <div class="mono truncate" title="{{.Reason}}">{{.Reason}}</div>
@@ -831,16 +830,13 @@ const dashboardContent = `
             </li>
             {{end}}
         </ul>
-        {{else}}
-        <div class="empty">No deferred reasons recorded.</div>
-        {{end}}
+        <div class="empty" id="empty-deferred-reasons" {{if .TopDeferredReasons}}style="display:none"{{end}}>No deferred reasons recorded.</div>
     </article>
 </section>
 
 <section class="section section-pad">
     <h2 class="page-title" style="font-size:1.2rem">Accounts With Highest Issue Volume</h2>
-    {{if .TopIssueAccounts}}
-    <div class="table-wrap" style="margin-top:10px">
+    <div class="table-wrap" style="margin-top:10px; {{if not .TopIssueAccounts}}display:none{{end}}" id="wrap-issue-accounts">
         <table>
             <thead>
                 <tr>
@@ -852,7 +848,7 @@ const dashboardContent = `
                     <th>Pivot</th>
                 </tr>
             </thead>
-            <tbody>
+            <tbody id="table-issue-accounts">
                 {{range .TopIssueAccounts}}
                 <tr>
                     <td class="mono"><span class="truncate" title="{{.ATDID}}">{{.ATDID}}</span></td>
@@ -866,9 +862,7 @@ const dashboardContent = `
             </tbody>
         </table>
     </div>
-    {{else}}
-    <div class="empty">No issue-heavy accounts yet.</div>
-    {{end}}
+    <div class="empty" id="empty-issue-accounts" {{if .TopIssueAccounts}}style="display:none"{{end}}>No issue-heavy accounts yet.</div>
 </section>
 </section>
 
@@ -878,13 +872,76 @@ const dashboardContent = `
         source.onmessage = function(e) {
             try {
                 var stats = JSON.parse(e.data);
-                if (document.getElementById('metric-accountCount')) document.getElementById('metric-accountCount').innerText = stats.accountCount;
-                if (document.getElementById('metric-messageCount')) document.getElementById('metric-messageCount').innerText = stats.messageCount;
-                if (document.getElementById('metric-publishedCount')) document.getElementById('metric-publishedCount').innerText = stats.publishedCount;
-                if (document.getElementById('metric-publishFailureCount')) document.getElementById('metric-publishFailureCount').innerText = stats.publishFailureCount;
-                if (document.getElementById('metric-deferredCount')) document.getElementById('metric-deferredCount').innerText = stats.deferredCount;
-                if (document.getElementById('metric-deletedCount')) document.getElementById('metric-deletedCount').innerText = stats.deletedCount;
-                if (document.getElementById('metric-blobCount')) document.getElementById('metric-blobCount').innerText = stats.blobCount;
+                
+                // Update Metrics counters
+                if (stats.Metrics) {
+                    stats.Metrics.forEach(function(m) {
+                        var el = document.getElementById('metric-' + m.ID);
+                        if (el) el.innerText = m.Value;
+                    });
+                }
+                
+                // Update Health Details
+                var subtitle = document.getElementById('health-subtitle');
+                if (subtitle) {
+                    subtitle.innerHTML = '<strong>' + stats.RuntimeHealth + '</strong> &middot; ' + stats.RuntimeHealthDescription;
+                }
+                var updateText = function(id, text) {
+                    var el = document.getElementById(id);
+                    if (el) el.innerText = text || "(not set)";
+                };
+                updateText('health-bridge-status', stats.BridgeStatus);
+                updateText('health-last-heartbeat', stats.LastHeartbeat);
+                updateText('health-replay-cursor', stats.BridgeReplayCursor);
+                updateText('health-relay-cursor', stats.RelaySourceCursor);
+                updateText('health-event-log-head', stats.EventLogHeadCursor);
+                
+                // Update Deferred Reasons
+                var defList = document.getElementById('list-deferred-reasons');
+                var defEmpty = document.getElementById('empty-deferred-reasons');
+                if (defList && defEmpty) {
+                    if (stats.TopDeferredReasons && stats.TopDeferredReasons.length > 0) {
+                        defList.style.display = '';
+                        defEmpty.style.display = 'none';
+                        var html = '';
+                        stats.TopDeferredReasons.forEach(function(r) {
+                            html += '<li><div class="mono truncate" title="'+r.Reason+'">'+r.Reason+'</div>' +
+                                '<a class="button-link" href="'+r.MessagesURL+'">'+r.Count+' msgs</a></li>';
+                        });
+                        defList.innerHTML = html;
+                    } else {
+                        defList.style.display = 'none';
+                        defEmpty.style.display = '';
+                    }
+                }
+                
+                // Update Accounts
+                var accWrap = document.getElementById('wrap-issue-accounts');
+                var accBody = document.getElementById('table-issue-accounts');
+                var accEmpty = document.getElementById('empty-issue-accounts');
+                if (accWrap && accBody && accEmpty) {
+                    if (stats.TopIssueAccounts && stats.TopIssueAccounts.length > 0) {
+                        accWrap.style.display = '';
+                        accEmpty.style.display = 'none';
+                        var html = '';
+                        stats.TopIssueAccounts.forEach(function(a) {
+                            var status = a.Active ? "active" : "inactive";
+                            html += '<tr>' +
+                                '<td class="mono"><span class="truncate" title="'+a.ATDID+'">'+a.ATDID+'</span></td>' +
+                                '<td>'+status+'</td>' +
+                                '<td>'+a.IssueMessages+'</td>' +
+                                '<td>'+a.TotalMessages+'</td>' +
+                                '<td>F'+a.FailedMessages+' / D'+a.DeferredCount+' / X'+a.DeletedCount+'</td>' +
+                                '<td><a class="button-link" href="'+a.MessagesURL+'">View Messages</a></td>' +
+                                '</tr>';
+                        });
+                        accBody.innerHTML = html;
+                    } else {
+                        accWrap.style.display = 'none';
+                        accEmpty.style.display = '';
+                    }
+                }
+
             } catch (err) {
                 console.error("SSE parse error", err);
             }

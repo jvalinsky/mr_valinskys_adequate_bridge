@@ -2,6 +2,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -13,90 +14,79 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/web/templates"
 )
 
-func (h *UIHandler) handleDashboard(w http.ResponseWriter, r *http.Request) {
-	accountCount, err := h.db.CountBridgedAccounts(r.Context())
+func (h *UIHandler) fetchDashboardData(ctx context.Context, r *http.Request) (templates.DashboardData, error) {
+	var data templates.DashboardData
+
+	accountCount, err := h.db.CountBridgedAccounts(ctx)
 	if err != nil {
-		h.writeInternalError(w, "dashboard", "Failed to get account count", err)
-		return
+		return data, fmt.Errorf("Failed to get account count: %w", err)
 	}
 
-	messageCount, err := h.db.CountMessages(r.Context())
+	messageCount, err := h.db.CountMessages(ctx)
 	if err != nil {
-		h.writeInternalError(w, "dashboard", "Failed to get message count", err)
-		return
+		return data, fmt.Errorf("Failed to get message count: %w", err)
 	}
 
-	publishedCount, err := h.db.CountPublishedMessages(r.Context())
+	publishedCount, err := h.db.CountPublishedMessages(ctx)
 	if err != nil {
-		h.writeInternalError(w, "dashboard", "Failed to get published count", err)
-		return
+		return data, fmt.Errorf("Failed to get published count: %w", err)
 	}
 
-	publishFailureCount, err := h.db.CountPublishFailures(r.Context())
+	publishFailureCount, err := h.db.CountPublishFailures(ctx)
 	if err != nil {
-		h.writeInternalError(w, "dashboard", "Failed to get failure count", err)
-		return
+		return data, fmt.Errorf("Failed to get failure count: %w", err)
 	}
 
-	deferredCount, err := h.db.CountDeferredMessages(r.Context())
+	deferredCount, err := h.db.CountDeferredMessages(ctx)
 	if err != nil {
-		h.writeInternalError(w, "dashboard", "Failed to get deferred count", err)
-		return
+		return data, fmt.Errorf("Failed to get deferred count: %w", err)
 	}
 
-	deletedCount, err := h.db.CountDeletedMessages(r.Context())
+	deletedCount, err := h.db.CountDeletedMessages(ctx)
 	if err != nil {
-		h.writeInternalError(w, "dashboard", "Failed to get deleted count", err)
-		return
+		return data, fmt.Errorf("Failed to get deleted count: %w", err)
 	}
 
-	blobCount, err := h.db.CountBlobs(r.Context())
+	blobCount, err := h.db.CountBlobs(ctx)
 	if err != nil {
-		h.writeInternalError(w, "dashboard", "Failed to get blob count", err)
-		return
+		return data, fmt.Errorf("Failed to get blob count: %w", err)
 	}
 
-	replayCursor, err := h.bridgeReplayCursor(r.Context())
+	replayCursor, err := h.bridgeReplayCursor(ctx)
 	if err != nil {
-		h.writeInternalError(w, "dashboard", "Failed to get cursor state", err)
-		return
+		return data, fmt.Errorf("Failed to get cursor state: %w", err)
 	}
-	eventLogHeadCursor, err := h.eventLogHeadCursor(r.Context())
+	eventLogHeadCursor, err := h.eventLogHeadCursor(ctx)
 	if err != nil {
-		h.writeInternalError(w, "dashboard", "Failed to get event-log cursor state", err)
-		return
+		return data, fmt.Errorf("Failed to get event-log cursor state: %w", err)
 	}
 	relaySourceCursor := ""
-	source, err := h.db.GetATProtoSource(r.Context(), defaultATProtoSourceKey)
+	source, err := h.db.GetATProtoSource(ctx, defaultATProtoSourceKey)
 	if err != nil {
-		h.writeInternalError(w, "dashboard", "Failed to get relay source cursor", err)
-		return
+		return data, fmt.Errorf("Failed to get relay source cursor: %w", err)
 	}
 	if source != nil {
 		relaySourceCursor = strconv.FormatInt(source.LastSeq, 10)
 	}
 
-	bridgeStatus, ok, err := h.db.GetBridgeState(r.Context(), "bridge_runtime_status")
+	bridgeStatus, ok, err := h.db.GetBridgeState(ctx, "bridge_runtime_status")
 	if err != nil {
-		h.writeInternalError(w, "dashboard", "Failed to get bridge status", err)
-		return
+		return data, fmt.Errorf("Failed to get bridge status: %w", err)
 	}
 	if !ok || strings.TrimSpace(bridgeStatus) == "" {
 		bridgeStatus = "unknown"
 	}
 
-	lastHeartbeat, _, err := h.db.GetBridgeState(r.Context(), "bridge_runtime_last_heartbeat_at")
+	lastHeartbeat, _, err := h.db.GetBridgeState(ctx, "bridge_runtime_last_heartbeat_at")
 	if err != nil {
-		h.writeInternalError(w, "dashboard", "Failed to get bridge heartbeat", err)
-		return
+		return data, fmt.Errorf("Failed to get bridge heartbeat: %w", err)
 	}
 
 	healthLabel, healthDesc, healthTone := runtimeHealth(lastHeartbeat)
 
-	reasonStats, err := h.db.ListTopDeferredReasons(r.Context(), 5)
+	reasonStats, err := h.db.ListTopDeferredReasons(ctx, 5)
 	if err != nil {
-		h.writeInternalError(w, "dashboard", "Failed to get deferred reason summary", err)
-		return
+		return data, fmt.Errorf("Failed to get deferred reason summary: %w", err)
 	}
 	topReasons := make([]templates.DeferredReasonView, 0, len(reasonStats))
 	for _, stat := range reasonStats {
@@ -107,10 +97,9 @@ func (h *UIHandler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	issueAccounts, err := h.db.ListTopIssueAccounts(r.Context(), 5)
+	issueAccounts, err := h.db.ListTopIssueAccounts(ctx, 5)
 	if err != nil {
-		h.writeInternalError(w, "dashboard", "Failed to get account issue summary", err)
-		return
+		return data, fmt.Errorf("Failed to get account issue summary: %w", err)
 	}
 	topAccounts := make([]templates.IssueAccountView, 0, len(issueAccounts))
 	for _, acc := range issueAccounts {
@@ -136,10 +125,10 @@ func (h *UIHandler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		{ID: "blobCount", Label: "Blobs Bridged", Value: blobCount, Tone: "neutral", Href: "/blobs", Note: "Blob mappings"},
 	}
 
-	data := templates.DashboardData{
+	data = templates.DashboardData{
 		Chrome: templates.PageChrome{
 			ActiveNav: "dashboard",
-			CSRFToken: csrfToken(r),
+			CSRFToken: "",
 			Breadcrumbs: []templates.Breadcrumb{
 				{Label: "Dashboard", Href: ""},
 			},
@@ -160,6 +149,21 @@ func (h *UIHandler) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		RuntimeHealthDescription: healthDesc,
 		TopDeferredReasons:       topReasons,
 		TopIssueAccounts:         topAccounts,
+	}
+
+	// Always grab the real CSRF token if this is called in context of a real request
+	if r != nil {
+		data.Chrome.CSRFToken = csrfToken(r)
+	}
+
+	return data, nil
+}
+
+func (h *UIHandler) handleDashboard(w http.ResponseWriter, r *http.Request) {
+	data, err := h.fetchDashboardData(r.Context(), r)
+	if err != nil {
+		h.writeInternalError(w, "dashboard", "Failed to compile dashboard data", err)
+		return
 	}
 
 	w.Header().Set("Content-Type", "text/html")
@@ -196,32 +200,16 @@ func (h *UIHandler) handleEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *UIHandler) sendDashboardStats(w http.ResponseWriter, r *http.Request, flusher http.Flusher) {
-	ctx := r.Context()
-	
-	accountCount, _ := h.db.CountBridgedAccounts(ctx)
-	messageCount, _ := h.db.CountMessages(ctx)
-	publishedCount, _ := h.db.CountPublishedMessages(ctx)
-	publishFailureCount, _ := h.db.CountPublishFailures(ctx)
-	deferredCount, _ := h.db.CountDeferredMessages(ctx)
-	deletedCount, _ := h.db.CountDeletedMessages(ctx)
-	blobCount, _ := h.db.CountBlobs(ctx)
-
-	// Since SSE data needs to be lightweight, we can just render it as JSON payload
-	// or simple strings. Here we'll send a JSON object with these counts.
-	// You could use full views, but simple fields is usually enough.
-
-	stats := map[string]interface{}{
-		"accountCount": accountCount,
-		"messageCount": messageCount,
-		"publishedCount": publishedCount,
-		"publishFailureCount": publishFailureCount,
-		"deferredCount": deferredCount,
-		"deletedCount": deletedCount,
-		"blobCount": blobCount,
+	// We no longer need the request to pass to fetchDashboardData since we don't care
+	// about CSRF token in the SSE stream itself.
+	data, err := h.fetchDashboardData(r.Context(), nil)
+	if err != nil {
+		h.logger.Printf("SSE dashboard data error: %v", err)
+		return
 	}
 	
-	// Print as an SSE event containing JSON
-	jsonBytes, err := json.Marshal(stats)
+	// Convert data directly (no longer limited to just metrics)
+	jsonBytes, err := json.Marshal(data)
 	if err == nil {
 		fmt.Fprintf(w, "data: %s\n\n", string(jsonBytes))
 		flusher.Flush()
