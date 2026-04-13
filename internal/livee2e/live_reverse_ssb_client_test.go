@@ -291,6 +291,71 @@ func TestBridgeLiveInteropReverseSSBClient(t *testing.T) {
 		t.Fatalf("expected mention and link facets, got %#v", imagePost.Facets)
 	}
 
+	// ── Multi-image reverse post (2 blobs, 2 embed images) ──────────
+	imageRef2 := uploadSSBClientBlob(ctx, t, clientBaseURL, testPNGData2(), "reverse-image2.png", &clientLogs)
+	multiImageRefSSB := publishSSBClientJSON(ctx, t, clientBaseURL, map[string]any{
+		"type": "post",
+		"text": fmt.Sprintf("multi-image post ![one](%s) ![two](%s)", imageRef, imageRef2),
+		"mentions": []map[string]any{
+			{"link": imageRef, "name": "first image", "type": "image/png"},
+			{"link": imageRef2, "name": "second image", "type": "image/png"},
+		},
+	}, &clientLogs)
+	multiImgEvent := waitForReverseEventState(ctx, t, database, multiImageRefSSB, db.ReverseEventStatePublished, &bridgeLogs)
+	multiImgRecord := waitForATRecord(ctx, t, xrpcc, multiImgEvent.ResultATURI, &bridgeLogs)
+	multiImgPost, ok := multiImgRecord.Value.Val.(*appbsky.FeedPost)
+	if !ok {
+		t.Fatalf("expected multi-image record to be feed post, got %T", multiImgRecord.Value.Val)
+	}
+	if multiImgPost.Embed == nil || multiImgPost.Embed.EmbedImages == nil || len(multiImgPost.Embed.EmbedImages.Images) != 2 {
+		t.Fatalf("expected 2 reverse image embeds, got %#v", multiImgPost.Embed)
+	}
+	if multiImgPost.Embed.EmbedImages.Images[0].Alt != "first image" {
+		t.Fatalf("unexpected first image alt: %q", multiImgPost.Embed.EmbedImages.Images[0].Alt)
+	}
+	if multiImgPost.Embed.EmbedImages.Images[1].Alt != "second image" {
+		t.Fatalf("unexpected second image alt: %q", multiImgPost.Embed.EmbedImages.Images[1].Alt)
+	}
+	// Verify both image refs are populated
+	for i, img := range multiImgPost.Embed.EmbedImages.Images {
+		if img.Image == nil || img.Image.Ref.String() == "" {
+			t.Fatalf("multi-image embed[%d] has empty blob ref", i)
+		}
+	}
+	if multiImgPost.Text != "multi-image post" {
+		t.Fatalf("unexpected multi-image post text: %q (expected image markdown stripped)", multiImgPost.Text)
+	}
+
+	// ── Reply-with-image: reply refs + image embed ──────────────────
+	replyImgRef := uploadSSBClientBlob(ctx, t, clientBaseURL, testPNGData(), "reply-image.png", &clientLogs)
+	replyImgRefSSB := publishSSBClientJSON(ctx, t, clientBaseURL, map[string]any{
+		"type":   "post",
+		"text":   fmt.Sprintf("reply with image ![attached](%s)", replyImgRef),
+		"root":   rootRef,
+		"branch": rootRef,
+		"mentions": []map[string]any{
+			{"link": replyImgRef, "name": "reply attachment", "type": "image/png"},
+		},
+	}, &clientLogs)
+	replyImgEvent := waitForReverseEventState(ctx, t, database, replyImgRefSSB, db.ReverseEventStatePublished, &bridgeLogs)
+	replyImgRecord := waitForATRecord(ctx, t, xrpcc, replyImgEvent.ResultATURI, &bridgeLogs)
+	replyImgPost, ok := replyImgRecord.Value.Val.(*appbsky.FeedPost)
+	if !ok {
+		t.Fatalf("expected reply-with-image to be feed post, got %T", replyImgRecord.Value.Val)
+	}
+	if replyImgPost.Reply == nil || replyImgPost.Reply.Root == nil || replyImgPost.Reply.Parent == nil {
+		t.Fatalf("expected reply refs in reply-with-image post: %#v", replyImgPost)
+	}
+	if replyImgPost.Reply.Root.Uri != rootEvent.ResultATURI {
+		t.Fatalf("reply-with-image root uri mismatch: got %q want %q", replyImgPost.Reply.Root.Uri, rootEvent.ResultATURI)
+	}
+	if replyImgPost.Embed == nil || replyImgPost.Embed.EmbedImages == nil || len(replyImgPost.Embed.EmbedImages.Images) != 1 {
+		t.Fatalf("expected 1 image embed in reply-with-image, got %#v", replyImgPost.Embed)
+	}
+	if replyImgPost.Embed.EmbedImages.Images[0].Alt != "reply attachment" {
+		t.Fatalf("unexpected reply-with-image alt: %q", replyImgPost.Embed.EmbedImages.Images[0].Alt)
+	}
+
 	followRef := publishSSBClientJSON(ctx, t, clientBaseURL, map[string]any{
 		"type":      "contact",
 		"contact":   targetAccount.SSBFeedID,
@@ -585,6 +650,18 @@ func testPNGData() []byte {
 		0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53, 0xde, 0x00, 0x00, 0x00,
 		0x0c, 0x49, 0x44, 0x41, 0x54, 0x08, 0xd7, 0x63, 0xf8, 0xcf, 0xc0, 0x00,
 		0x00, 0x00, 0x03, 0x00, 0x01, 0x00, 0x05, 0xfe, 0xd4, 0xee, 0x00, 0x00,
+		0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+	}
+}
+
+// testPNGData2 returns a distinct 1x1 red PNG for multi-image testing.
+func testPNGData2() []byte {
+	return []byte{
+		0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+		0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+		0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53, 0xde, 0x00, 0x00, 0x00,
+		0x0c, 0x49, 0x44, 0x41, 0x54, 0x08, 0xd7, 0x63, 0xf8, 0x4f, 0xc0, 0x00,
+		0x00, 0x00, 0x03, 0x00, 0x01, 0x00, 0x18, 0xdd, 0x8d, 0xb4, 0x00, 0x00,
 		0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
 	}
 }

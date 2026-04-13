@@ -13,6 +13,9 @@ const (
 	ReverseActionReply    = "reply"
 	ReverseActionFollow   = "follow"
 	ReverseActionUnfollow = "unfollow"
+	ReverseActionVote     = "vote"
+	ReverseActionAbout    = "about"
+	ReverseActionRepost   = "repost"
 
 	ReverseEventStatePending   = "pending"
 	ReverseEventStatePublished = "published"

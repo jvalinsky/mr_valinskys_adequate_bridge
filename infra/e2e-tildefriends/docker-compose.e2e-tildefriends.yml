@@ -26,6 +26,10 @@ services:
       BRIDGE_FIREHOSE_ENABLE: "${E2E_TF_BRIDGE_FIREHOSE_ENABLE:-0}"
       BRIDGE_RELAY_URL: "${E2E_TF_BRIDGE_RELAY_URL:-}"
       BRIDGE_MODE: seeded
+      BRIDGE_REVERSE_SYNC_ENABLE: "1"
+      BRIDGE_REVERSE_CREDENTIALS_FILE: /data/reverse-credentials.json
+      BRIDGE_REVERSE_SYNC_SCAN_INTERVAL: 1s
+      BRIDGE_REVERSE_SYNC_BATCH_SIZE: "25"
     volumes:
       - bridge-data:/data
       - ../shared/bridge_entrypoint.sh:/scripts/bridge_entrypoint.sh:ro
@@ -51,6 +55,7 @@ services:
       TF_BIN: /app/out/release/tildefriends
       BOT_SEED: e2e-docker-seed
       BOT_DID: "did:plc:e2e-docker-bot"
+      BOT_TARGET_DID: "did:plc:e2e-docker-target"
       MAX_WAIT_SECS: "${E2E_TF_MAX_WAIT_SECS:-120}"
       POLL_INTERVAL: "${E2E_TF_POLL_INTERVAL:-3}"
       E2E_TF_REQUIRE_ACTIVE_BRIDGED_PEERS: "${E2E_TF_REQUIRE_ACTIVE_BRIDGED_PEERS:-1}"

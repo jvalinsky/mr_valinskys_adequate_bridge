@@ -417,12 +417,12 @@ func TestEnsureRecordRemoteFetchUnsupportedCollection(t *testing.T) {
 	logger := log.New(io.Discard, "", 0)
 	fetcher := &stubRecordFetcher{
 		records: map[string]FetchedRecord{
-			"at://did:plc:alice/app.bsky.feed.repost/rp1": {
+			"at://did:plc:alice/app.bsky.feed.generator/rp1": {
 				ATDID:      "did:plc:alice",
-				ATURI:      "at://did:plc:alice/app.bsky.feed.repost/rp1",
-				ATCID:      "bafy-repost",
-				Collection: "app.bsky.feed.repost",
-				RecordJSON: []byte(`{"subject":{"uri":"at://x","cid":"y"}}`),
+				ATURI:      "at://did:plc:alice/app.bsky.feed.generator/rp1",
+				ATCID:      "bafy-generator",
+				Collection: "app.bsky.feed.generator",
+				RecordJSON: []byte(`{"did":"did:plc:test"}`),
 			},
 		},
 	}
@@ -431,7 +431,7 @@ func TestEnsureRecordRemoteFetchUnsupportedCollection(t *testing.T) {
 		return nil
 	})
 
-	err = resolver.EnsureRecord(ctx, "at://did:plc:alice/app.bsky.feed.repost/rp1")
+	err = resolver.EnsureRecord(ctx, "at://did:plc:alice/app.bsky.feed.generator/rp1")
 	if err == nil {
 		t.Fatal("expected error for unsupported collection")
 	}

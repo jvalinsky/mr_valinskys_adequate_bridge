@@ -1,6 +1,6 @@
 # Track 043: Reverse Sync V2 Media + Facets (2026-04)
 
-DG Nodes: `#1041-#1065`
+DG Nodes: `#1041-#1065`, `#1138-#1141`
 
 ## Scope
 
@@ -31,6 +31,9 @@ DG Nodes: `#1041-#1065`
   - `#1059` track reverse-sync v2 in scratchpad and docs
   - `#1060` extend repo `ssb-client` reverse E2E for media
   - `#1061` extend Tildefriends reverse E2E for media
+  - `#1138` extend ssb-client E2E for multi-image and replies
+  - `#1139` extend Tildefriends E2E with media pipeline verify
+  - `#1140` fix bridge startup regression (missing credentials file)
   - `#1065` fetch remote SSB blobs for reverse media publishing
 - Outcomes:
   - `#1062` reverse processor now has blob-store access for media-aware retries and publishing
@@ -57,6 +60,14 @@ DG Nodes: `#1041-#1065`
 - `#1065`:
   - Added a room-aware reverse blob fetch path that first tries direct SSB peers and then falls back to `tunnel.connect` + `blobs.get` for room-only peers.
   - Fixed `blobs.get`/`blobs.getSlice` source handlers to close their streams so real blob consumers can read to EOF instead of hanging.
+- `#1138`:
+  - Added multi-image and reply-with-image test cases to the live ssb-client suite.
+  - Verified blob deduplication and mixed ref/embed payloads.
+- `#1139`:
+  - Added section 14 to the Tildefriends Docker test runner for reverse media verification.
+  - Verifies event persistence and embed JSON construction in the bridge DB.
+- `#1140`:
+  - Fixed bridge exit on startup by ensuring a placeholder credentials file exists in the entrypoint.
 
 ## Files Changed
 
@@ -88,3 +99,4 @@ DG Nodes: `#1041-#1065`
 ## Completion Log
 
 - **2026-04-09**: All implementation complete. E2E tests in infra/e2e-full/test_runner.sh verify image embeds work. Live test in internal/livee2e/live_reverse_ssb_client_test.go covers ssb-client blob fetch. Closed outcomes 1062-1066 and actions 1061, 1065, 1068. Goal 1041 marked complete.
+- **2026-04-12**: Extended E2E suites for complex media (multi-image, replies) and the Tildefriends Docker pipeline. Fixed bridge startup regression. Actions 1138-1140 and outcome 1141 closed.

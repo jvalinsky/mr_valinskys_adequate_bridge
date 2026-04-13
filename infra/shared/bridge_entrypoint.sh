@@ -117,6 +117,12 @@ if [ "${BRIDGE_REVERSE_SYNC_ENABLE}" = "1" ]; then
 fi
 
 if [[ -n "${BRIDGE_REVERSE_CREDENTIALS_FILE}" ]]; then
+  # Ensure the file exists so the bridge can read it at startup.
+  # The test runner or external process can populate it later.
+  if [[ ! -f "${BRIDGE_REVERSE_CREDENTIALS_FILE}" ]]; then
+    echo '{}' > "${BRIDGE_REVERSE_CREDENTIALS_FILE}"
+    echo "[bridge-entry] created empty reverse credentials placeholder: ${BRIDGE_REVERSE_CREDENTIALS_FILE}"
+  fi
   bridge_cli_args+=(--reverse-credentials-file "${BRIDGE_REVERSE_CREDENTIALS_FILE}")
 fi
 

@@ -453,6 +453,19 @@ func (p *ReverseProcessor) processDecodedMessage(ctx context.Context, receiveLog
 				event.ErrorText = ""
 				return p.persistReverseEvent(ctx, *event)
 			}
+		} else if profile, ok := record.(*appbsky.ActorProfile); ok && profile != nil {
+			deferReason, err := p.enrichReverseProfileRecord(ctx, session, event.SourceSSBAuthor, content, profile)
+			if err != nil {
+				event.EventState = db.ReverseEventStateFailed
+				event.ErrorText = err.Error()
+				return p.persistReverseEvent(ctx, *event)
+			}
+			if deferReason != "" {
+				event.EventState = db.ReverseEventStateDeferred
+				event.DeferReason = deferReason
+				event.ErrorText = ""
+				return p.persistReverseEvent(ctx, *event)
+			}
 		}
 
 		created, err := session.CreateRecord(ctx, event.ResultCollection, record)
@@ -497,6 +510,65 @@ func (p *ReverseProcessor) enrichReversePostRecord(ctx context.Context, session 
 		post.Embed = &appbsky.FeedPost_Embed{
 			EmbedImages: &appbsky.EmbedImages{Images: images},
 		}
+	}
+	return "", nil
+}
+
+func (p *ReverseProcessor) enrichReverseProfileRecord(ctx context.Context, session ReverseRecordSession, sourceFeedID string, content map[string]any, profile *appbsky.ActorProfile) (string, error) {
+	if profile == nil {
+		return "", nil
+	}
+	link := strings.TrimSpace(stringValue(content["image"]))
+	if link == "" || !strings.HasPrefix(link, "&") {
+		return "", nil
+	}
+	if p.blobStore == nil {
+		return "blob_store_unavailable", nil
+	}
+	blobMeta, err := p.db.GetBlobBySSBRef(ctx, link)
+	if err != nil {
+		return "", fmt.Errorf("lookup blob metadata %s: %w", link, err)
+	}
+	mimeType := ""
+	if blobMeta != nil {
+		mimeType = strings.TrimSpace(blobMeta.MimeType)
+	}
+	if mimeType == "" {
+		mimeType = "image/jpeg"
+	}
+	if !strings.HasPrefix(strings.ToLower(mimeType), "image/") {
+		return "blob_media_unsupported=" + link, nil
+	}
+	blobRef, err := refs.ParseBlobRef(link)
+	if err != nil {
+		return "blob_ref_invalid=" + link, nil
+	}
+	reader, err := p.blobStore.Get(blobRef.Hash())
+	if err != nil {
+		if p.blobFetcher == nil || p.blobFetcher.EnsureBlob(ctx, sourceFeedID, blobRef) != nil {
+			return "blob_read_failed=" + link, nil
+		}
+		reader, err = p.blobStore.Get(blobRef.Hash())
+		if err != nil {
+			return "blob_read_failed=" + link, nil
+		}
+	}
+	uploaded, uploadErr := session.UploadBlob(ctx, reader, mimeType)
+	closeErr := reader.Close()
+	if uploadErr != nil {
+		return "blob_upload_failed=" + link, nil
+	}
+	if closeErr != nil && !errors.Is(closeErr, os.ErrClosed) {
+		return "", fmt.Errorf("close blob reader %s: %w", link, closeErr)
+	}
+	if uploaded == nil {
+		return "blob_upload_failed=" + link, nil
+	}
+	
+	profile.Avatar = &appbsky.LexBlob{
+		Ref:      uploaded.Ref,
+		MimeType: uploaded.MimeType,
+		Size:     uploaded.Size,
 	}
 	return "", nil
 }
@@ -896,6 +968,118 @@ func (p *ReverseProcessor) buildReverseEvent(ctx context.Context, receiveLogSeq 
 			CreatedAt: reverseCreatedAt(sourceSeq),
 		}
 		return &event, record, "", nil
+	case "repost", "share":
+		targetRef := strings.TrimSpace(stringValue(content["repost"]))
+		if targetRef == "" {
+			targetRef = strings.TrimSpace(stringValue(content["share"]))
+		}
+		if targetRef == "" {
+			event := p.baseReverseEvent(receiveLogSeq, sourceRef, sourceAuthor, sourceSeq, mapping.ATDID, db.ReverseActionRepost, rawSSBJSON)
+			event.EventState = db.ReverseEventStateSkipped
+			event.DeferReason = "missing_repost_target"
+			return &event, nil, "", nil
+		}
+		event := p.baseReverseEvent(receiveLogSeq, sourceRef, sourceAuthor, sourceSeq, mapping.ATDID, db.ReverseActionRepost, rawSSBJSON)
+		event.ResultCollection = mapper.RecordTypeRepost
+		if !mapping.AllowPosts {
+			event.EventState = db.ReverseEventStateSkipped
+			event.DeferReason = "action_disabled=post"
+			return &event, nil, "", nil
+		}
+
+		targetMsg, err := p.db.GetMessageBySSBRef(ctx, targetRef)
+		if err != nil {
+			return nil, nil, "", fmt.Errorf("lookup repost target %s: %w", targetRef, err)
+		}
+		if targetMsg == nil || strings.TrimSpace(targetMsg.ATURI) == "" || strings.TrimSpace(targetMsg.ATCID) == "" {
+			event.EventState = db.ReverseEventStateDeferred
+			event.DeferReason = "repost_target_unmapped=" + targetRef
+			return &event, nil, "", nil
+		}
+		event.TargetSSBRef = targetRef
+		event.TargetATURI = targetMsg.ATURI
+		event.TargetATCID = targetMsg.ATCID
+		event.TargetATDID = targetMsg.ATDID
+
+		record := &appbsky.FeedRepost{
+			Subject: &appbsky.RepoStrongRef{
+				Uri: targetMsg.ATURI,
+				Cid: targetMsg.ATCID,
+			},
+			CreatedAt: reverseCreatedAt(sourceSeq),
+		}
+		return &event, record, "", nil
+
+	case "vote":
+		voteVal, ok := content["vote"].(map[string]any)
+		if !ok {
+			return nil, nil, "", nil
+		}
+		value := floatValue(voteVal["value"])
+		if value <= 0 {
+			return nil, nil, "", nil
+		}
+		targetRef := strings.TrimSpace(stringValue(voteVal["link"]))
+		if targetRef == "" {
+			event := p.baseReverseEvent(receiveLogSeq, sourceRef, sourceAuthor, sourceSeq, mapping.ATDID, db.ReverseActionVote, rawSSBJSON)
+			event.EventState = db.ReverseEventStateSkipped
+			event.DeferReason = "missing_vote_target"
+			return &event, nil, "", nil
+		}
+		event := p.baseReverseEvent(receiveLogSeq, sourceRef, sourceAuthor, sourceSeq, mapping.ATDID, db.ReverseActionVote, rawSSBJSON)
+		event.ResultCollection = mapper.RecordTypeLike
+		if !mapping.AllowPosts {
+			event.EventState = db.ReverseEventStateSkipped
+			event.DeferReason = "action_disabled=like"
+			return &event, nil, "", nil
+		}
+
+		targetMsg, err := p.db.GetMessageBySSBRef(ctx, targetRef)
+		if err != nil {
+			return nil, nil, "", fmt.Errorf("lookup vote target %s: %w", targetRef, err)
+		}
+		if targetMsg == nil || strings.TrimSpace(targetMsg.ATURI) == "" || strings.TrimSpace(targetMsg.ATCID) == "" {
+			event.EventState = db.ReverseEventStateDeferred
+			event.DeferReason = "vote_target_unmapped=" + targetRef
+			return &event, nil, "", nil
+		}
+		event.TargetSSBRef = targetRef
+		event.TargetATURI = targetMsg.ATURI
+		event.TargetATCID = targetMsg.ATCID
+		event.TargetATDID = targetMsg.ATDID
+
+		record := &appbsky.FeedLike{
+			Subject: &appbsky.RepoStrongRef{
+				Uri: targetMsg.ATURI,
+				Cid: targetMsg.ATCID,
+			},
+			CreatedAt: reverseCreatedAt(sourceSeq),
+		}
+		return &event, record, "", nil
+
+	case "about":
+		targetFeed := strings.TrimSpace(stringValue(content["about"]))
+		if targetFeed == "" || targetFeed != sourceAuthor {
+			event := p.baseReverseEvent(receiveLogSeq, sourceRef, sourceAuthor, sourceSeq, mapping.ATDID, db.ReverseActionAbout, rawSSBJSON)
+			event.EventState = db.ReverseEventStateSkipped
+			event.DeferReason = "about_not_self"
+			return &event, nil, "", nil
+		}
+		event := p.baseReverseEvent(receiveLogSeq, sourceRef, sourceAuthor, sourceSeq, mapping.ATDID, db.ReverseActionAbout, rawSSBJSON)
+		event.ResultCollection = mapper.RecordTypeProfile
+		
+		name := stringValue(content["name"])
+		description := stringValue(content["description"])
+		
+		record := &appbsky.ActorProfile{}
+		if name != "" {
+			record.DisplayName = &name
+		}
+		if description != "" {
+			record.Description = &description
+		}
+		
+		return &event, record, "", nil
 
 	case "contact":
 		targetFeed := strings.TrimSpace(stringValue(content["contact"]))
@@ -1260,6 +1444,21 @@ func boolValue(v any) bool {
 		return strings.EqualFold(strings.TrimSpace(t), "true")
 	default:
 		return false
+	}
+}
+
+func floatValue(v any) float64 {
+	switch t := v.(type) {
+	case float64:
+		return t
+	case float32:
+		return float64(t)
+	case int:
+		return float64(t)
+	case int64:
+		return float64(t)
+	default:
+		return 0
 	}
 }
 

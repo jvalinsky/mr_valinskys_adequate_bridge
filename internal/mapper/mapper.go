@@ -100,8 +100,7 @@ func mapRepost(rawJSON []byte) (map[string]interface{}, error) {
 	}
 
 	return map[string]interface{}{
-		"type":                    "post",
-		"text":                    "",
+		"type":                    "repost",
 		"_atproto_repost_subject": repost.Subject.Uri,
 	}, nil
 }
@@ -404,6 +403,13 @@ func ReplaceATProtoRefs(msg map[string]interface{}, lookupURI func(string) strin
 		}
 	}
 
+	if repostURI, ok := msg["_atproto_repost_subject"].(string); ok {
+		if ssbRef := lookupURI(repostURI); ssbRef != "" {
+			msg["repost"] = ssbRef
+			delete(msg, "_atproto_repost_subject")
+		}
+	}
+
 	mentions := normalizedMentions(msg["mentions"])
 	resolved := make([]map[string]interface{}, 0, len(mentions))
 	for _, mention := range mentions {
@@ -467,6 +473,7 @@ func UnresolvedATProtoRefs(msg map[string]interface{}) []string {
 		"_atproto_contact",
 		"_atproto_list",
 		"_atproto_about_did",
+		"_atproto_repost_subject",
 	}
 
 	unresolved := make([]string, 0, len(keys))

@@ -258,12 +258,9 @@ func TestIntegrationProcessOpWithUnsupportedCollection(t *testing.T) {
 	}
 
 	records := map[string]interface{}{
-		"app.bsky.feed.repost/unsupported": &appbsky.FeedRepost{
-			LexiconTypeID: "app.bsky.feed.repost",
-			Subject: &appbsky.RepoStrongRef{
-				Uri: "at://did:plc:test/app.bsky.feed.post/1",
-				Cid: "bafytest",
-			},
+		"app.bsky.feed.generator/unsupported": &appbsky.FeedPost{
+			LexiconTypeID: "app.bsky.feed.generator",
+			Text:          "dummy",
 		},
 	}
 	carData, err := createBridgeTestCAR("did:plc:test", records)
@@ -278,7 +275,7 @@ func TestIntegrationProcessOpWithUnsupportedCollection(t *testing.T) {
 
 	processor := NewProcessor(database, log.New(io.Discard, "", 0))
 
-	err = processor.processOp(ctx, rr, "did:plc:test", "app.bsky.feed.repost/unsupported", "bafytest", 1)
+	err = processor.processOp(ctx, rr, "did:plc:test", "app.bsky.feed.generator/unsupported", "bafytest", 1)
 	if err != nil {
 		t.Fatalf("processOp with unsupported collection: %v", err)
 	}

@@ -25,6 +25,7 @@ import (
 var supportedCollections = map[string]struct{}{
 	mapper.RecordTypePost:       {},
 	mapper.RecordTypeLike:       {},
+	mapper.RecordTypeRepost:     {},
 	mapper.RecordTypeFollow:     {},
 	mapper.RecordTypeBlock:      {},
 	mapper.RecordTypeProfile:    {},

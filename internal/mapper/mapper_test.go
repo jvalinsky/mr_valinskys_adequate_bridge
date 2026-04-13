@@ -40,11 +40,8 @@ func TestMapRepost(t *testing.T) {
 		t.Fatalf("MapRecord failed: %v", err)
 	}
 
-	if res["type"] != "post" {
-		t.Fatalf("expected type post, got %v", res["type"])
-	}
-	if res["text"] != "" {
-		t.Fatalf("expected empty text, got %v", res["text"])
+	if res["type"] != "repost" {
+		t.Fatalf("expected type repost, got %v", res["type"])
 	}
 	if res["_atproto_repost_subject"] != "at://did:plc:bob/app.bsky.feed.post/456" {
 		t.Fatalf("expected repost subject placeholder, got %v", res["_atproto_repost_subject"])

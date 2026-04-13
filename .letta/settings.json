@@ -11,7 +11,9 @@
       "Bash(cd /Users/jack/Software/mr_valinskys_adequate_bridge && GOFLAGS=-mod=mod go test ./internal/bridge -run FollowerTracker -count=1)",
       "Bash(npx tsx:*)",
       "Bash(cp /Users/jack/.codex/skills/adequate-bridge-web-ui-builder-critique/references/*.md /opt/homebrew/lib/node_modules/@letta-ai/letta-code/skills/adequate-bridge-web-ui-builder-critique/references/)",
-      "Bash(cd /opt/homebrew/lib/node_modules/@letta-ai/letta-code/skills && node --eval \"\nconst fs = require('fs');\nconst path = require('path');\nconst skillDir = 'adequate-bridge-web-ui-builder-critique';\nconst files = [];\n\nfunction walk(dir) {\n  for (const f of fs.readdirSync(dir)) {\n    const full = path.join(dir, f);\n    if (fs.statSync(full).isDirectory()) walk(full);\n    else files.push(full);\n  }\n}\nwalk(skillDir);\n\nconsole.log('Skill files:');\nfiles.forEach(f => console.log('  ' + f));\nconsole.log('\\\\nSkill ready at: ' + path.resolve(skillDir));\n\")"
+      "Bash(cd /opt/homebrew/lib/node_modules/@letta-ai/letta-code/skills && node --eval \"\nconst fs = require('fs');\nconst path = require('path');\nconst skillDir = 'adequate-bridge-web-ui-builder-critique';\nconst files = [];\n\nfunction walk(dir) {\n  for (const f of fs.readdirSync(dir)) {\n    const full = path.join(dir, f);\n    if (fs.statSync(full).isDirectory()) walk(full);\n    else files.push(full);\n  }\n}\nwalk(skillDir);\n\nconsole.log('Skill files:');\nfiles.forEach(f => console.log('  ' + f));\nconsole.log('\\\\nSkill ready at: ' + path.resolve(skillDir));\n\")",
+      "Bash(rg:*)",
+      "Bash(GOFLAGS=-mod=mod go test ./pkg/atproto/syntax/... -v 2>&1 | head -40)"
     ]
   }
 }

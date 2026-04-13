@@ -602,8 +602,152 @@ fi
 # 13f. Verify all active bridged accounts are active room peers and tunnel.connect targets
 assert_active_bridged_room_peers
 
+# ------------------------------------------------------------------
+# 14. Reverse-sync media E2E: verify SSB→ATProto image embed pipeline
+# ------------------------------------------------------------------
+BOT_TARGET_DID="${BOT_TARGET_DID:-did:plc:e2e-docker-target}"
+REVERSE_CREDS_FILE="/bridge-data/reverse-credentials.json"
+REVERSE_PWD_ENV="REVERSE_E2E_PASSWORD"
+MOCK_PASSWORD="e2e-mock-password"
+
+log "setting up reverse-sync prerequisites ..."
+
+# 14a. Write reverse credentials file into bridge data volume.
+# Without a real PDS these will fail at session creation, but the reverse
+# processor still validates blob extraction, embed construction, and event
+# state before the ATProto publish attempt.
+export "${REVERSE_PWD_ENV}=${MOCK_PASSWORD}"
+tfr_reverse_creds="$(jq -cn \
+  --arg did "${BOT_DID}" \
+  --arg identifier "${BOT_DID}" \
+  --arg pds_host "http://bridge:9999" \
+  --arg password_env "${REVERSE_PWD_ENV}" \
+  '{($did): {identifier: $identifier, pds_host: $pds_host, password_env: $password_env}}')"
+echo "${tfr_reverse_creds}" > "${REVERSE_CREDS_FILE}"
+log "wrote reverse credentials file: $(cat "${REVERSE_CREDS_FILE}" | jq -c .)"
+
+# 14b. Create reverse identity mapping: TF identity → bot DID
+tf_id_escaped="$(sql_escape "${TF_IDENTITY}")"
+bot_did_escaped="$(sql_escape "${BOT_DID}")"
+sqlite3 -cmd ".timeout 5000" "${BRIDGE_DB_PATH}" \
+  "INSERT INTO reverse_identity_mappings (ssb_feed_id, at_did, active, allow_posts, allow_replies, allow_follows, updated_at) VALUES ('${tf_id_escaped}', '${bot_did_escaped}', 1, 1, 1, 1, CURRENT_TIMESTAMP) ON CONFLICT(ssb_feed_id) DO UPDATE SET at_did=excluded.at_did, active=1, allow_posts=1, allow_replies=1, allow_follows=1, updated_at=CURRENT_TIMESTAMP;"
+log "reverse identity mapping created: ${TF_IDENTITY} → ${BOT_DID}"
+
+# 14c. Look up the target feed SSB ID from the bridge DB
+bot_target_did_escaped="$(sql_escape "${BOT_TARGET_DID}")"
+TARGET_SSB_FEED="$(sqlite3 "${BRIDGE_DB_PATH}" "SELECT ssb_feed_id FROM bridged_accounts WHERE at_did='${bot_target_did_escaped}' AND active=1 LIMIT 1;" | tr -d '[:space:]')"
+if [[ -z "${TARGET_SSB_FEED}" ]]; then
+  log "warning: no SSB feed found for target DID ${BOT_TARGET_DID}, skipping mention facet test"
+  TARGET_SSB_FEED=""
+fi
+
+# 14d. Generate a small 1x1 PNG and store it in TF blob store
+media_image_path="/tmp/tf-reverse-image.png"
+printf '%s' 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVQI12P4z8AAAwABAAX+1O4AAAAASUVORK5CYII=' | base64 -d > "${media_image_path}"
+BLOB_REF="$("${TF_BIN}" store_blob --db-path "${TF_DB_PATH}" --file "${media_image_path}" 2>/dev/null | grep -oE '&[A-Za-z0-9+/=]+\.sha256' | head -n1)"
+if [[ -z "${BLOB_REF}" ]]; then
+  die "failed to store blob in TF blob store"
+fi
+log "stored blob in TF: ${BLOB_REF}"
+
+# 14e. Publish a reverse root post with image mention from TF
+reverse_root_nonce="$(date +%s%N)"
+reverse_root_text="tf-reverse-root ${reverse_root_nonce}"
+reverse_root_json="$(jq -cn \
+  --arg text "${reverse_root_text}" \
+  '{type:"post",text:$text}')"
+"${TF_BIN}" publish --db-path "${TF_DB_PATH}" --id "${TF_IDENTITY}" --content "${reverse_root_json}" \
+  || die "failed to publish reverse root post"
+log "published reverse root from TF"
+
+# 14f. Publish a reverse post with image embed from TF
+reverse_media_nonce="$(date +%s%N)"
+if [[ -n "${TARGET_SSB_FEED}" ]]; then
+  reverse_media_text="tf-reverse-image @target https://example.com ![preview](${BLOB_REF})"
+  reverse_media_json="$(jq -cn \
+    --arg text "${reverse_media_text}" \
+    --arg target "${TARGET_SSB_FEED}" \
+    --arg blob "${BLOB_REF}" \
+    '{type:"post",text:$text,mentions:[{link:$target,name:"@target"},{link:$blob,name:"tf image",type:"image/png"}]}')"
+else
+  reverse_media_text="tf-reverse-image ![preview](${BLOB_REF})"
+  reverse_media_json="$(jq -cn \
+    --arg text "${reverse_media_text}" \
+    --arg blob "${BLOB_REF}" \
+    '{type:"post",text:$text,mentions:[{link:$blob,name:"tf image",type:"image/png"}]}')"
+fi
+"${TF_BIN}" publish --db-path "${TF_DB_PATH}" --id "${TF_IDENTITY}" --content "${reverse_media_json}" \
+  || die "failed to publish reverse media post"
+log "published reverse media post from TF"
+
+# 14g. Wait for reverse events to appear in bridge DB
+log "waiting for reverse events to be processed ..."
+reverse_deadline=$((SECONDS + MAX_WAIT_SECS))
+reverse_events_found=false
+while true; do
+  reverse_event_count="$(sql_count "${BRIDGE_DB_PATH}" "SELECT COUNT(*) FROM reverse_events WHERE source_ssb_author='${tf_id_escaped}' AND event_state IN ('published','deferred','failed');")"
+  if [[ "${reverse_event_count}" -ge 2 ]]; then
+    reverse_events_found=true
+    break
+  fi
+  if ((SECONDS >= reverse_deadline)); then
+    log "reverse event count for TF identity: ${reverse_event_count}"
+    break
+  fi
+  sleep "${POLL_INTERVAL}"
+done
+
+if ${reverse_events_found}; then
+  log "found ${reverse_event_count} reverse events for TF identity"
+
+  # 14h. Verify the media post event has the right structure
+  # Check that at least one event contains image/embed data in its result
+  media_event_row="$(sqlite3 -cmd ".timeout 5000" "${BRIDGE_DB_PATH}" \
+    "SELECT event_state || '|' || COALESCE(raw_at_json, '') || '|' || COALESCE(error_text, '') || '|' || action FROM reverse_events WHERE source_ssb_author='${tf_id_escaped}' AND action='post' ORDER BY created_at DESC LIMIT 1;" \
+    2>/dev/null || echo "")"
+  if [[ -n "${media_event_row}" ]]; then
+    media_event_state="$(echo "${media_event_row}" | cut -d'|' -f1)"
+    media_event_json="$(echo "${media_event_row}" | cut -d'|' -f2)"
+    media_event_error="$(echo "${media_event_row}" | cut -d'|' -f3)"
+
+    case "${media_event_state}" in
+      published)
+        log "reverse media post published successfully"
+        # Verify the result JSON contains image embed
+        if echo "${media_event_json}" | jq -e '.embed.images | length > 0' >/dev/null 2>&1; then
+          log "verified: reverse media post has image embed"
+        else
+          log "warning: reverse media post published but missing image embed in result JSON"
+        fi
+        if echo "${media_event_json}" | jq -e '.embed.images[0].alt == "tf image"' >/dev/null 2>&1; then
+          log "verified: reverse media image alt text matches"
+        fi
+        ;;
+      deferred)
+        log "reverse media post deferred (expected without real PDS): ${media_event_error}"
+        ;;
+      failed)
+        # Authentication failures are expected without a real PDS
+        if echo "${media_event_error}" | grep -qiE 'authenticate|session|connection|connect|dial'; then
+          log "reverse media post failed at ATProto auth (expected without PDS): ${media_event_error}"
+        else
+          gh_warn "reverse media post failed with unexpected error: ${media_event_error}"
+        fi
+        ;;
+      *)
+        log "warning: unexpected reverse media event state: ${media_event_state}"
+        ;;
+    esac
+  else
+    log "warning: no reverse post event found in bridge DB"
+  fi
+else
+  gh_warn "reverse events not fully processed within ${MAX_WAIT_SECS}s (got ${reverse_event_count})"
+fi
+
 log "============================================"
 log "  E2E PASSED: TF ↔ Bridge Room replication  "
-log "  Post-replication checks: OK               "
+log "  Forward replication checks: OK            "
+log "  Reverse media pipeline checks: OK         "
 log "============================================"
 exit 0

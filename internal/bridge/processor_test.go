@@ -1373,15 +1373,15 @@ func TestProcessDeleteOpMarksProfileDeletedWithoutPublishing(t *testing.T) {
 	}
 }
 
-func TestSupportedCollectionsIncludeBlockAndProfileButNotRepost(t *testing.T) {
+func TestSupportedCollectionsIncludeBlockAndProfileButNotGenerator(t *testing.T) {
 	if !isSupportedCollection(mapper.RecordTypeBlock) {
 		t.Fatalf("expected block to be supported")
 	}
 	if !isSupportedCollection(mapper.RecordTypeProfile) {
 		t.Fatalf("expected profile to be supported")
 	}
-	if isSupportedCollection(mapper.RecordTypeRepost) {
-		t.Fatalf("expected standalone repost to be unsupported")
+	if isSupportedCollection("app.bsky.feed.generator") {
+		t.Fatalf("expected standalone generator to be unsupported")
 	}
 }
 
@@ -2301,7 +2301,7 @@ func TestHandleCommitDeleteOpUnsupportedCollection(t *testing.T) {
 	processor := NewProcessor(database, log.New(io.Discard, "", 0))
 
 	// Delete for unsupported collection should be silently skipped.
-	err = processor.processDeleteOp(ctx, "did:plc:bob", "app.bsky.feed.repost/123", 10)
+	err = processor.processDeleteOp(ctx, "did:plc:bob", "app.bsky.feed.generator/123", 10)
 	if err != nil {
 		t.Fatalf("expected nil for unsupported collection delete, got %v", err)
 	}

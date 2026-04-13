@@ -960,3 +960,152 @@ func TestReverseProcessorPublishesReplyWithImageEmbedAndFacets(t *testing.T) {
 		t.Fatalf("unexpected reply text %q", post.Text)
 	}
 }
+
+func TestReverseProcessorPublishesRepost(t *testing.T) {
+	database, err := db.Open(":memory:?parseTime=true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	if err := database.AddReverseIdentityMapping(ctx, db.ReverseIdentityMapping{
+		SSBFeedID:    "@alice.ed25519",
+		ATDID:        "did:plc:alice",
+		Active:       true,
+		AllowPosts:   true,
+		AllowReplies: true,
+		AllowFollows: true,
+	}); err != nil {
+		t.Fatalf("add mapping: %v", err)
+	}
+	if err := database.AddMessage(ctx, db.Message{
+		ATURI:        "at://did:plc:target/app.bsky.feed.post/root",
+		ATCID:        "cid-root",
+		ATDID:        "did:plc:target",
+		Type:         "app.bsky.feed.post",
+		MessageState: db.MessageStatePublished,
+		SSBMsgRef:    "%reposted.sha256",
+	}); err != nil {
+		t.Fatalf("seed message: %v", err)
+	}
+
+	writer := &stubReverseWriter{}
+	proc := newTestReverseProcessor(t, database, writer)
+
+	raw := []byte(`{"type":"repost","repost":"%reposted.sha256"}`)
+	if err := proc.processDecodedMessage(ctx, 15, "%repost1.sha256", "@alice.ed25519", int64Ptr(15), raw, false); err != nil {
+		t.Fatalf("process repost: %v", err)
+	}
+
+	if len(writer.createCalls) != 1 {
+		t.Fatalf("expected 1 create call, got %d", len(writer.createCalls))
+	}
+	repost, ok := writer.createCalls[0].record.(*appbsky.FeedRepost)
+	if !ok {
+		t.Fatalf("expected FeedRepost, got %T", writer.createCalls[0].record)
+	}
+	if repost.Subject.Uri != "at://did:plc:target/app.bsky.feed.post/root" {
+		t.Fatalf("unexpected subject: %#v", repost.Subject)
+	}
+}
+
+func TestReverseProcessorPublishesVoteAsLike(t *testing.T) {
+	database, err := db.Open(":memory:?parseTime=true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	if err := database.AddReverseIdentityMapping(ctx, db.ReverseIdentityMapping{
+		SSBFeedID:    "@alice.ed25519",
+		ATDID:        "did:plc:alice",
+		Active:       true,
+		AllowPosts:   true,
+		AllowReplies: true,
+		AllowFollows: true,
+	}); err != nil {
+		t.Fatalf("add mapping: %v", err)
+	}
+	if err := database.AddMessage(ctx, db.Message{
+		ATURI:        "at://did:plc:target/app.bsky.feed.post/target",
+		ATCID:        "cid-target",
+		ATDID:        "did:plc:target",
+		Type:         "app.bsky.feed.post",
+		MessageState: db.MessageStatePublished,
+		SSBMsgRef:    "%liked.sha256",
+	}); err != nil {
+		t.Fatalf("seed message: %v", err)
+	}
+
+	writer := &stubReverseWriter{}
+	proc := newTestReverseProcessor(t, database, writer)
+
+	raw := []byte(`{"type":"vote","vote":{"link":"%liked.sha256","value":1,"expression":"Like"}}`)
+	if err := proc.processDecodedMessage(ctx, 16, "%vote1.sha256", "@alice.ed25519", int64Ptr(16), raw, false); err != nil {
+		t.Fatalf("process vote: %v", err)
+	}
+
+	if len(writer.createCalls) != 1 {
+		t.Fatalf("expected 1 create call, got %d", len(writer.createCalls))
+	}
+	like, ok := writer.createCalls[0].record.(*appbsky.FeedLike)
+	if !ok {
+		t.Fatalf("expected FeedLike, got %T", writer.createCalls[0].record)
+	}
+	if like.Subject.Uri != "at://did:plc:target/app.bsky.feed.post/target" {
+		t.Fatalf("unexpected subject: %#v", like.Subject)
+	}
+}
+
+func TestReverseProcessorPublishesAboutAsProfile(t *testing.T) {
+	database, err := db.Open(":memory:?parseTime=true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	if err := database.AddReverseIdentityMapping(ctx, db.ReverseIdentityMapping{
+		SSBFeedID:    "@alice.ed25519",
+		ATDID:        "did:plc:alice",
+		Active:       true,
+		AllowPosts:   true,
+		AllowReplies: true,
+		AllowFollows: true,
+	}); err != nil {
+		t.Fatalf("add mapping: %v", err)
+	}
+
+	blobStore := &stubReverseBlobStore{}
+	blobRef := addTestReverseBlob(t, blobStore, []byte("png-data"))
+	if err := database.AddBlob(ctx, db.Blob{ATCID: "cid-avatar", SSBBlobRef: blobRef, Size: 8, MimeType: "image/png"}); err != nil {
+		t.Fatalf("add blob metadata: %v", err)
+	}
+
+	writer := &stubReverseWriter{uploadMime: "image/png"}
+	proc := newTestReverseProcessor(t, database, writer, blobStore)
+
+	raw := []byte(`{"type":"about","about":"@alice.ed25519","name":"Alice","description":"Hello world","image":"` + blobRef + `"}`)
+	if err := proc.processDecodedMessage(ctx, 17, "%about1.sha256", "@alice.ed25519", int64Ptr(17), raw, false); err != nil {
+		t.Fatalf("process about: %v", err)
+	}
+
+	if len(writer.createCalls) != 1 {
+		t.Fatalf("expected 1 create call, got %d", len(writer.createCalls))
+	}
+	profile, ok := writer.createCalls[0].record.(*appbsky.ActorProfile)
+	if !ok {
+		t.Fatalf("expected ActorProfile, got %T", writer.createCalls[0].record)
+	}
+	if profile.DisplayName == nil || *profile.DisplayName != "Alice" {
+		t.Fatalf("unexpected profile name: %#v", profile.DisplayName)
+	}
+	if profile.Description == nil || *profile.Description != "Hello world" {
+		t.Fatalf("unexpected profile desc: %#v", profile.Description)
+	}
+	if profile.Avatar == nil {
+		t.Fatal("expected avatar blob")
+	}
+}
