@@ -24,6 +24,7 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/replication"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomdb/sqlite"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomstate"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/secretstream"
 	"golang.org/x/crypto/ed25519"
 )
 
@@ -191,7 +192,7 @@ func New(opts Options) (*Sbot, error) {
 		tunnelHandler := room.NewTunnelHandler(roomSrv, opts.KeyPair, opts.AppKey)
 		handlerMux.Register(muxrpc.Method{"tunnel", "announce"}, tunnelHandler)
 		handlerMux.Register(muxrpc.Method{"tunnel", "leave"}, tunnelHandler)
-		handlerMux.Register(muxrpc.Method{"tunnel", "connect"}, room.NewClientTunnelConnectHandler(opts.KeyPair.FeedRef(), handlerMux))
+		handlerMux.Register(muxrpc.Method{"tunnel", "connect"}, room.NewClientTunnelConnectHandler(opts.KeyPair, secretstream.NewAppKey(opts.AppKey), handlerMux))
 		handlerMux.Register(muxrpc.Method{"tunnel", "endpoints"}, tunnelHandler)
 		handlerMux.Register(muxrpc.Method{"tunnel", "isRoom"}, tunnelHandler)
 		handlerMux.Register(muxrpc.Method{"tunnel", "ping"}, tunnelHandler)
@@ -453,6 +454,10 @@ func (s *Sbot) Whoami() (string, error) {
 	}
 	pub := s.KeyPair.Public()
 	return fmt.Sprintf("@%s.ed25519", base64.StdEncoding.EncodeToString(pub[:])), nil
+}
+
+func (s *Sbot) AppKey() secretstream.AppKey {
+	return secretstream.NewAppKey(s.opts.AppKey)
 }
 
 func (s *Sbot) Store() *feedlog.StoreImpl {

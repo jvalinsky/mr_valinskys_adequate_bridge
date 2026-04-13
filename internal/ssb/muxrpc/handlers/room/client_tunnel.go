@@ -5,21 +5,27 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/keys"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/secretstream"
 )
 
 // ClientTunnelConnectHandler proxies room-originated tunnel.connect streams into a
 // local muxrpc handler tree so a room-connected peer can serve its own methods.
+// It performs an inner Secret Handshake (SHS) over the tunnel byte stream before
+// layering MuxRPC, as required by the SSB Room 2.0 spec.
 type ClientTunnelConnectHandler struct {
-	feed  refs.FeedRef
-	inner muxrpc.Handler
+	kp     *keys.KeyPair
+	appKey secretstream.AppKey
+	inner  muxrpc.Handler
 }
 
-func NewClientTunnelConnectHandler(feed refs.FeedRef, inner muxrpc.Handler) *ClientTunnelConnectHandler {
+func NewClientTunnelConnectHandler(kp *keys.KeyPair, appKey secretstream.AppKey, inner muxrpc.Handler) *ClientTunnelConnectHandler {
 	return &ClientTunnelConnectHandler{
-		feed:  feed,
-		inner: inner,
+		kp:     kp,
+		appKey: appKey,
+		inner:  inner,
 	}
 }
 
@@ -38,9 +44,12 @@ func (h *ClientTunnelConnectHandler) HandleCall(ctx context.Context, req *muxrpc
 		req.CloseWithError(fmt.Errorf("tunnel.connect: parse args: %w", err))
 		return
 	}
-	if args.Target != (refs.FeedRef{}) && h.feed != (refs.FeedRef{}) && !args.Target.Equal(h.feed) {
-		req.CloseWithError(fmt.Errorf("tunnel.connect: target mismatch want=%s got=%s", h.feed.String(), args.Target.String()))
-		return
+	if h.kp != nil {
+		feed := h.kp.FeedRef()
+		if args.Target != (refs.FeedRef{}) && !args.Target.Equal(feed) {
+			req.CloseWithError(fmt.Errorf("tunnel.connect: target mismatch want=%s got=%s", feed.String(), args.Target.String()))
+			return
+		}
 	}
 
 	source := req.Source()
@@ -57,10 +66,21 @@ func (h *ClientTunnelConnectHandler) HandleCall(ctx context.Context, req *muxrpc
 	innerCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	streamConn := muxrpc.NewByteStreamConn(innerCtx, source, sink, req.RemoteAddr())
-	innerRPC := muxrpc.NewServer(innerCtx, streamConn, h.inner, nil)
+
+	shs, err := secretstream.NewServer(streamConn, h.appKey, h.kp.Private())
+	if err != nil {
+		req.CloseWithError(fmt.Errorf("tunnel.connect: inner SHS init: %w", err))
+		return
+	}
+	if err := shs.Handshake(); err != nil {
+		req.CloseWithError(fmt.Errorf("tunnel.connect: inner SHS handshake: %w", err))
+		return
+	}
+
+	innerRPC := muxrpc.NewServer(innerCtx, shs, h.inner, nil)
 	<-innerRPC.Wait()
 	_ = innerRPC.Terminate()
-	_ = streamConn.Close()
+	_ = shs.Close()
 	_ = req.Close()
 }
 

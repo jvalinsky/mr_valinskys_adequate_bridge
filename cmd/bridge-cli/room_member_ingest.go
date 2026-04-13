@@ -21,6 +21,8 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/network"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/sbot"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/secretstream"
+	"golang.org/x/crypto/ed25519"
 )
 
 const roomMemberIngestRetry = 2 * time.Second
@@ -271,10 +273,20 @@ func (m *roomMemberIngestManager) streamFeed(ctx context.Context, target refs.Fe
 	defer cancel()
 
 	streamConn := muxrpc.NewByteStreamConn(streamCtx, tunnelSource, tunnelSink, roomPeer.Conn.RemoteAddr())
-	endpoint := muxrpc.NewServer(streamCtx, streamConn, nil, nil)
+	shsClient, err := secretstream.NewClient(streamConn, secretstream.NewAppKey(m.cfg.AppKey), m.cfg.Sbot.KeyPair.Private(), ed25519.PublicKey(target.PubKey()))
+	if err != nil {
+		_ = streamConn.Close()
+		return fmt.Errorf("tunnel.connect inner SHS init: %w", err)
+	}
+	if err := shsClient.Handshake(); err != nil {
+		_ = streamConn.Close()
+		return fmt.Errorf("tunnel.connect inner SHS handshake: %w", err)
+	}
+
+	endpoint := muxrpc.NewServer(streamCtx, shsClient, nil, nil)
 	defer endpoint.Terminate()
 	defer func() {
-		_ = streamConn.Close()
+		_ = shsClient.Close()
 		tunnelSource.Cancel(nil)
 		_ = tunnelSink.Close()
 	}()

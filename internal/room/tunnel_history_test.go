@@ -15,6 +15,7 @@ import (
 	roomhandlers "github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc/handlers/room"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomdb"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/secretstream"
 )
 
 func TestRuntimeTunnelConnectSupportsCreateHistoryStream(t *testing.T) {
@@ -72,7 +73,7 @@ func TestRuntimeTunnelConnectSupportsCreateHistoryStream(t *testing.T) {
 	})
 	handlerMux.Register(muxrpc.Method{"tunnel", "connect"}, &recordingHandler{
 		method:   muxrpc.Method{"tunnel", "connect"},
-		inner:    roomhandlers.NewClientTunnelConnectHandler(memberKey.FeedRef(), handlerMux),
+		inner:    roomhandlers.NewClientTunnelConnectHandler(memberKey, secretstream.NewAppKey("boxstream"), handlerMux),
 		calledCh: tunnelCalled,
 	})
 
@@ -104,10 +105,18 @@ func TestRuntimeTunnelConnectSupportsCreateHistoryStream(t *testing.T) {
 	streamCtx, streamCancel := context.WithCancel(ctx)
 	defer streamCancel()
 	streamConn := muxrpc.NewByteStreamConn(streamCtx, tunnelSource, tunnelSink, probeClient.conn.RemoteAddr())
-	endpoint := muxrpc.NewServer(streamCtx, streamConn, nil, nil)
+	shsClient, err := secretstream.NewClient(streamConn, secretstream.NewAppKey("boxstream"), probeKey.Private(), memberKey.FeedRef().PubKey())
+	if err != nil {
+		t.Fatalf("inner SHS client init: %v", err)
+	}
+	if err := shsClient.Handshake(); err != nil {
+		t.Fatalf("inner SHS handshake failed: %v", err)
+	}
+
+	endpoint := muxrpc.NewServer(streamCtx, shsClient, nil, nil)
 	defer endpoint.Terminate()
 	defer func() {
-		_ = streamConn.Close()
+		_ = shsClient.Close()
 		tunnelSource.Cancel(nil)
 		_ = tunnelSink.Close()
 	}()

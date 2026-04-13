@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"time"
 )
 
 type byteStreamConn struct {
@@ -25,7 +26,7 @@ type byteStreamAddr string
 func (a byteStreamAddr) Network() string { return "muxrpc-stream" }
 func (a byteStreamAddr) String() string  { return string(a) }
 
-func NewByteStreamConn(ctx context.Context, source *ByteSource, sink *ByteSink, remote net.Addr) Conn {
+func NewByteStreamConn(ctx context.Context, source *ByteSource, sink *ByteSink, remote net.Addr) net.Conn {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -114,3 +115,11 @@ func (c *byteStreamConn) Close() error {
 func (c *byteStreamConn) RemoteAddr() net.Addr {
 	return c.remote
 }
+
+func (c *byteStreamConn) LocalAddr() net.Addr {
+	return byteStreamAddr("muxrpc-stream")
+}
+
+func (c *byteStreamConn) SetDeadline(_ time.Time) error      { return nil }
+func (c *byteStreamConn) SetReadDeadline(_ time.Time) error  { return nil }
+func (c *byteStreamConn) SetWriteDeadline(_ time.Time) error { return nil }

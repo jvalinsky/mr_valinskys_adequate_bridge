@@ -13,7 +13,9 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/room"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/secretstream"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssbruntime"
+	"golang.org/x/crypto/ed25519"
 )
 
 type roomAwareReverseBlobFetcher struct {
@@ -98,10 +100,20 @@ func (f *roomAwareReverseBlobFetcher) fetchViaRoomTunnel(ctx context.Context, ta
 	defer streamCancel()
 
 	streamConn := muxrpc.NewByteStreamConn(streamCtx, tunnelSource, tunnelSink, roomPeer.Conn.RemoteAddr())
-	endpoint := muxrpc.NewServer(streamCtx, streamConn, nil, nil)
+	shsClient, err := secretstream.NewClient(streamConn, f.runtime.Node().AppKey(), f.runtime.Node().KeyPair.Private(), ed25519.PublicKey(target.PubKey()))
+	if err != nil {
+		_ = streamConn.Close()
+		return fmt.Errorf("open room tunnel for %s: inner SHS init: %w", target.String(), err)
+	}
+	if err := shsClient.Handshake(); err != nil {
+		_ = streamConn.Close()
+		return fmt.Errorf("open room tunnel for %s: inner SHS handshake: %w", target.String(), err)
+	}
+
+	endpoint := muxrpc.NewServer(streamCtx, shsClient, nil, nil)
 	defer endpoint.Terminate()
 	defer func() {
-		_ = streamConn.Close()
+		_ = shsClient.Close()
 		tunnelSource.Cancel(nil)
 		_ = tunnelSink.Close()
 	}()

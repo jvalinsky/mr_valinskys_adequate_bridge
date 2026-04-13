@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -92,15 +93,21 @@ func runServe(args []string) error {
 	}
 	expectedURIs := splitCSV(cfg.ExpectedURIs)
 
+	appKey, err := parseAppKey(cfg.SHSCap)
+	if err != nil {
+		return fmt.Errorf("parse app key: %w", err)
+	}
+
 	serveDone := make(chan serveResult, 1)
 	handler := &tunnelServeHandler{
-		keyPair:      keyPair,
-		dbPath:       cfg.DBPath,
-		sourceDID:    cfg.SourceDID,
-		expectedURIs: expectedURIs,
-		sourceFeed:   sourceFeed,
+		keyPair:       keyPair,
+		appKey:        appKey,
+		dbPath:        cfg.DBPath,
+		sourceDID:     cfg.SourceDID,
+		expectedURIs:  expectedURIs,
+		sourceFeed:    sourceFeed,
 		hasSourceFeed: hasSourceFeed,
-		serveDone:    serveDone,
+		serveDone:     serveDone,
 	}
 
 	conn, err := openRoomEndpoint(ctx, keyPair, *roomFeed, cfg.RoomAddr, cfg.SHSCap, handler)
@@ -188,16 +195,27 @@ func runRead(args []string) error {
 		return fmt.Errorf("open tunnel.connect duplex: %w", err)
 	}
 
-	if !source.Next(ctx) {
-		if err := source.Err(); err != nil {
-			return fmt.Errorf("read tunnel snapshot frame: %w", err)
-		}
-		return fmt.Errorf("read tunnel snapshot frame: stream closed")
-	}
-	payload, err := source.Bytes()
+	appKey, err := parseAppKey(cfg.SHSCap)
 	if err != nil {
-		return fmt.Errorf("decode tunnel snapshot bytes: %w", err)
+		return fmt.Errorf("parse app key: %w", err)
 	}
+
+	streamConn := muxrpc.NewByteStreamConn(ctx, source, sink, conn.netConn.RemoteAddr())
+	shsClient, err := secretstream.NewClient(streamConn, appKey, keyPair.Private(), targetFeed.PubKey())
+	if err != nil {
+		streamConn.Close()
+		return fmt.Errorf("tunnel.connect inner SHS init: %w", err)
+	}
+	if err := shsClient.Handshake(); err != nil {
+		streamConn.Close()
+		return fmt.Errorf("tunnel.connect inner SHS handshake: %w", err)
+	}
+
+	payload, err := io.ReadAll(shsClient)
+	if err != nil {
+		return fmt.Errorf("read tunnel snapshot bytes: %w", err)
+	}
+	_ = shsClient.Close()
 	_ = sink.Close()
 
 	var snapshot tunnelSnapshot
@@ -265,6 +283,24 @@ func runProbe(args []string) error {
 	if err != nil {
 		return fmt.Errorf("probe tunnel.connect duplex: %w", err)
 	}
+
+	appKey, err := parseAppKey(cfg.SHSCap)
+	if err != nil {
+		return fmt.Errorf("parse app key: %w", err)
+	}
+
+	streamConn := muxrpc.NewByteStreamConn(ctx, source, sink, conn.netConn.RemoteAddr())
+	shsClient, err := secretstream.NewClient(streamConn, appKey, keyPair.Private(), targetFeed.PubKey())
+	if err != nil {
+		streamConn.Close()
+		return fmt.Errorf("probe inner SHS init: %w", err)
+	}
+	if err := shsClient.Handshake(); err != nil {
+		streamConn.Close()
+		return fmt.Errorf("probe inner SHS handshake: %w", err)
+	}
+
+	_ = shsClient.Close()
 	_ = sink.Close()
 	source.Cancel(nil)
 
@@ -409,13 +445,14 @@ func (h *whoamiHandler) HandleConnect(ctx context.Context, edp muxrpc.Endpoint) 
 
 // tunnelServeHandler handles tunnel.connect for the serve command
 type tunnelServeHandler struct {
-	keyPair      *keys.KeyPair
-	dbPath       string
-	sourceDID    string
-	expectedURIs []string
-	sourceFeed   refs.FeedRef
+	keyPair       *keys.KeyPair
+	appKey        secretstream.AppKey
+	dbPath        string
+	sourceDID     string
+	expectedURIs  []string
+	sourceFeed    refs.FeedRef
 	hasSourceFeed bool
-	serveDone    chan serveResult
+	serveDone     chan serveResult
 }
 
 func (h *tunnelServeHandler) Handled(m muxrpc.Method) bool {
@@ -467,8 +504,24 @@ func (h *tunnelServeHandler) handleTunnelConnect(ctx context.Context, req *muxrp
 		req.CloseWithError(fmt.Errorf("marshal snapshot: %w", err))
 		return
 	}
-	if _, err := sink.Write(payload); err != nil {
+
+	streamConn := muxrpc.NewByteStreamConn(ctx, req.Source(), sink, req.RemoteAddr())
+	shsServer, err := secretstream.NewServer(streamConn, h.appKey, h.keyPair.Private())
+	if err != nil {
+		req.CloseWithError(fmt.Errorf("tunnel.connect inner SHS init: %w", err))
+		return
+	}
+	if err := shsServer.Handshake(); err != nil {
+		req.CloseWithError(fmt.Errorf("tunnel.connect inner SHS handshake: %w", err))
+		return
+	}
+
+	if _, err := shsServer.Write(payload); err != nil {
 		req.CloseWithError(fmt.Errorf("write snapshot payload: %w", err))
+		return
+	}
+	if err := shsServer.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
+		req.CloseWithError(fmt.Errorf("close snapshot shs stream: %w", err))
 		return
 	}
 	if err := sink.Close(); err != nil && !errors.Is(err, os.ErrClosed) {
@@ -528,13 +581,10 @@ func openRoomEndpoint(
 	appKeyStr string,
 	handler muxrpc.Handler,
 ) (*roomConn, error) {
-	// Parse app key
-	appKeyBytes, err := base64.StdEncoding.DecodeString(strings.TrimSpace(appKeyStr))
+	appKey, err := parseAppKey(appKeyStr)
 	if err != nil {
-		return nil, fmt.Errorf("decode app key: %w", err)
+		return nil, err
 	}
-	var appKey secretstream.AppKey
-	copy(appKey[:], appKeyBytes)
 
 	// Dial TCP
 	tcpAddr, err := net.ResolveTCPAddr("tcp", strings.TrimSpace(roomAddr))
@@ -765,3 +815,17 @@ func fatalf(format string, args ...interface{}) {
 	fmt.Fprintf(os.Stderr, format+"\n", args...)
 	os.Exit(1)
 }
+
+func parseAppKey(appKeyStr string) (secretstream.AppKey, error) {
+	var appKey secretstream.AppKey
+	appKeyBytes, err := base64.StdEncoding.DecodeString(strings.TrimSpace(appKeyStr))
+	if err != nil {
+		return appKey, fmt.Errorf("decode app key: %w", err)
+	}
+	if len(appKeyBytes) != len(appKey) {
+		return appKey, fmt.Errorf("invalid app key length (got %d, need %d)", len(appKeyBytes), len(appKey))
+	}
+	copy(appKey[:], appKeyBytes)
+	return appKey, nil
+}
+

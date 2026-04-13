@@ -20,6 +20,7 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/network"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomdb"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/secretstream"
 )
 
 const (
@@ -316,7 +317,7 @@ func (m *BridgedRoomPeerManager) runSession(ctx context.Context, sess *bridgedRo
 		return
 	}
 
-	handler := newBridgedPeerSessionHandler(sess.feed, sess.key, m.cfg.Store, m.logger)
+	handler := newBridgedPeerSessionHandler(sess.feed, sess.key, secretstream.NewAppKey(m.cfg.AppKey), m.cfg.Store, m.logger)
 	client := network.NewClient(network.Options{
 		KeyPair: sess.key,
 		AppKey:  m.cfg.AppKey,
@@ -387,7 +388,7 @@ func (m *BridgedRoomPeerManager) runSession(ctx context.Context, sess *bridgedRo
 	}
 }
 
-func newBridgedPeerSessionHandler(feed refs.FeedRef, key *keys.KeyPair, store *feedlog.StoreImpl, logger *log.Logger) muxrpc.Handler {
+func newBridgedPeerSessionHandler(feed refs.FeedRef, key *keys.KeyPair, appKey secretstream.AppKey, store *feedlog.StoreImpl, logger *log.Logger) muxrpc.Handler {
 	historyHandler := &singleFeedHistoryHandler{
 		feed:  feed,
 		inner: legacyhandlers.NewHistoryStreamHandler(store),
@@ -410,6 +411,8 @@ func newBridgedPeerSessionHandler(feed refs.FeedRef, key *keys.KeyPair, store *f
 	})
 	mux.Register(muxrpc.Method{"tunnel", "connect"}, &bridgedPeerTunnelConnectHandler{
 		feed:   feed,
+		kp:     key,
+		appKey: appKey,
 		inner:  inner,
 		logger: logger,
 	})
@@ -463,6 +466,8 @@ func parseHistoryRequestFeed(raw json.RawMessage) (refs.FeedRef, error) {
 
 type bridgedPeerTunnelConnectHandler struct {
 	feed   refs.FeedRef
+	kp     *keys.KeyPair
+	appKey secretstream.AppKey
 	inner  muxrpc.Handler
 	logger *log.Logger
 }
@@ -501,10 +506,21 @@ func (h *bridgedPeerTunnelConnectHandler) HandleCall(ctx context.Context, req *m
 	innerCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	streamConn := muxrpc.NewByteStreamConn(innerCtx, source, sink, req.RemoteAddr())
-	innerRPC := muxrpc.NewServer(innerCtx, streamConn, h.inner, nil)
+
+	shs, err := secretstream.NewServer(streamConn, h.appKey, h.kp.Private())
+	if err != nil {
+		req.CloseWithError(fmt.Errorf("tunnel.connect: inner SHS init: %w", err))
+		return
+	}
+	if err := shs.Handshake(); err != nil {
+		req.CloseWithError(fmt.Errorf("tunnel.connect: inner SHS handshake: %w", err))
+		return
+	}
+
+	innerRPC := muxrpc.NewServer(innerCtx, shs, h.inner, nil)
 	<-innerRPC.Wait()
 	_ = innerRPC.Terminate()
-	_ = streamConn.Close()
+	_ = shs.Close()
 	_ = req.Close()
 }
 
