@@ -1,16 +1,16 @@
 FROM golang:1.26-bookworm AS build
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends gcc libc6-dev sqlite3 && \
+    apt-get install -y --no-install-recommends ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY . .
-RUN CGO_ENABLED=1 go build -o ssb-client ./cmd/ssb-client
+RUN CGO_ENABLED=0 go build -o ssb-client ./cmd/ssb-client
 
 FROM debian:bookworm-slim
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates curl sqlite3 && \
+    apt-get install -y --no-install-recommends ca-certificates curl && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
