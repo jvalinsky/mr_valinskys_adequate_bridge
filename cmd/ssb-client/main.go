@@ -195,6 +195,17 @@ func main() {
 				Action: runReplication,
 			},
 			{
+				Name:  "compat",
+				Usage: "Compatibility and parity probes against required SSB surfaces",
+				Subcommands: []*cli.Command{
+					{
+						Name:   "probe",
+						Usage:  "Validate required baseline manifest methods via /api/capabilities",
+						Action: runCompatProbe,
+					},
+				},
+			},
+			{
 				Name:  "peers",
 				Usage: "Manage peers (hits running server)",
 				Subcommands: []*cli.Command{

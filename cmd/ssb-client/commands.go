@@ -287,3 +287,48 @@ func runPeersConnect(c *cli.Context) error {
 func runReplication(c *cli.Context) error {
 	return apiGet("/api/replication")
 }
+
+func runCompatProbe(c *cli.Context) error {
+	resp, err := http.Get(serverURL("/api/capabilities"))
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("server returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	var payload struct {
+		RPC struct {
+			MissingMethods []string            `json:"missingMethods"`
+			ManifestByType map[string][]string `json:"manifestByType"`
+		} `json:"rpc"`
+		KnownGaps []string `json:"knownGaps"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return fmt.Errorf("decode capabilities: %w", err)
+	}
+
+	if len(payload.RPC.MissingMethods) == 0 {
+		fmt.Println("compat probe: OK (no required rpc methods missing)")
+	} else {
+		fmt.Printf("compat probe: FAIL (%d required rpc methods missing)\n", len(payload.RPC.MissingMethods))
+		for _, m := range payload.RPC.MissingMethods {
+			fmt.Printf(" - %s\n", m)
+		}
+	}
+
+	if len(payload.KnownGaps) > 0 {
+		fmt.Println("known gaps:")
+		for _, gap := range payload.KnownGaps {
+			fmt.Printf(" - %s\n", gap)
+		}
+	}
+
+	if len(payload.RPC.MissingMethods) > 0 {
+		return fmt.Errorf("compatibility requirements not met")
+	}
+	return nil
+}
