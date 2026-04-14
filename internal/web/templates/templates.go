@@ -19,21 +19,85 @@ const pageLayout = `
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ATProto ↔ SSB Bridge Admin</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     <style>
         :root {
             color-scheme: light;
             --bg: #f4f1ea;
+            --bg-subtle: #ebe6dd;
             --panel: #fffdf9;
+            --panel-solid: #ffffff;
             --ink: #1a2622;
-            --muted: #4a5753;
+            --ink-strong: #0f1814;
+            --muted: #5c6b65;
             --line: #d7d2c6;
+            --line-strong: #c4bdb0;
             --brand: #1a6b5a;
             --brand-strong: #124a3e;
+            --brand-soft: #2a8f7a;
             --warn: #8a5d12;
+            --warn-bg: #fff8e6;
             --danger: #b33030;
+            --danger-bg: #fdeaea;
             --ok: #1a6b35;
-            --shadow: 0 10px 24px rgba(28, 41, 36, 0.08);
-            --radius: 14px;
+            --ok-bg: #e8f6ec;
+            --shadow: 0 4px 12px rgba(28, 41, 36, 0.06), 0 1px 3px rgba(28, 41, 36, 0.04);
+            --shadow-hover: 0 8px 24px rgba(28, 41, 36, 0.1), 0 2px 8px rgba(28, 41, 36, 0.06);
+            --radius: 12px;
+            --radius-sm: 8px;
+            --transition: 180ms ease;
+        }
+
+        [data-theme="dark"] {
+            color-scheme: dark;
+            --bg: #121a17;
+            --bg-subtle: #1a2521;
+            --panel: #1e2925;
+            --panel-solid: #232d28;
+            --ink: #e4ebe8;
+            --ink-strong: #f0f6f3;
+            --muted: #8a9b94;
+            --line: #2d3a34;
+            --line-strong: #3d4f46;
+            --brand: #3db892;
+            --brand-strong: #5ccda8;
+            --brand-soft: #2a9d7a;
+            --warn: #e8a935;
+            --warn-bg: #2a2215;
+            --danger: #e85a5a;
+            --danger-bg: #2a1a1a;
+            --ok: #4cc76a;
+            --ok-bg: #1a2a1e;
+            --shadow: 0 4px 12px rgba(0, 0, 0, 0.3), 0 1px 3px rgba(0, 0, 0, 0.2);
+            --shadow-hover: 0 8px 24px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.25);
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root:not([data-theme="light"]) {
+                color-scheme: dark;
+                --bg: #121a17;
+                --bg-subtle: #1a2521;
+                --panel: #1e2925;
+                --panel-solid: #232d28;
+                --ink: #e4ebe8;
+                --ink-strong: #f0f6f3;
+                --muted: #8a9b94;
+                --line: #2d3a34;
+                --line-strong: #3d4f46;
+                --brand: #3db892;
+                --brand-strong: #5ccda8;
+                --brand-soft: #2a9d7a;
+                --warn: #e8a935;
+                --warn-bg: #2a2215;
+                --danger: #e85a5a;
+                --danger-bg: #2a1a1a;
+                --ok: #4cc76a;
+                --ok-bg: #1a2a1e;
+                --shadow: 0 4px 12px rgba(0, 0, 0, 0.3), 0 1px 3px rgba(0, 0, 0, 0.2);
+                --shadow-hover: 0 8px 24px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.25);
+            }
         }
 
         * {
@@ -43,9 +107,14 @@ const pageLayout = `
         body {
             margin: 0;
             min-height: 100vh;
-            font-family: "Avenir Next", "Segoe UI", sans-serif;
+            font-family: "Sora", system-ui, sans-serif;
             background: var(--bg);
             color: var(--ink);
+            transition: background var(--transition), color var(--transition);
+        }
+
+        code, .mono, pre {
+            font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
         }
 
         a {
@@ -118,8 +187,59 @@ const pageLayout = `
         }
 
         .nav-link.is-active {
-            background: #f8fffd;
+            background: var(--panel-solid);
             color: var(--brand-strong);
+        }
+
+        [data-theme="dark"] .nav-link.is-active {
+            background: var(--brand);
+            color: var(--ink-strong);
+        }
+
+        .theme-toggle {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 36px;
+            height: 36px;
+            border: 1px solid rgba(240, 248, 245, 0.3);
+            border-radius: 50%;
+            background: transparent;
+            color: #f0f8f5;
+            cursor: pointer;
+            transition: transform var(--transition), background var(--transition);
+            flex-shrink: 0;
+            margin-left: 8px;
+        }
+
+        .theme-toggle:hover {
+            background: rgba(255, 255, 255, 0.15);
+            transform: scale(1.05);
+        }
+
+        [data-theme="dark"] .icon-sun,
+        [data-theme="dark"] .icon-moon,
+        :root:not([data-theme]) .icon-sun,
+        :root:not([data-theme="dark"]) .icon-sun {
+            display: none;
+        }
+
+        [data-theme="dark"] .icon-moon {
+            display: block;
+        }
+
+        :root:not([data-theme]) .icon-moon,
+        :root:not([data-theme="dark"]) .icon-moon {
+            display: none;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            :root:not([data-theme]) .icon-moon {
+                display: block;
+            }
+            :root:not([data-theme]) .icon-sun {
+                display: none;
+            }
         }
 
         .app-main {
@@ -148,10 +268,22 @@ const pageLayout = `
             color: var(--muted);
         }
 
-        .status-strip.tone-success { border-left: 6px solid var(--ok); }
-        .status-strip.tone-warning { border-left: 6px solid var(--warn); }
-        .status-strip.tone-danger { border-left: 6px solid var(--danger); }
-        .status-strip.tone-neutral { border-left: 6px solid var(--brand); }
+        .status-strip.tone-success { 
+            border-left: 1px solid var(--ok);
+            background: var(--ok-bg);
+        }
+        .status-strip.tone-warning { 
+            border-left: 1px solid var(--warn);
+            background: var(--warn-bg);
+        }
+        .status-strip.tone-danger { 
+            border-left: 1px solid var(--danger);
+            background: var(--danger-bg);
+        }
+        .status-strip.tone-neutral { 
+            border-left: 1px solid var(--brand);
+            background: var(--panel);
+        }
 
         .section {
             background: var(--panel);
@@ -188,18 +320,19 @@ const pageLayout = `
             text-decoration: none;
             border: 1px solid var(--line);
             border-radius: 12px;
-            background: #fff;
+            background: var(--panel-solid);
             padding: 14px;
             display: grid;
             gap: 5px;
-            transition: transform 120ms ease, box-shadow 120ms ease;
+            transition: transform var(--transition), box-shadow var(--transition), background var(--transition);
         }
 
         .metric-card:hover,
         .metric-card:focus-visible {
-            transform: translateY(-1px);
-            box-shadow: var(--shadow);
+            transform: translateY(-2px);
+            box-shadow: var(--shadow-hover);
             outline: none;
+            background: var(--panel-solid);
         }
 
         .metric-label {
@@ -266,7 +399,7 @@ const pageLayout = `
             border: 1px solid var(--line);
             border-radius: 10px;
             padding: 10px 12px;
-            background: #fff;
+            background: var(--panel-solid);
             display: flex;
             justify-content: space-between;
             gap: 10px;
@@ -282,11 +415,11 @@ const pageLayout = `
             white-space: nowrap;
         }
 
-        .pill.state-published { background: #e6f6eb; color: #1a6b35; }
-        .pill.state-failed { background: #fde9e9; color: #b33030; }
-        .pill.state-deferred { background: #fff2dd; color: #7a5f00; }
-        .pill.state-deleted { background: #eef0f2; color: #3f4b57; }
-        .pill.state-pending { background: #eceff2; color: #47505b; }
+        .pill.state-published { background: var(--ok-bg); color: var(--ok); }
+        .pill.state-failed { background: var(--danger-bg); color: var(--danger); }
+        .pill.state-deferred { background: var(--warn-bg); color: var(--warn); }
+        .pill.state-deleted { background: var(--bg-subtle); color: var(--muted); }
+        .pill.state-pending { background: var(--bg-subtle); color: var(--muted); }
 
         .table-wrap {
             overflow-x: auto;
@@ -314,15 +447,15 @@ const pageLayout = `
             letter-spacing: 0.08em;
             color: var(--muted);
             font-weight: 700;
-            background: #f8f6f1;
+            background: var(--bg-subtle);
         }
 
         tbody tr:nth-child(even) {
-            background: #f9f7f2;
+            background: var(--bg-subtle);
         }
 
         tbody tr:hover {
-            background: rgba(26, 107, 90, 0.04);
+            background: rgba(26, 107, 90, 0.08);
         }
 
         .mono {
@@ -344,7 +477,7 @@ const pageLayout = `
         .button-link {
             border: 1px solid var(--line);
             border-radius: 9px;
-            background: #fff;
+            background: var(--panel-solid);
             color: var(--ink);
             font-size: 0.82rem;
             font-weight: 700;
@@ -370,7 +503,7 @@ const pageLayout = `
         .button-danger {
             border: 1px solid var(--line);
             border-radius: 9px;
-            background: #fff;
+            background: var(--panel-solid);
             color: var(--ink);
             font-size: 0.82rem;
             font-weight: 700;
@@ -385,7 +518,7 @@ const pageLayout = `
             outline: none;
             border-color: var(--brand);
             color: var(--brand-strong);
-            background: #ffe6e6;
+            background: var(--danger-bg);
         }
 
         .toolbar {
@@ -407,7 +540,7 @@ const pageLayout = `
         .room-subnav a {
             border: 1px solid var(--line);
             border-radius: 999px;
-            background: #fff;
+            background: var(--panel-solid);
             padding: 7px 12px;
             text-decoration: none;
             font-size: 0.84rem;
@@ -422,7 +555,7 @@ const pageLayout = `
 
         .room-subnav a.is-active {
             background: var(--brand);
-            color: #fff;
+            color: var(--ink-strong);
             border-color: var(--brand-strong);
         }
 
@@ -462,7 +595,7 @@ const pageLayout = `
             border: 1px solid var(--line);
             border-radius: 9px;
             padding: 8px;
-            background: #fff;
+            background: var(--panel-solid);
             color: var(--ink);
         }
 
@@ -495,7 +628,7 @@ const pageLayout = `
             border: 1px solid var(--line);
             border-radius: 999px;
             padding: 3px 10px;
-            background: #fff;
+            background: var(--panel-solid);
             font-size: 0.8rem;
         }
 
@@ -569,6 +702,16 @@ const pageLayout = `
             text-align: center;
             color: var(--muted);
             padding: 20px;
+            font-style: italic;
+        }
+
+        @keyframes fade-in {
+            from { opacity: 0; transform: translateY(8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .section-pad {
+            animation: fade-in 300ms ease-out;
         }
 
         @media (max-width: 900px) {
@@ -608,7 +751,11 @@ const pageLayout = `
                 <a href="/connections" class="{{navClass .Chrome.ActiveNav "connections"}}" {{navCurrent .Chrome.ActiveNav "connections"}}>Connections</a>
                 <a href="/reverse" class="{{navClass .Chrome.ActiveNav "reverse"}}" {{navCurrent .Chrome.ActiveNav "reverse"}}>Reverse Sync</a>
                 <a href="/state" class="{{navClass .Chrome.ActiveNav "state"}}" {{navCurrent .Chrome.ActiveNav "state"}}>State</a>
-             </nav>
+                <button class="theme-toggle" aria-label="Toggle dark mode" title="Toggle theme">
+                    <svg class="icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
+                    <svg class="icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
+                </button>
+            </nav>
 
         </div>
     </header>
@@ -637,6 +784,23 @@ const pageLayout = `
     </main>
 
     <script>
+      (function() {
+        var saved = localStorage.getItem("theme");
+        var prefers = window.matchMedia("(prefers-color-scheme: dark)").matches;
+        if (saved === "dark" || (!saved && prefers)) {
+          document.documentElement.setAttribute("data-theme", "dark");
+        }
+        document.querySelector(".theme-toggle").addEventListener("click", function() {
+          var isDark = document.documentElement.getAttribute("data-theme") === "dark";
+          if (isDark) {
+            document.documentElement.setAttribute("data-theme", "light");
+            localStorage.setItem("theme", "light");
+          } else {
+            document.documentElement.setAttribute("data-theme", "dark");
+            localStorage.setItem("theme", "dark");
+          }
+        });
+      })();
       document.querySelectorAll(".filter-panel select").forEach(function (sel) {
         sel.addEventListener("change", function () { sel.closest("form").submit(); });
       });
@@ -1260,12 +1424,12 @@ const messageDetailContent = `
 <section class="grid-two">
     <article class="section">
         <div class="section-pad"><h2 class="page-title" style="font-size:1.2rem">Raw ATProto JSON</h2></div>
-        <pre class="section-pad" style="background:#f8f9fa;overflow:auto;max-height:600px;font-size:0.85rem">{{.RawATProtoJSON}}</pre>
+        <pre class="section-pad" style="background:var(--bg-subtle);overflow:auto;max-height:600px;font-size:0.85rem">{{.RawATProtoJSON}}</pre>
     </article>
  
     <article class="section">
         <div class="section-pad"><h2 class="page-title" style="font-size:1.2rem">Raw SSB JSON</h2></div>
-        <pre class="section-pad" style="background:#f8f9fa;overflow:auto;max-height:600px;font-size:0.85rem">{{.RawSSBJSON}}</pre>
+        <pre class="section-pad" style="background:var(--bg-subtle);overflow:auto;max-height:600px;font-size:0.85rem">{{.RawSSBJSON}}</pre>
     </article>
 </section>
 
