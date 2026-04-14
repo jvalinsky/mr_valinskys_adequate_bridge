@@ -11,12 +11,17 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/feedlog"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/keys"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomdb"
 )
 
 func formatBytes(b int64) string {
@@ -133,8 +138,141 @@ func (h *clientUIHandler) handleFeed(w http.ResponseWriter, r *http.Request) {
 	limit := parseLimit(r, 50)
 	filterType := r.URL.Query().Get("type")
 	filterAuthor := r.URL.Query().Get("author")
+	mode := strings.TrimSpace(r.URL.Query().Get("mode"))
+	channel := strings.TrimSpace(r.URL.Query().Get("channel"))
+	searchQuery := strings.TrimSpace(r.URL.Query().Get("q"))
 	store := h.sbot.Store()
 	whoami, _ := h.sbot.Whoami()
+
+	if h.index != nil {
+		if err := h.ensureIndexSynced(); err != nil {
+			h.slog.Warn("ui index sync failed in feed page", "error", err)
+		} else {
+			timelineModeValue := timelineMode(mode)
+			if timelineModeValue == "" {
+				switch {
+				case filterAuthor != "":
+					timelineModeValue = timelineModeProfile
+				case channel != "":
+					timelineModeValue = timelineModeChannel
+				default:
+					timelineModeValue = timelineModeNetwork
+				}
+			}
+
+			items, err := h.index.queryTimeline(timelineQuery{
+				Mode:     timelineModeValue,
+				Author:   filterAuthor,
+				Channel:  channel,
+				Search:   searchQuery,
+				Limit:    limit,
+				SelfFeed: whoami,
+			})
+			if err == nil {
+				var body strings.Builder
+				fmt.Fprintf(&body, `<h1>Feed</h1>
+<p><a href="/compose">Compose new post</a></p>
+<div class="panel">
+  <strong>Timeline Modes:</strong>
+  <a href="/feed?mode=inbox">Inbox</a> ·
+  <a href="/feed?mode=network">Network</a> ·
+  <a href="/feed?mode=mentions">Mentions</a>
+</div>
+<form method="GET" action="/feed" class="panel">
+  <div class="field"><label>Search</label><input type="text" name="q" value="%s" placeholder="Search text, author, raw JSON"></div>
+  <div class="field"><label>Channel</label><input type="text" name="channel" value="%s" placeholder="channel name"></div>
+  <div class="field"><label>Author</label><input type="text" name="author" value="%s" placeholder="@feed.ed25519"></div>
+  <div class="field"><label>Mode</label><input type="text" name="mode" value="%s" placeholder="inbox|network|profile|channel|mentions"></div>
+  <button type="submit">Apply Filters</button>
+</form>
+<p>Showing %d messages (mode=%s)</p>`,
+					html.EscapeString(searchQuery),
+					html.EscapeString(channel),
+					html.EscapeString(filterAuthor),
+					html.EscapeString(mode),
+					len(items),
+					html.EscapeString(string(timelineModeValue)))
+
+				if len(items) == 0 {
+					fmt.Fprintf(&body, `<div class="empty">No messages match the selected mode and filters.</div>`)
+				}
+
+				for _, item := range items {
+					timestamp := time.Unix(item.TimestampMS/1000, 0).Format("2006-01-02 15:04:05")
+					content := item.Text
+					if item.IsPrivate && item.PrivateText != "" {
+						content = item.PrivateText
+					}
+
+					actualType := item.Type
+					if actualType == "" || actualType == "unknown" {
+						actualType = extractTypeFromRawJSON(item.RawJSON)
+					}
+					typeClass := fmt.Sprintf("post-type-%s", actualType)
+					badgeType := actualType
+					if badgeType == "" {
+						badgeType = "unknown"
+					}
+
+					authorShort := item.Author
+					if len(authorShort) > 32 {
+						authorShort = authorShort[:32] + "..."
+					}
+
+					postText := content
+					if postText == "" {
+						postText = extractTextFromRawJSON(item.RawJSON)
+					}
+
+					fmt.Fprintf(&body, `<div class="post %s">
+  <div class="post-header">
+    <span class="author" title="%s">%s</span>
+    <span class="badge">%s</span>
+    <span class="seq">seq=%d</span>
+    <span class="timestamp">%s</span>
+  </div>`,
+						html.EscapeString(typeClass),
+						html.EscapeString(item.Author),
+						html.EscapeString(authorShort),
+						html.EscapeString(badgeType),
+						item.Sequence,
+						html.EscapeString(timestamp))
+
+					if postText != "" {
+						escapedContent := html.EscapeString(postText)
+						escapedContent = strings.ReplaceAll(escapedContent, "\n", "<br>")
+						fmt.Fprintf(&body, `<div class="post-content">%s</div>`, escapedContent)
+					} else {
+						actionBody := renderMessageAction(item)
+						fmt.Fprintf(&body, `<div class="post-content message-action">%s</div>`, actionBody)
+					}
+
+					fmt.Fprintf(&body, `<div class="post-actions">
+    <a href="/message/%s/%d">Message Detail</a>
+    <a href="/feed?author=%s&mode=profile">Author Feed</a>`,
+						url.PathEscape(item.Author),
+						item.Sequence,
+						url.QueryEscape(item.Author))
+
+					if item.Root != "" || item.Branch != "" {
+						threadKey := item.Key
+						if item.Root != "" {
+							threadKey = item.Root
+						}
+						fmt.Fprintf(&body, ` · <a href="/api/thread/%s" target="_blank" rel="noopener">Thread API</a>`, url.PathEscape(threadKey))
+					}
+
+					fmt.Fprintf(&body, `</div><details><summary>Raw JSON</summary><pre>%s</pre></details></div>`,
+						html.EscapeString(prettyJSONMust(item)))
+				}
+
+				w.Header().Set("Content-Type", "text/html")
+				fmt.Fprint(w, htmlPage("Feed", body.String()))
+				return
+			}
+			h.slog.Warn("timeline query failed in feed page; falling back to legacy feed", "error", err)
+		}
+	}
 
 	var allPosts []FeedPost
 
@@ -189,21 +327,53 @@ func (h *clientUIHandler) handleFeed(w http.ResponseWriter, r *http.Request) {
 	for _, post := range allPosts {
 		timestamp := time.Unix(post.Timestamp/1000, 0).Format("2006-01-02 15:04:05")
 		escapedContent := html.EscapeString(post.Content)
-		authorDisplay := html.EscapeString(post.Author)
+		escapedContent = strings.ReplaceAll(escapedContent, "\n", "<br>")
+		authorDisplay := post.Author
+		if len(authorDisplay) > 32 {
+			authorDisplay = authorDisplay[:32] + "..."
+		}
 
-		fmt.Fprintf(&body, `<div class="post">
+		actualType := post.Type
+		if actualType == "" || actualType == "unknown" {
+			actualType = extractTypeFromRawJSON(post.RawJSON)
+		}
+		typeClass := fmt.Sprintf("post-type-%s", actualType)
+		badgeType := actualType
+		if badgeType == "" {
+			badgeType = "unknown"
+		}
+
+		fmt.Fprintf(&body, `<div class="post %s">
   <div class="post-header">
-    <span class="author">%s</span>
+    <span class="author" title="%s">%s</span>
     <span class="badge">%s</span>
-    seq=%d &middot; %s
-  </div>`, authorDisplay, html.EscapeString(post.Type), post.Sequence, timestamp)
+    <span class="seq">seq=%d</span>
+    <span class="timestamp">%s</span>
+  </div>`,
+			html.EscapeString(typeClass),
+			html.EscapeString(post.Author),
+			html.EscapeString(authorDisplay),
+			html.EscapeString(badgeType),
+			post.Sequence,
+			timestamp)
 
 		if post.Content != "" {
 			fmt.Fprintf(&body, `<div class="post-content">%s</div>`, escapedContent)
+		} else {
+			actionBody := renderLegacyMessageAction(post.Type, post.RawJSON)
+			fmt.Fprintf(&body, `<div class="post-content message-action">%s</div>`, actionBody)
 		}
 
-		fmt.Fprintf(&body, `<details><summary>Raw JSON</summary><pre>%s</pre></details>
-</div>`, html.EscapeString(post.RawJSON))
+		fmt.Fprintf(&body, `<div class="post-actions">
+    <a href="/message/%s/%d">Message Detail</a>
+    <a href="/feed?author=%s&mode=profile">Author Feed</a>
+  </div>
+  <details><summary>Raw JSON</summary><pre>%s</pre></details>
+</div>`,
+			url.PathEscape(post.Author),
+			post.Sequence,
+			url.QueryEscape(post.Author),
+			html.EscapeString(post.RawJSON))
 	}
 
 	fmt.Fprintf(&body, `<div class="pagination">
@@ -213,6 +383,137 @@ func (h *clientUIHandler) handleFeed(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/html")
 	fmt.Fprint(w, htmlPage("Feed", body.String()))
+}
+
+func prettyJSONMust(v interface{}) string {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return "{}"
+	}
+	return prettyJSON(raw)
+}
+
+func renderMessageAction(item indexedMessage) string {
+	msgType := item.Type
+	if msgType == "" || msgType == "unknown" {
+		msgType = extractTypeFromRawJSON(item.RawJSON)
+	}
+
+	switch msgType {
+	case "post":
+		if item.Text != "" {
+			return html.EscapeString(item.Text)
+		}
+		return "Posted a message"
+	case "follow":
+		contact := item.Contact
+		if contact == "" {
+			return "Started following someone"
+		}
+		shortContact := contact
+		if len(shortContact) > 32 {
+			shortContact = shortContact[:32] + "..."
+		}
+		return fmt.Sprintf(`Started following <span class="contact-ref">%s</span>`, html.EscapeString(shortContact))
+	case "unfollow":
+		return "Unfollowed " + html.EscapeString(item.Contact)
+	case "contact":
+		if item.Following {
+			return fmt.Sprintf(`Now following <span class="contact-ref">%s</span>`, html.EscapeString(item.Contact))
+		} else if item.Blocking {
+			return fmt.Sprintf(`Blocked <span class="contact-ref">%s</span>`, html.EscapeString(item.Contact))
+		}
+		return "Updated contact"
+	case "like", "vote":
+		if item.VoteValue == 1 {
+			if item.VoteLink != "" {
+				shortLink := item.VoteLink
+				if len(shortLink) > 20 {
+					shortLink = shortLink[:20] + "..."
+				}
+				return fmt.Sprintf(`Liked <span class="contact-ref">%s</span>`, html.EscapeString(shortLink))
+			}
+			return "Liked a message"
+		} else if item.VoteValue == 0 {
+			return "Removed like"
+		}
+		return fmt.Sprintf("Voted %d on a message", item.VoteValue)
+	case "about":
+		if item.Text != "" {
+			return html.EscapeString(item.Text)
+		}
+		return "Updated profile"
+	case "pub":
+		return "Published server announcement"
+	case "gist":
+		return "Updated status"
+	case "hz":
+		return "HTTP overlay message"
+	default:
+		if msgType == "" {
+			return "Message (no type specified)"
+		}
+		return fmt.Sprintf("Message type: %s", html.EscapeString(msgType))
+	}
+}
+
+func extractTypeFromRawJSON(rawJSON string) string {
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(rawJSON), &parsed); err != nil {
+		return ""
+	}
+	if content, ok := parsed["content"].(map[string]interface{}); ok {
+		if t, ok := content["type"].(string); ok {
+			return t
+		}
+	}
+	if t, ok := parsed["type"].(string); ok {
+		return t
+	}
+	return ""
+}
+
+func extractTextFromRawJSON(rawJSON string) string {
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(rawJSON), &parsed); err != nil {
+		return ""
+	}
+	if content, ok := parsed["content"].(map[string]interface{}); ok {
+		if text, ok := content["text"].(string); ok {
+			return text
+		}
+	}
+	return ""
+}
+
+func renderLegacyMessageAction(msgType string, rawJSON string) string {
+	if (msgType == "" || msgType == "unknown") && rawJSON != "" {
+		msgType = extractTypeFromRawJSON(rawJSON)
+	}
+
+	switch msgType {
+	case "post":
+		return "Posted a message"
+	case "follow":
+		return "Started following someone"
+	case "unfollow":
+		return "Unfollowed someone"
+	case "contact":
+		return "Updated contact"
+	case "like", "vote":
+		return "Liked a message"
+	case "about":
+		return "Updated profile"
+	case "pub":
+		return "Published server announcement"
+	case "gist":
+		return "Updated status"
+	default:
+		if msgType == "" {
+			return "Message (no type)"
+		}
+		return fmt.Sprintf("Message type: %s", html.EscapeString(msgType))
+	}
 }
 
 func msgToPost(msg feedlog.StoredMessage) FeedPost {
@@ -256,9 +557,10 @@ func (h *clientUIHandler) handleFeedsList(w http.ResponseWriter, r *http.Request
 			seq, _ = feedLog.Seq()
 		}
 		escapedID := html.EscapeString(feedID)
-		encodedID := url.PathEscape(feedID)
+		queryEncodedID := url.QueryEscape(feedID)
+		pathEncodedID := url.PathEscape(feedID)
 		fmt.Fprintf(&body, `<tr><td><code>%s</code></td><td>%d</td><td><a href="/feed?author=%s">View Feed</a> · <a href="/profile/%s">Profile</a></td></tr>`,
-			escapedID, seq, encodedID, encodedID)
+			escapedID, seq, queryEncodedID, pathEncodedID)
 	}
 	fmt.Fprintf(&body, `</table>`)
 
@@ -402,36 +704,72 @@ func (h *clientUIHandler) handleCompose(w http.ResponseWriter, r *http.Request) 
 	if r.Method == "POST" {
 		r.ParseForm()
 		text := strings.TrimSpace(r.Form.Get("text"))
+		channel := strings.TrimSpace(r.Form.Get("channel"))
+		root := strings.TrimSpace(r.Form.Get("root"))
+		branch := strings.TrimSpace(r.Form.Get("branch"))
+		fork := strings.TrimSpace(r.Form.Get("fork"))
 		if text != "" {
 			pub, err := h.sbot.Publisher()
 			if err != nil {
 				h.slog.Error("failed to get publisher", "error", err)
-				http.Error(w, "Failed to publish", http.StatusInternalServerError)
+				http.Redirect(w, r, "/compose?status="+url.QueryEscape("Failed to publish: publisher unavailable"), http.StatusSeeOther)
 				return
 			}
 			content := map[string]interface{}{"type": "post", "text": text}
+			if channel != "" {
+				content["channel"] = channel
+			}
+			if root != "" {
+				content["root"] = root
+			}
+			if branch != "" {
+				content["branch"] = branch
+			}
+			if fork != "" {
+				content["fork"] = fork
+			}
 			msgRef, err := pub.PublishJSON(content)
 			if err != nil {
 				h.slog.Error("failed to publish post", "error", err)
-				http.Error(w, "Failed to publish: "+err.Error(), http.StatusInternalServerError)
+				http.Redirect(w, r, "/compose?status="+url.QueryEscape("Failed to publish: "+err.Error()), http.StatusSeeOther)
 				return
 			}
 			h.slog.Info("published post", "ref", msgRef.String())
+			http.Redirect(w, r, "/compose?status="+url.QueryEscape("Post published: "+msgRef.String()), http.StatusSeeOther)
+			return
 		}
-		http.Redirect(w, r, "/feed", http.StatusSeeOther)
+		http.Redirect(w, r, "/compose?status="+url.QueryEscape("Message text is required"), http.StatusSeeOther)
 		return
 	}
 
-	body := `<h1>Compose Post</h1>
-<div class="section">
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	channel := strings.TrimSpace(r.URL.Query().Get("channel"))
+	root := strings.TrimSpace(r.URL.Query().Get("root"))
+	branch := strings.TrimSpace(r.URL.Query().Get("branch"))
+	fork := strings.TrimSpace(r.URL.Query().Get("fork"))
+
+	var body strings.Builder
+	fmt.Fprintf(&body, `<h1>Compose Post</h1>`)
+	if status != "" {
+		fmt.Fprintf(&body, `<div class="panel"><strong>Status:</strong> %s</div>`, html.EscapeString(status))
+	}
+	fmt.Fprintf(&body, `<div class="section">
   <form method="POST" action="/compose">
+    <div class="field"><label>Channel (optional)</label><input type="text" name="channel" value="%s" placeholder="e.g. ssb"></div>
+    <div class="field"><label>Root Message Key (optional)</label><input type="text" name="root" value="%s" placeholder="%%...sha256"></div>
+    <div class="field"><label>Branch Message Key (optional)</label><input type="text" name="branch" value="%s" placeholder="%%...sha256"></div>
+    <div class="field"><label>Fork Message Key (optional)</label><input type="text" name="fork" value="%s" placeholder="%%...sha256"></div>
     <div class="field"><label>Message</label><textarea name="text" rows="4" placeholder="What's on your mind?"></textarea></div>
     <button type="submit">Post</button>
   </form>
-</div>`
+</div>`,
+		html.EscapeString(channel),
+		html.EscapeString(root),
+		html.EscapeString(branch),
+		html.EscapeString(fork))
 
 	w.Header().Set("Content-Type", "text/html")
-	fmt.Fprint(w, htmlPage("Compose", body))
+	fmt.Fprint(w, htmlPage("Compose", body.String()))
 }
 
 type Contact struct {
@@ -533,16 +871,62 @@ func (h *clientUIHandler) handleFollowingAction(w http.ResponseWriter, r *http.R
 	}
 	if _, err = pub.PublishJSON(content); err != nil {
 		h.slog.Error("failed to publish contact", "error", err)
+	} else if replicateFeed, ok := replicationTargetFromContact(content); ok {
+		h.sbot.Replicate(replicateFeed)
 	}
 
 	http.Redirect(w, r, "/following", http.StatusSeeOther)
 }
 
 func (h *clientUIHandler) handleFollowers(w http.ResponseWriter, r *http.Request) {
-	body := `<h1>Followers</h1>
-<div class="section"><p><em>Followers detection requires scanning peer feeds for contact messages referencing you.</em></p></div>`
+	whoami, _ := h.sbot.Whoami()
+	if h.index == nil {
+		body := `<h1>Followers</h1><div class="section"><p><em>Follower graph requires ui-index; restart with index enabled.</em></p></div>`
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, htmlPage("Followers", body))
+		return
+	}
+	if err := h.ensureIndexSynced(); err != nil {
+		h.slog.Warn("ui index sync failed in followers page", "error", err)
+	}
+
+	rel, err := h.index.queryFollowers(whoami)
+	if err != nil {
+		http.Error(w, "failed to load follower graph", http.StatusInternalServerError)
+		return
+	}
+
+	var body strings.Builder
+	fmt.Fprintf(&body, `<h1>Followers (%d)</h1><div class="panel"><p>Computed from latest <code>contact</code> messages across known feeds.</p></div>`, len(rel.Followers))
+
+	if len(rel.Followers) == 0 {
+		fmt.Fprintf(&body, `<div class="empty">No followers detected yet.</div>`)
+	} else {
+		fmt.Fprintf(&body, `<table><tr><th>Follower Feed</th><th>Actions</th></tr>`)
+		for _, feed := range rel.Followers {
+			fmt.Fprintf(&body, `<tr><td><code>%s</code></td><td><a href="/feed?author=%s&mode=profile">View Feed</a> · <a href="/profile/%s">Profile</a></td></tr>`,
+				html.EscapeString(feed),
+				url.QueryEscape(feed),
+				url.PathEscape(feed))
+		}
+		fmt.Fprintf(&body, `</table>`)
+	}
+
+	fmt.Fprintf(&body, `<h2>You Follow (%d)</h2>`, len(rel.Following))
+	if len(rel.Following) == 0 {
+		fmt.Fprintf(&body, `<div class="empty">You are not following anyone.</div>`)
+	} else {
+		fmt.Fprintf(&body, `<table><tr><th>Feed</th><th>Actions</th></tr>`)
+		for _, feed := range rel.Following {
+			fmt.Fprintf(&body, `<tr><td><code>%s</code></td><td><a href="/feed?author=%s&mode=profile">View Feed</a></td></tr>`,
+				html.EscapeString(feed),
+				url.QueryEscape(feed))
+		}
+		fmt.Fprintf(&body, `</table>`)
+	}
+
 	w.Header().Set("Content-Type", "text/html")
-	fmt.Fprint(w, htmlPage("Followers", body))
+	fmt.Fprint(w, htmlPage("Followers", body.String()))
 }
 
 func (h *clientUIHandler) handleFollowersAction(w http.ResponseWriter, r *http.Request) {
@@ -613,9 +997,20 @@ func (h *clientUIHandler) handleBlobsGet(w http.ResponseWriter, r *http.Request)
 
 func (h *clientUIHandler) handlePeers(w http.ResponseWriter, r *http.Request) {
 	peers := h.sbot.Peers()
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	statusClass := strings.TrimSpace(r.URL.Query().Get("class"))
 
 	var body strings.Builder
 	fmt.Fprintf(&body, `<h1>Connected Peers (%d)</h1>`, len(peers))
+	if status != "" {
+		cssClass := "info"
+		if statusClass == "success" {
+			cssClass = "success"
+		} else if statusClass == "error" {
+			cssClass = "error"
+		}
+		fmt.Fprintf(&body, `<div class="status %s">%s</div>`, cssClass, html.EscapeString(status))
+	}
 
 	if len(peers) > 0 {
 		fmt.Fprintf(&body, `<table>
@@ -642,8 +1037,9 @@ func (h *clientUIHandler) handlePeers(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(&body, `<div class="section">
   <h2>Connect to Peer</h2>
   <form method="POST" action="/peers/add">
-    <div class="field"><label>Address</label><input type="text" name="address" placeholder="host:port"></div>
-    <div class="field"><label>Public Key</label><input type="text" name="pubkey" placeholder="base64 pubkey (.ed25519 suffix optional)"></div>
+    <div class="field"><label>Multiserver URI</label><input type="text" name="multiserver" placeholder="net:host:port~shs:base64pubkey"></div>
+    <div class="field"><label>Address (fallback)</label><input type="text" name="address" placeholder="host:port"></div>
+    <div class="field"><label>Public Key (fallback)</label><input type="text" name="pubkey" placeholder="base64 pubkey (.ed25519 suffix optional)"></div>
     <button type="submit">Connect</button>
   </form>
 </div>`)
@@ -654,72 +1050,143 @@ func (h *clientUIHandler) handlePeers(w http.ResponseWriter, r *http.Request) {
 
 func (h *clientUIHandler) handlePeersAdd(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
+	multiserver := strings.TrimSpace(r.Form.Get("multiserver"))
 	address := strings.TrimSpace(r.Form.Get("address"))
 	pubkeyStr := strings.TrimSpace(r.Form.Get("pubkey"))
 
-	if address == "" || pubkeyStr == "" {
-		http.Redirect(w, r, "/peers", http.StatusSeeOther)
-		return
-	}
-
-	pubkeyDecoded, err := base64.StdEncoding.DecodeString(strings.TrimSuffix(pubkeyStr, ".ed25519"))
-	if err != nil || len(pubkeyDecoded) != 32 {
-		h.slog.Warn("invalid pubkey format")
-		http.Redirect(w, r, "/peers", http.StatusSeeOther)
+	targetAddr, pubkeyDecoded, err := resolvePeerConnectTarget(multiserver, address, pubkeyStr)
+	if err != nil {
+		http.Redirect(w, r, "/peers?status="+url.QueryEscape("Connect failed: "+err.Error())+"&class=error", http.StatusSeeOther)
 		return
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	if _, err = h.sbot.Connect(ctx, address, pubkeyDecoded); err != nil {
-		h.slog.Error("failed to connect to peer", "address", address, "error", err)
+	if _, err = h.sbot.Connect(ctx, targetAddr, pubkeyDecoded); err != nil {
+		h.slog.Error("failed to connect to peer", "address", targetAddr, "error", err)
+		http.Redirect(w, r, "/peers?status="+url.QueryEscape("Connect failed: "+err.Error())+"&class=error", http.StatusSeeOther)
+		return
 	}
 
-	http.Redirect(w, r, "/peers", http.StatusSeeOther)
+	http.Redirect(w, r, "/peers?status="+url.QueryEscape("Connected to "+targetAddr)+"&class=success", http.StatusSeeOther)
 }
 
 func (h *clientUIHandler) handleRoom(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "POST" {
 		r.ParseForm()
-		inviteCode := strings.TrimSpace(r.Form.Get("invite"))
-		if inviteCode != "" {
+		action := strings.TrimSpace(r.Form.Get("action"))
+		switch action {
+		case "create_invite":
+			token, err := h.createRoomInvite(r.Context())
+			if err != nil {
+				http.Redirect(w, r, "/room?status="+url.QueryEscape("Failed to create invite: "+err.Error())+"&class=error", http.StatusSeeOther)
+				return
+			}
+
+			createdInvite := token
+			if base := strings.TrimRight(strings.TrimSpace(h.sbot.RoomHTTPAddr()), "/"); base != "" {
+				createdInvite = base + "/join?token=" + token
+			}
+			http.Redirect(w, r, "/room?status="+url.QueryEscape("Invite created")+"&class=success&createdInvite="+url.QueryEscape(createdInvite), http.StatusSeeOther)
+			return
+		default:
+			inviteCode := strings.TrimSpace(r.Form.Get("invite"))
+			if inviteCode == "" {
+				http.Redirect(w, r, "/room?status="+url.QueryEscape("Invite URL is required")+"&class=error", http.StatusSeeOther)
+				return
+			}
 			if err := h.consumeInvite(r.Context(), inviteCode); err != nil {
 				h.slog.Error("failed to use invite code", "error", err)
-				http.Redirect(w, r, "/room?error="+url.QueryEscape(err.Error()), http.StatusSeeOther)
+				http.Redirect(w, r, "/room?status="+url.QueryEscape("Join failed: "+err.Error())+"&class=error", http.StatusSeeOther)
 				return
 			}
 			h.slog.Info("successfully joined room using invite code")
+			http.Redirect(w, r, "/room?status="+url.QueryEscape("Joined room successfully")+"&class=success", http.StatusSeeOther)
+			return
 		}
-		roomAddr := strings.TrimSpace(r.Form.Get("room_address"))
-		if roomAddr != "" {
-			h.slog.Info("would connect to room", "address", roomAddr)
-		}
-		http.Redirect(w, r, "/room", http.StatusSeeOther)
-		return
 	}
 
-	errorMsg := r.URL.Query().Get("error")
+	statusMsg := strings.TrimSpace(r.URL.Query().Get("status"))
+	statusClass := strings.TrimSpace(r.URL.Query().Get("class"))
+	createdInvite := strings.TrimSpace(r.URL.Query().Get("createdInvite"))
 
 	peers := h.sbot.Peers()
 	var roomPeers []string
 	for _, p := range peers {
 		roomPeers = append(roomPeers, p.ID.String())
 	}
+	sort.Strings(roomPeers)
+
+	attendants := []string{}
+	endpoints := []string{}
+	if state := h.sbot.RoomState(); state != nil {
+		for _, p := range state.Attendants() {
+			attendants = append(attendants, p.ID.String())
+		}
+		for _, p := range state.Peers() {
+			endpoints = append(endpoints, p.ID.String())
+		}
+		sort.Strings(attendants)
+		sort.Strings(endpoints)
+	}
+
+	memberCount := 0
+	activeInvites := 0
+	totalInvites := 0
+	privacyMode := "unknown"
+	if roomDB := h.sbot.RoomDB(); roomDB != nil {
+		ctx := r.Context()
+		if members, err := roomDB.Members().List(ctx); err == nil {
+			memberCount = len(members)
+		}
+		if count, err := roomDB.Invites().Count(ctx, true); err == nil {
+			activeInvites = int(count)
+		}
+		if count, err := roomDB.Invites().Count(ctx, false); err == nil {
+			totalInvites = int(count)
+		}
+		if mode, err := roomDB.RoomConfig().GetPrivacyMode(ctx); err == nil {
+			switch mode {
+			case roomdb.ModeOpen:
+				privacyMode = "open"
+			case roomdb.ModeCommunity:
+				privacyMode = "community"
+			case roomdb.ModeRestricted:
+				privacyMode = "restricted"
+			}
+		}
+	}
 
 	var body strings.Builder
 	fmt.Fprintf(&body, `<h1>Room Connection</h1>`)
-
-	if errorMsg != "" {
-		fmt.Fprintf(&body, `<div class="panel" style="border-left: 4px solid var(--danger);">
-  <strong>Error:</strong> %s
-</div>`, html.EscapeString(errorMsg))
+	if statusMsg != "" {
+		cssClass := "info"
+		if statusClass == "success" {
+			cssClass = "success"
+		} else if statusClass == "error" {
+			cssClass = "error"
+		}
+		fmt.Fprintf(&body, `<div class="status %s">%s</div>`, cssClass, html.EscapeString(statusMsg))
+	}
+	if createdInvite != "" {
+		fmt.Fprintf(&body, `<div class="panel"><strong>New Invite:</strong> <code>%s</code></div>`, html.EscapeString(createdInvite))
 	}
 
 	fmt.Fprintf(&body, `<div class="stat-grid">
+  <div class="stat-card"><div class="value">%s</div><div class="label">Room Enabled</div></div>
+  <div class="stat-card"><div class="value">%s</div><div class="label">Privacy Mode</div></div>
   <div class="stat-card"><div class="value">%d</div><div class="label">Connected Peers</div></div>
-  <div class="stat-card"><div class="value">%d</div><div class="label">Room Peers</div></div>
-</div>`, len(peers), len(roomPeers))
+  <div class="stat-card"><div class="value">%d</div><div class="label">Attendants</div></div>
+  <div class="stat-card"><div class="value">%d</div><div class="label">Room Members</div></div>
+  <div class="stat-card"><div class="value">%d / %d</div><div class="label">Active / Total Invites</div></div>
+</div>`,
+		boolToYesNo(h.sbot.RoomEnabled()),
+		html.EscapeString(privacyMode),
+		len(peers),
+		len(attendants),
+		memberCount,
+		activeInvites, totalInvites)
 
 	fmt.Fprintf(&body, `<div class="panel">
   <h2>Join a Room</h2>
@@ -729,38 +1196,90 @@ func (h *clientUIHandler) handleRoom(w http.ResponseWriter, r *http.Request) {
       <input type="text" id="invite" name="invite" placeholder="http://room.example.com/join?token=xxx">
       <small style="color: var(--muted)">Paste a full HTTP invite URL from a Room2 server</small>
     </div>
+    <input type="hidden" name="action" value="join">
     <button type="submit">Join Room</button>
   </form>
 </div>
 
 <div class="panel">
-  <h2>About SSB Rooms</h2>
-  <p>SSB Rooms provide relay services for peers behind NAT or firewalls. They enable:</p>
-  <ul>
-    <li><strong>Tunnel connections</strong> - Connect through the room's relay</li>
-    <li><strong>Invite codes</strong> - HTTP URLs that let new users join</li>
-    <li><strong>Moderation</strong> - Room operators can deny problematic keys</li>
-  </ul>
-  <p>To join a room, get an invite URL from an existing member or the room operator.</p>
+  <h2>Create Invite</h2>
+  <form method="POST" action="/room">
+    <input type="hidden" name="action" value="create_invite">
+    <button type="submit">Create Room Invite</button>
+  </form>
+  <p><small>Invite token/URL is shown once after creation.</small></p>
 </div>
 
 <div class="panel">
-  <h2>Connected Room Peers (%d/%d)</h2>`,
-		len(peers), len(roomPeers))
+  <h2>Tunnel Endpoints (%d)</h2>`,
+		len(endpoints))
 
-	if len(roomPeers) == 0 {
-		fmt.Fprintf(&body, `<p class="empty">Not connected to any room peers. Join a room to start.</p>`)
+	if len(endpoints) == 0 {
+		fmt.Fprintf(&body, `<p class="empty">No tunnel endpoints observed yet.</p>`)
 	} else {
 		fmt.Fprintf(&body, `<table><tr><th>Feed ID</th></tr>`)
-		for _, feed := range roomPeers {
+		for _, feed := range endpoints {
 			fmt.Fprintf(&body, `<tr><td><code>%s</code></td></tr>`, html.EscapeString(feed))
 		}
 		fmt.Fprintf(&body, `</table>`)
 	}
-	fmt.Fprintf(&body, `</div>`)
+	fmt.Fprintf(&body, `</div>
+
+<div class="panel">
+  <h2>Attendants (%d)</h2>`, len(attendants))
+	if len(attendants) == 0 {
+		fmt.Fprintf(&body, `<p class="empty">No attendants registered.</p>`)
+	} else {
+		fmt.Fprintf(&body, `<table><tr><th>Feed ID</th></tr>`)
+		for _, feed := range attendants {
+			fmt.Fprintf(&body, `<tr><td><code>%s</code></td></tr>`, html.EscapeString(feed))
+		}
+		fmt.Fprintf(&body, `</table>`)
+	}
+
+	fmt.Fprintf(&body, `</div>
+<div class="panel">
+  <h2>Room API</h2>
+  <p><a href="/api/room/state" target="_blank" rel="noopener">/api/room/state</a> ·
+  <a href="/api/room/invites" target="_blank" rel="noopener">/api/room/invites</a></p>
+</div>`)
 
 	w.Header().Set("Content-Type", "text/html")
 	fmt.Fprint(w, htmlPage("Room", body.String()))
+}
+
+func (h *clientUIHandler) createRoomInvite(ctx context.Context) (string, error) {
+	roomDB := h.sbot.RoomDB()
+	if roomDB == nil {
+		return "", fmt.Errorf("room database is unavailable")
+	}
+
+	whoami, err := h.sbot.Whoami()
+	if err != nil {
+		return "", fmt.Errorf("load identity: %w", err)
+	}
+	feedRef, err := refs.ParseFeedRef(whoami)
+	if err != nil {
+		return "", fmt.Errorf("parse identity: %w", err)
+	}
+
+	createdBy := int64(0)
+	members := roomDB.Members()
+	if member, err := members.GetByFeed(ctx, *feedRef); err == nil {
+		createdBy = member.ID
+	} else {
+		memberID, addErr := members.Add(ctx, *feedRef, roomdb.RoleMember)
+		if addErr != nil {
+			return "", fmt.Errorf("ensure room member: %w", addErr)
+		}
+		createdBy = memberID
+	}
+
+	token, err := roomDB.Invites().Create(ctx, createdBy)
+	if err != nil {
+		return "", fmt.Errorf("create invite: %w", err)
+	}
+	return token, nil
 }
 
 func (h *clientUIHandler) consumeInvite(ctx context.Context, inviteCode string) error {
@@ -769,7 +1288,7 @@ func (h *clientUIHandler) consumeInvite(ctx context.Context, inviteCode string) 
 		return fmt.Errorf("empty invite code")
 	}
 
-	token, roomHTTPAddr, err := resolveInviteConsumeTarget(inviteCode, roomHTTPAddr)
+	token, roomHTTPAddr, err := resolveInviteConsumeTarget(inviteCode, h.sbot.RoomHTTPAddr())
 	if err != nil {
 		return err
 	}
@@ -882,23 +1401,11 @@ func resolveInviteConsumeTarget(inviteCode, configuredRoomHTTPAddr string) (toke
 }
 
 func (h *clientUIHandler) connectToPeer(ctx context.Context, address string) error {
-	var pubkey []byte
-	var hostPort string
-
-	parts := strings.Split(address, "~shs:")
-	if len(parts) == 2 {
-		hostPort = strings.TrimPrefix(parts[0], "net:")
-		pkBase64 := strings.TrimPrefix(parts[1], "shs:")
-		var err error
-		pubkey, err = base64.StdEncoding.DecodeString(pkBase64)
-		if err != nil {
-			return fmt.Errorf("decode pubkey: %w", err)
-		}
-	} else {
-		hostPort = strings.TrimPrefix(address, "net:")
+	hostPort, pubkey, err := parseMultiserverConnectAddress(address)
+	if err != nil {
+		return err
 	}
-
-	_, err := h.sbot.Connect(ctx, hostPort, pubkey)
+	_, err = h.sbot.Connect(ctx, hostPort, pubkey)
 	return err
 }
 
@@ -917,12 +1424,16 @@ func (h *clientUIHandler) handleMessages(w http.ResponseWriter, r *http.Request)
 				statusMsg = "Failed to send: could not access publisher"
 				statusClass = "error"
 			} else {
-				_, err := pub.PublishPrivate(message, recipient)
+				payload := map[string]interface{}{"type": "post", "text": message}
+				msgRef, err := pub.PublishPrivate(payload, recipient)
 				if err != nil {
 					h.slog.Error("failed to send DM", "recipient", recipient, "error", err)
 					statusMsg = fmt.Sprintf("Failed to send: %v", err)
 					statusClass = "error"
 				} else {
+					if h.index != nil {
+						_ = h.index.recordSentPrivate(msgRef.String(), normalizeFeed(recipient), message, nowMillis())
+					}
 					h.slog.Info("sent DM", "recipient", recipient)
 					statusMsg = "Message sent successfully"
 					statusClass = "success"
@@ -970,6 +1481,29 @@ func (h *clientUIHandler) handleMessages(w http.ResponseWriter, r *http.Request)
   </form>
   <p><small>Messages are encrypted using box2 (curve25519 + nacl secretbox)</small></p>
 </div>`, html.EscapeString(r.FormValue("recipient")))
+
+	if h.index != nil {
+		if err := h.ensureIndexSynced(); err == nil {
+			if conversations, err := h.index.queryConversations(); err == nil {
+				fmt.Fprintf(&body, `<div class="section"><h2>Conversation Inbox (%d)</h2>`, len(conversations))
+				if len(conversations) == 0 {
+					fmt.Fprintf(&body, `<p>No conversations yet.</p>`)
+				} else {
+					fmt.Fprintf(&body, `<table><tr><th>Peer</th><th>Messages</th><th>Last Activity</th><th>Actions</th></tr>`)
+					for _, conv := range conversations {
+						lastTs := time.Unix(conv.LastTs/1000, 0).Format("2006-01-02 15:04:05")
+						fmt.Fprintf(&body, `<tr><td><code>%s</code></td><td>%d</td><td>%s</td><td><a href="/api/conversations/%s" target="_blank" rel="noopener">Open API</a></td></tr>`,
+							html.EscapeString(conv.Peer),
+							conv.MessageCount,
+							html.EscapeString(lastTs),
+							url.PathEscape(conv.Peer))
+					}
+					fmt.Fprintf(&body, `</table>`)
+				}
+				fmt.Fprintf(&body, `</div>`)
+			}
+		}
+	}
 
 	// Show recent messages from user's log
 	fmt.Fprintf(&body, `<div class="section"><h2>Recent Messages (own feed)</h2>`)
@@ -1048,94 +1582,200 @@ func (h *clientUIHandler) handleMessageDetail(w http.ResponseWriter, r *http.Req
 		html.EscapeString(prettyJSON(msg.Value)),
 		url.QueryEscape(feedId))
 
+	if h.index != nil {
+		if err := h.ensureIndexSynced(); err == nil {
+			if thread, root, err := h.index.queryThread(msg.Key); err == nil && len(thread) > 0 {
+				fmt.Fprintf(&body, `<div class="section">
+  <h2>Thread Context</h2>
+  <p>Root: <code>%s</code> · Messages: %d</p>
+  <table><tr><th>Author</th><th>Type</th><th>Seq</th><th>Text</th><th>Root</th><th>Branch</th></tr>`,
+					html.EscapeString(root),
+					len(thread))
+				for _, item := range thread {
+					text := item.Text
+					if text == "" {
+						text = item.PrivateText
+					}
+					fmt.Fprintf(&body, `<tr><td><code>%s</code></td><td>%s</td><td>%d</td><td>%s</td><td><code>%s</code></td><td><code>%s</code></td></tr>`,
+						html.EscapeString(item.Author),
+						html.EscapeString(item.Type),
+						item.Sequence,
+						html.EscapeString(text),
+						html.EscapeString(item.Root),
+						html.EscapeString(item.Branch))
+				}
+				fmt.Fprintf(&body, `</table></div>`)
+			}
+		}
+	}
+
 	w.Header().Set("Content-Type", "text/html")
 	fmt.Fprint(w, htmlPage("Message", body.String()))
 }
 
 func (h *clientUIHandler) handleReplication(w http.ResponseWriter, r *http.Request) {
-	sm := h.sbot.StateMatrix()
-	store := h.sbot.Store()
-	whoami, _ := h.sbot.Whoami()
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	statusClass := strings.TrimSpace(r.URL.Query().Get("class"))
+	snapshot, err := collectReplicationSnapshot(h.sbot)
+	if err != nil {
+		http.Error(w, "failed to build replication snapshot", http.StatusInternalServerError)
+		return
+	}
 
+	behind := 0
+	for _, row := range snapshot.Rows {
+		if row.Status == "behind" {
+			behind++
+		}
+	}
 	var body strings.Builder
 	fmt.Fprintf(&body, `<h1>Replication Status</h1>
 <div class="stat-grid">
-  <div class="stat-card"><div class="value">%s</div><div class="label">EBT Enabled</div></div>`, boolToYesNo(sm != nil))
-
-	feedCount := 0
-	rxSeq := int64(0)
-	if logs := store.Logs(); logs != nil {
-		feeds, _ := logs.List()
-		feedCount = len(feeds)
-	}
-	if rxLog, _ := store.ReceiveLog(); rxLog != nil {
-		rxSeq, _ = rxLog.Seq()
-	}
-
-	userSeq := int64(0)
-	if userLog, _ := store.Logs().Get(whoami); userLog != nil {
-		userSeq, _ = userLog.Seq()
-	}
-
-	fmt.Fprintf(&body, `  <div class="stat-card"><div class="value">%d</div><div class="label">Known Feeds</div></div>
-  <div class="stat-card"><div class="value">%d</div><div class="label">Messages Received</div></div>
-  <div class="stat-card"><div class="value">%d</div><div class="label">User Feed Seq</div></div>
+  <div class="stat-card"><div class="value">%s</div><div class="label">EBT Enabled</div></div>
+  <div class="stat-card"><div class="value">%d</div><div class="label">Tracked Feeds</div></div>
+  <div class="stat-card"><div class="value">%d</div><div class="label">Behind Feeds</div></div>
+  <div class="stat-card"><div class="value">%d</div><div class="label">Matrix Peers</div></div>
 </div>`,
-		feedCount, rxSeq, userSeq)
+		boolToYesNo(snapshot.Enabled),
+		len(snapshot.Rows),
+		behind,
+		snapshot.MatrixPeers)
 
-	if sm == nil {
+	if status != "" {
+		cssClass := "info"
+		if statusClass == "success" {
+			cssClass = "success"
+		} else if statusClass == "error" {
+			cssClass = "error"
+		}
+		fmt.Fprintf(&body, `<div class="status %s">%s</div>`, cssClass, html.EscapeString(status))
+	}
+
+	if !snapshot.Enabled {
 		fmt.Fprintf(&body, `<div class="panel">
   <h2>EBT Not Enabled</h2>
   <p>Enable EBT in your configuration for replicated feeds and state tracking.</p>
 </div>`)
-	} else {
-		matrix := sm.Export()
-
-		fmt.Fprintf(&body, `<div class="panel">
-  <h2>Replicated Feeds (%d)</h2>
-  <table><tr><th>Feed ID</th><th>State Value</th><th>Status</th></tr>`,
-			len(matrix))
-
-		for feedID, state := range matrix {
-			stateStr := "N/A"
-			statusStr := `<span class="badge warn">Unknown</span>`
-			if seq, ok := state["seq"]; ok {
-				if seq == -1 {
-					stateStr = "Unfollow"
-					statusStr = `<span class="badge">Unfollowed</span>`
-				} else {
-					stateStr = fmt.Sprintf("%d", seq)
-					if seq > 0 {
-						statusStr = `<span class="badge ok">Active</span>`
-					} else {
-						statusStr = `<span class="badge">Pending</span>`
-					}
-				}
-			}
-			fmt.Fprintf(&body, `<tr>
-    <td><code>%s</code></td>
-    <td>%s</td>
-    <td>%s</td>
-  </tr>`,
-				html.EscapeString(feedID),
-				stateStr,
-				statusStr)
-		}
-		fmt.Fprintf(&body, `</table></div>`)
-
-		data, _ := json.MarshalIndent(matrix, "", "  ")
-		fmt.Fprintf(&body, `<div class="panel">
-  <h2>EBT State Format</h2>
-  <p>State values: -1 = unfollowed, 0 = pending, positive = sequence number (bit 0 = receive enabled)</p>
-  <details><summary>View Raw JSON</summary>
-  <pre>%s</pre>
-  </details>
-</div>`,
-			html.EscapeString(string(data)))
 	}
+
+	fmt.Fprintf(&body, `<div class="panel">
+  <h2>Feed Replication Diagnostics</h2>
+  <p>Use these controls to follow/unfollow feeds and force replication targeting.</p>
+  <table><tr><th>Feed ID</th><th>Local Seq</th><th>Target Seq</th><th>Lag</th><th>Status</th><th>Receive</th><th>Last Update (UTC)</th><th>Actions</th></tr>`)
+
+	for _, row := range snapshot.Rows {
+		lastUpdate := "-"
+		if row.LastUpdate != "" {
+			lastUpdate = row.LastUpdate
+		}
+		fmt.Fprintf(&body, `<tr>
+  <td><code>%s</code></td>
+  <td>%d</td>
+  <td>%d</td>
+  <td>%d</td>
+  <td><span class="badge %s">%s</span></td>
+  <td>%s</td>
+  <td>%s</td>
+  <td>
+    <form method="POST" action="/replication" style="display:inline">
+      <input type="hidden" name="feed" value="%s">
+      <input type="hidden" name="action" value="replicate">
+      <button type="submit">Replicate</button>
+    </form>
+    <form method="POST" action="/replication" style="display:inline">
+      <input type="hidden" name="feed" value="%s">
+      <input type="hidden" name="action" value="follow">
+      <button type="submit">Follow</button>
+    </form>
+    <form method="POST" action="/replication" style="display:inline">
+      <input type="hidden" name="feed" value="%s">
+      <input type="hidden" name="action" value="unfollow">
+      <button type="submit">Unfollow</button>
+    </form>
+  </td>
+</tr>`,
+			html.EscapeString(row.FeedID),
+			row.LocalSeq,
+			row.FrontierSeq,
+			row.Lag,
+			replicationStatusBadgeClass(row.Status),
+			html.EscapeString(row.Status),
+			boolToYesNo(row.Receive),
+			html.EscapeString(lastUpdate),
+			html.EscapeString(row.FeedID),
+			html.EscapeString(row.FeedID),
+			html.EscapeString(row.FeedID))
+	}
+	fmt.Fprintf(&body, `</table></div>`)
+
+	data, _ := json.MarshalIndent(snapshot.Matrix, "", "  ")
+	fmt.Fprintf(&body, `<div class="panel">
+  <h2>Raw EBT Matrix</h2>
+  <details><summary>View JSON</summary><pre>%s</pre></details>
+</div>`,
+		html.EscapeString(string(data)))
 
 	w.Header().Set("Content-Type", "text/html")
 	fmt.Fprint(w, htmlPage("Replication", body.String()))
+}
+
+func (h *clientUIHandler) handleReplicationAction(w http.ResponseWriter, r *http.Request) {
+	_ = r.ParseForm()
+	action := strings.ToLower(strings.TrimSpace(r.Form.Get("action")))
+	feed := normalizeFeed(strings.TrimSpace(r.Form.Get("feed")))
+	if feed == "" {
+		http.Redirect(w, r, "/replication?status="+url.QueryEscape("Feed ID is required")+"&class=error", http.StatusSeeOther)
+		return
+	}
+
+	switch action {
+	case "replicate":
+		h.sbot.Replicate(feed)
+		http.Redirect(w, r, "/replication?status="+url.QueryEscape("Replication target added: "+feed)+"&class=success", http.StatusSeeOther)
+		return
+	case "follow", "unfollow":
+		pub, err := h.sbot.Publisher()
+		if err != nil {
+			http.Redirect(w, r, "/replication?status="+url.QueryEscape("Publish failed: "+err.Error())+"&class=error", http.StatusSeeOther)
+			return
+		}
+		following := action == "follow"
+		content := map[string]interface{}{
+			"type":      "contact",
+			"contact":   feed,
+			"following": following,
+			"blocking":  false,
+		}
+		if _, err := pub.PublishJSON(content); err != nil {
+			http.Redirect(w, r, "/replication?status="+url.QueryEscape("Publish failed: "+err.Error())+"&class=error", http.StatusSeeOther)
+			return
+		}
+		if following {
+			h.sbot.Replicate(feed)
+		}
+		msg := "Unfollowed " + feed
+		if following {
+			msg = "Followed " + feed
+		}
+		http.Redirect(w, r, "/replication?status="+url.QueryEscape(msg)+"&class=success", http.StatusSeeOther)
+		return
+	default:
+		http.Redirect(w, r, "/replication?status="+url.QueryEscape("Unknown action: "+action)+"&class=error", http.StatusSeeOther)
+		return
+	}
+}
+
+func replicationStatusBadgeClass(status string) string {
+	switch status {
+	case "behind":
+		return "warn"
+	case "unfollowed":
+		return "danger"
+	case "in-sync":
+		return "ok"
+	default:
+		return ""
+	}
 }
 
 func boolToYesNo(b bool) string {
@@ -1224,9 +1864,15 @@ func (h *clientUIHandler) handleEvents(w http.ResponseWriter, r *http.Request) {
 
 func (h *clientUIHandler) handleSettings(w http.ResponseWriter, r *http.Request) {
 	whoami, _ := h.sbot.Whoami()
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
 
-	body := fmt.Sprintf(`<h1>Settings</h1>
-<div class="section">
+	var body strings.Builder
+	fmt.Fprintf(&body, `<h1>Settings</h1>`)
+	if status != "" {
+		fmt.Fprintf(&body, `<div class="panel"><strong>Status:</strong> %s</div>`, html.EscapeString(status))
+	}
+
+	fmt.Fprintf(&body, `<div class="section">
   <h2>Identity</h2>
   <p>Your feed ID: <code>%s</code></p>
   <p>Export your identity secret for backup.</p>
@@ -1235,11 +1881,101 @@ func (h *clientUIHandler) handleSettings(w http.ResponseWriter, r *http.Request)
   </form>
 </div>
 <div class="section">
+  <h2>Import Identity</h2>
+  <p>Paste secret JSON (same format as export). Import writes to <code>%s</code>. Restart server after import.</p>
+  <form method="POST" action="/settings/import">
+    <div class="field"><label>Secret JSON</label><textarea name="secret_json" rows="6" placeholder="{...secret...}"></textarea></div>
+    <button type="submit">Import Identity</button>
+  </form>
+</div>
+<div class="section">
+  <h2>Diagnostics</h2>
+  <p><a href="/settings/diagnostics">Open Diagnostics JSON</a></p>
+</div>
+<div class="section">
   <h2>About</h2>
   <p>SSB Client - dev/testing tool for Mr. Valinsky's Adequate Bridge</p>
-  <p>Version: 0.2.0</p>
-</div>`, html.EscapeString(whoami))
+  <p>Version: 0.3.0-parity-wip</p>
+</div>`,
+		html.EscapeString(whoami),
+		html.EscapeString(filepath.Join(repoPath, "secret")))
 
 	w.Header().Set("Content-Type", "text/html")
-	fmt.Fprint(w, htmlPage("Settings", body))
+	fmt.Fprint(w, htmlPage("Settings", body.String()))
+}
+
+func (h *clientUIHandler) handleSettingsExport(w http.ResponseWriter, r *http.Request) {
+	if h.keyPair == nil {
+		http.Redirect(w, r, "/settings?status="+url.QueryEscape("identity is not loaded"), http.StatusSeeOther)
+		return
+	}
+
+	payload := fmt.Sprintf(`{
+  "curve": "ed25519",
+  "id": "%s",
+  "private": "%s.ed25519",
+  "public": "%s.ed25519"
+}
+`,
+		h.keyPair.FeedRef().String(),
+		keys.EncodePrivateKey(h.keyPair),
+		keys.EncodePublicKey(h.keyPair))
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Disposition", `attachment; filename="ssb-identity-export.json"`)
+	_, _ = io.WriteString(w, payload)
+}
+
+func (h *clientUIHandler) handleSettingsImport(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Redirect(w, r, "/settings?status="+url.QueryEscape("invalid import form"), http.StatusSeeOther)
+		return
+	}
+
+	secretJSON := strings.TrimSpace(r.Form.Get("secret_json"))
+	if secretJSON == "" {
+		http.Redirect(w, r, "/settings?status="+url.QueryEscape("secret_json is required"), http.StatusSeeOther)
+		return
+	}
+
+	kp, err := keys.ParseSecret(strings.NewReader(secretJSON))
+	if err != nil {
+		http.Redirect(w, r, "/settings?status="+url.QueryEscape("failed to parse secret: "+err.Error()), http.StatusSeeOther)
+		return
+	}
+
+	secretPath := filepath.Join(repoPath, "secret")
+	if err := keys.Save(kp, secretPath); err != nil {
+		http.Redirect(w, r, "/settings?status="+url.QueryEscape("failed to save secret: "+err.Error()), http.StatusSeeOther)
+		return
+	}
+
+	http.Redirect(w, r, "/settings?status="+url.QueryEscape("identity imported to "+secretPath+" (restart required)"), http.StatusSeeOther)
+}
+
+func (h *clientUIHandler) handleSettingsDiagnostics(w http.ResponseWriter, r *http.Request) {
+	if err := h.ensureIndexSynced(); err != nil {
+		h.slog.Warn("ui index sync failed in diagnostics", "error", err)
+	}
+	whoami, _ := h.sbot.Whoami()
+	peers := h.sbot.Peers()
+	feeds, _ := h.sbot.Store().Logs().List()
+
+	writeJSONResponse(w, map[string]interface{}{
+		"identity": whoami,
+		"repoPath": repoPath,
+		"uptime":   time.Since(h.startTime).String(),
+		"peers":    len(peers),
+		"feeds":    len(feeds),
+		"index": map[string]interface{}{
+			"enabled": h.index != nil,
+			"path":    h.indexPath,
+		},
+		"quickLinks": []string{
+			"/api/state",
+			"/api/capabilities",
+			"/api/replication",
+			"/api/timeline?mode=network&limit=25",
+		},
+	})
 }
