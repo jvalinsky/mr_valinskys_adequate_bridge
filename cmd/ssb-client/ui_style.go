@@ -93,10 +93,15 @@ body { font-family: "Avenir Next", "Segoe UI", sans-serif; max-width: 1300px; ma
 .theme-toggle:hover { background: rgba(255,255,255,0.2); }
 .theme-toggle:focus-visible { outline: 2px solid rgba(255,255,255,0.5); outline-offset: 2px; }
 .theme-toggle svg { display: none; }
-[data-theme="dark"] .theme-toggle .icon-sun,
-:root:not([data-theme="dark"]) .theme-toggle .icon-moon { display: block; }
-[data-theme="dark"] .theme-toggle .icon-moon,
-:root:not([data-theme="dark"]) .theme-toggle .icon-sun { display: none; }
+[data-theme="dark"] .theme-toggle .icon-sun { display: block; }
+[data-theme="dark"] .theme-toggle .icon-moon { display: none; }
+:root:not([data-theme]) .theme-toggle .icon-sun { display: none; }
+:root:not([data-theme]) .theme-toggle .icon-moon { display: block; }
+
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme]) .theme-toggle .icon-sun { display: block; }
+    :root:not([data-theme]) .theme-toggle .icon-moon { display: none; }
+}
 .brand { font-size: 1.1rem; font-weight: 800; letter-spacing: 0.02em; }
 .nav-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-top: 12px; }
 .nav-group { display: inline-flex; gap: 2px; align-items: center; }

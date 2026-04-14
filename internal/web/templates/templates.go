@@ -217,29 +217,14 @@ const pageLayout = `
             transform: scale(1.05);
         }
 
-        [data-theme="dark"] .icon-sun,
-        [data-theme="dark"] .icon-moon,
-        :root:not([data-theme]) .icon-sun,
-        :root:not([data-theme="dark"]) .icon-sun {
-            display: none;
-        }
-
-        [data-theme="dark"] .icon-moon {
-            display: block;
-        }
-
-        :root:not([data-theme]) .icon-moon,
-        :root:not([data-theme="dark"]) .icon-moon {
-            display: none;
-        }
+        [data-theme="dark"] .icon-sun { display: block; }
+        [data-theme="dark"] .icon-moon { display: none; }
+        :root:not([data-theme]) .icon-sun { display: none; }
+        :root:not([data-theme]) .icon-moon { display: block; }
 
         @media (prefers-color-scheme: dark) {
-            :root:not([data-theme]) .icon-moon {
-                display: block;
-            }
-            :root:not([data-theme]) .icon-sun {
-                display: none;
-            }
+            :root:not([data-theme]) .icon-sun { display: block; }
+            :root:not([data-theme]) .icon-moon { display: none; }
         }
 
         .app-main {
