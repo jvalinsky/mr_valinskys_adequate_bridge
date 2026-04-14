@@ -3,7 +3,9 @@ package room
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -184,6 +186,7 @@ func (r *Runtime) initHandlers() {
 		r.state,
 		r.cfg.HTTPSDomain,
 	)
+	roomSrv.SetObserver(r)
 	r.roomSrv = roomSrv
 
 	handlerMux := r.cfg.HandlerMux
@@ -347,6 +350,23 @@ func (r *Runtime) OnTunnelAnnounce(feed string, memberCheckMs, snapshotWriteMs i
 	}
 }
 
+func (r *Runtime) OnRoomMethodFailure(method, reason, errorKind string) {
+	metrics.RoomMethodFailures.WithLabelValues(method, reason, errorKind).Inc()
+	if errorKind == "sqlite_busy" {
+		metrics.RoomSQLiteBusyErrors.WithLabelValues(method).Inc()
+	}
+	if r != nil && r.logger != nil {
+		r.logger.Printf("event=room_method_failure method=%s reason=%s error_kind=%s", method, reason, errorKind)
+	}
+}
+
+func (r *Runtime) OnRoomMembershipLookupFailure(method, errorKind string) {
+	metrics.RoomMembershipLookupFailures.WithLabelValues(method, errorKind).Inc()
+	if r != nil && r.logger != nil {
+		r.logger.Printf("event=room_membership_lookup_failure method=%s error_kind=%s", method, errorKind)
+	}
+}
+
 func (r *Runtime) Close() error {
 	if r == nil {
 		return nil
@@ -487,8 +507,22 @@ func (r *Runtime) handleMUXRPCConn(ctx context.Context, conn net.Conn) {
 
 	isMember := false
 	if r.roomDB != nil {
-		if _, err := r.roomDB.Members().GetByFeed(ctx, *remoteFeed); err == nil {
+		_, memberErr := r.roomDB.Members().GetByFeed(ctx, *remoteFeed)
+		switch {
+		case memberErr == nil:
 			isMember = true
+		case errors.Is(memberErr, sql.ErrNoRows):
+			// External peer.
+		default:
+			errorKind := classifyRoomDBError(memberErr)
+			metrics.RoomMembershipLookupFailures.WithLabelValues("runtime.handle_muxrpc_conn", errorKind).Inc()
+			metrics.RoomMethodFailures.WithLabelValues("runtime.handle_muxrpc_conn", "membership_lookup", errorKind).Inc()
+			if errorKind == "sqlite_busy" {
+				metrics.RoomSQLiteBusyErrors.WithLabelValues("runtime.handle_muxrpc_conn").Inc()
+			}
+			_ = shs.Close()
+			r.logger.Printf("event=room_membership_lookup_failed feed=%s error_kind=%s err=%v", remoteFeed.String(), errorKind, memberErr)
+			return
 		}
 	}
 	if mode == roomdb.ModeRestricted && !isMember {
@@ -1010,6 +1044,25 @@ func joinErrors(errs []error) error {
 		return errs[0]
 	default:
 		return fmt.Errorf("multiple errors: %v", errs)
+	}
+}
+
+func classifyRoomDBError(err error) string {
+	if err == nil {
+		return "none"
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return "not_found"
+	}
+	lower := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(lower, "sqlite_busy"),
+		strings.Contains(lower, "database is locked"),
+		strings.Contains(lower, "database table is locked"),
+		strings.Contains(lower, "locked"):
+		return "sqlite_busy"
+	default:
+		return "other"
 	}
 }
 

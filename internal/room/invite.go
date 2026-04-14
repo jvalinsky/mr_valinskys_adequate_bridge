@@ -2,6 +2,7 @@ package room
 
 import (
 	"context"
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -141,6 +142,13 @@ func (h *inviteHandler) handleCreateInviteSubmit(w http.ResponseWriter, r *http.
 	createdBy := int64(0)
 	if authz.authenticated {
 		createdBy = authz.member.ID
+	} else {
+		creatorID, err := h.ensureRoomCreatorMemberID(r.Context())
+		if err != nil {
+			h.writeInviteError(w, r, http.StatusInternalServerError, "Failed to create invite")
+			return
+		}
+		createdBy = creatorID
 	}
 
 	token, err := h.roomDB.Create(r.Context(), createdBy)
@@ -163,6 +171,37 @@ func (h *inviteHandler) handleCreateInviteSubmit(w http.ResponseWriter, r *http.
 	if err := inviteCreatedTemplate.Execute(w, map[string]string{"URL": inviteURL}); err != nil {
 		http.Error(w, "Template error", http.StatusInternalServerError)
 	}
+}
+
+func (h *inviteHandler) ensureRoomCreatorMemberID(ctx context.Context) (int64, error) {
+	if h.members == nil {
+		return 0, fmt.Errorf("members service unavailable")
+	}
+	if h.keyPair == nil {
+		return 0, fmt.Errorf("room identity unavailable")
+	}
+
+	roomFeed := h.keyPair.FeedRef()
+	member, err := h.members.GetByFeed(ctx, roomFeed)
+	if err == nil {
+		return member.ID, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return 0, err
+	}
+
+	memberID, addErr := h.members.Add(ctx, roomFeed, roomdb.RoleAdmin)
+	if addErr == nil {
+		return memberID, nil
+	}
+
+	// Handle races on unique pub_key by re-reading after a failed insert.
+	member, lookupErr := h.members.GetByFeed(ctx, roomFeed)
+	if lookupErr == nil {
+		return member.ID, nil
+	}
+
+	return 0, fmt.Errorf("add room identity member: %w", addErr)
 }
 
 func (h *inviteHandler) handleJoin(w http.ResponseWriter, r *http.Request) {

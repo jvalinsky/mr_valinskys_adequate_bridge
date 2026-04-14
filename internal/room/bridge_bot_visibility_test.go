@@ -129,14 +129,12 @@ func readAttendantsState(t *testing.T, ctx context.Context, src *muxrpc.ByteSour
 // ---------------------------------------------------------------------------
 
 // TestNonMemberGetsErrorFromRoomAttendants asserts that a peer with no room
-// membership receives a protocol error from room.attendants and NOT an empty
-// successful response. This documents the membership gate added in our
-// implementation (not required by the SSB Room 2.0 spec).
+// membership receives a protocol error from room.attendants in community mode.
 func TestNonMemberGetsErrorFromRoomAttendants(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	rt := startRoom(t, ctx, "open")
+	rt := startRoom(t, ctx, "community")
 	defer rt.Close()
 
 	clientKey, _ := keys.Generate()
@@ -180,9 +178,8 @@ func TestNonMemberGetsErrorFromRoomAttendants(t *testing.T) {
 		len(state.IDs), state.IDs)
 }
 
-// TestRoomAttendantsOpenModeNonMember is the same scenario in open mode.
-// Both community and open mode require membership for room.attendants,
-// which is a deviation from the Room 2.0 spec.
+// TestRoomAttendantsOpenModeNonMember verifies that open mode allows
+// non-members to consume room.attendants discovery state.
 func TestRoomAttendantsOpenModeNonMember(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -199,16 +196,26 @@ func TestRoomAttendantsOpenModeNonMember(t *testing.T) {
 		t.Fatalf("open source: %v", err)
 	}
 	if !src.Next(ctx) {
-		t.Logf("open mode gates room.attendants (Go-level error): %v", src.Err())
-		return
+		if err := src.Err(); err != nil {
+			t.Fatalf("expected open mode attendants state, got source error: %v", err)
+		}
+		t.Fatal("expected open mode attendants state, stream closed early")
 	}
 	raw, _ := src.Bytes()
 	if isErr, msg := isSSBError(raw); isErr {
-		t.Logf("open mode also gates room.attendants (SSB error packet): %s", msg)
-		return
+		t.Fatalf("expected open mode attendants state, got SSB error packet: %s", msg)
 	}
-	// Non-member got a state response — this is spec-correct (no membership gate).
-	t.Logf("open mode does NOT gate room.attendants: non-member received state: %s", raw)
+
+	var state struct {
+		Type string   `json:"type"`
+		IDs  []string `json:"ids"`
+	}
+	if err := json.Unmarshal(raw, &state); err != nil {
+		t.Fatalf("decode open mode attendants state: %v (raw: %s)", err, raw)
+	}
+	if state.Type != "state" {
+		t.Fatalf("expected type=state in open mode attendants response, got %+v", state)
+	}
 }
 
 // ---------------------------------------------------------------------------

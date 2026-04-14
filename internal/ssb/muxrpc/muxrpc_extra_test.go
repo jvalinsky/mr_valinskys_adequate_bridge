@@ -2,7 +2,10 @@ package muxrpc
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net"
+	"strings"
 	"testing"
 	"time"
 )
@@ -129,4 +132,69 @@ func TestRPCDuplex(t *testing.T) {
 	}
 
 	sink.Close()
+}
+
+func TestRPCAsyncReturnsRemoteError(t *testing.T) {
+	p1, p2 := net.Pipe()
+	defer p1.Close()
+	defer p2.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	handler := &funcHandler{
+		h: func(ctx context.Context, req *Request) {
+			req.CloseWithError(fmt.Errorf("boom async"))
+		},
+	}
+
+	server := NewRPC(ctx, p2, handler, nil)
+	defer server.Terminate()
+
+	client := NewRPC(ctx, p1, nil, nil)
+	defer client.Terminate()
+
+	var out string
+	err := client.Async(ctx, &out, TypeJSON, Method{"test", "fail"})
+	if err == nil {
+		t.Fatal("expected remote error")
+	}
+
+	var remoteErr *RemoteError
+	if !errors.As(err, &remoteErr) {
+		t.Fatalf("expected *RemoteError, got %T (%v)", err, err)
+	}
+	if remoteErr.Name != "Error" || !strings.Contains(remoteErr.Message, "boom async") {
+		t.Fatalf("unexpected remote error payload: %+v", remoteErr)
+	}
+}
+
+func TestRPCSyncReturnsRemoteError(t *testing.T) {
+	p1, p2 := net.Pipe()
+	defer p1.Close()
+	defer p2.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	handler := &funcHandler{
+		h: func(ctx context.Context, req *Request) {
+			req.CloseWithError(fmt.Errorf("boom sync"))
+		},
+	}
+
+	server := NewRPC(ctx, p2, handler, nil)
+	defer server.Terminate()
+
+	client := NewRPC(ctx, p1, nil, nil)
+	defer client.Terminate()
+
+	var out bool
+	err := client.Sync(ctx, &out, TypeJSON, Method{"test", "fail"})
+	if err == nil {
+		t.Fatal("expected remote error")
+	}
+	if strings.Contains(err.Error(), "cannot unmarshal") {
+		t.Fatalf("expected remote error, got decode failure: %v", err)
+	}
 }

@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -79,6 +80,27 @@ func ParseMethod(s string) Method {
 	return strings.Split(s, ".")
 }
 
+type RemoteError struct {
+	Name    string `json:"name"`
+	Message string `json:"message"`
+}
+
+func (e *RemoteError) Error() string {
+	if e == nil {
+		return ""
+	}
+	switch {
+	case e.Name == "" && e.Message == "":
+		return "muxrpc remote error"
+	case e.Name == "":
+		return e.Message
+	case e.Message == "":
+		return e.Name
+	default:
+		return e.Name + ": " + e.Message
+	}
+}
+
 type Handler interface {
 	Handled(Method) bool
 	HandleCall(ctx context.Context, req *Request)
@@ -141,6 +163,20 @@ func (hm *HandlerMux) Register(m Method, h Handler) {
 		hm.handlers = make(map[string]Handler)
 	}
 	hm.handlers[m.String()] = h
+}
+
+func (hm *HandlerMux) RegisteredMethods() []string {
+	hm.mu.RLock()
+	defer hm.mu.RUnlock()
+	if hm == nil || hm.handlers == nil {
+		return nil
+	}
+	methods := make([]string, 0, len(hm.handlers))
+	for m := range hm.handlers {
+		methods = append(methods, m)
+	}
+	sort.Strings(methods)
+	return methods
 }
 
 type Endpoint interface {
@@ -465,6 +501,9 @@ func (r *rpc) callAndDecode(ctx context.Context, callType string, ret interface{
 	if err != nil && err != io.EOF {
 		return err
 	}
+	if remoteErr, ok := decodeRemoteErrorEnvelope(b); ok {
+		return remoteErr
+	}
 
 	if len(b) > 0 && ret != nil {
 		switch tipe {
@@ -488,6 +527,20 @@ func (r *rpc) callAndDecode(ctx context.Context, callType string, ret interface{
 	}
 
 	return nil
+}
+
+func decodeRemoteErrorEnvelope(frame []byte) (*RemoteError, bool) {
+	if len(frame) == 0 {
+		return nil, false
+	}
+	var payload RemoteError
+	if err := json.Unmarshal(frame, &payload); err != nil {
+		return nil, false
+	}
+	if payload.Name != "Error" {
+		return nil, false
+	}
+	return &payload, true
 }
 
 func (r *rpc) Sink(ctx context.Context, tipe RequestEncoding, method Method, args ...interface{}) (*ByteSink, error) {
@@ -671,4 +724,35 @@ func (m *Manifest) ToJSON() ([]byte, error) {
 	}
 
 	return json.Marshal(entries)
+}
+
+func (m *Manifest) EntriesByType() map[string][]string {
+	res := map[string][]string{
+		"async":  {},
+		"source": {},
+		"sink":   {},
+		"duplex": {},
+		"sync":   {},
+	}
+
+	for name := range m.async {
+		res["async"] = append(res["async"], name)
+	}
+	for name := range m.source {
+		res["source"] = append(res["source"], name)
+	}
+	for name := range m.sink {
+		res["sink"] = append(res["sink"], name)
+	}
+	for name := range m.duplex {
+		res["duplex"] = append(res["duplex"], name)
+	}
+	for name := range m.sync {
+		res["sync"] = append(res["sync"], name)
+	}
+
+	for k := range res {
+		sort.Strings(res[k])
+	}
+	return res
 }

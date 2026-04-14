@@ -2,7 +2,9 @@ package room
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -73,6 +75,7 @@ func (h *RoomHandler) handleCreateInvite(ctx context.Context, req *muxrpc.Reques
 
 	mode, err := h.server.config.GetPrivacyMode(ctx)
 	if err != nil {
+		observeRoomMethodFailure(h.server, "room.createInvite", "privacy_mode", err)
 		req.CloseWithError(fmt.Errorf("room.createInvite: get privacy mode: %w", err))
 		return
 	}
@@ -89,18 +92,45 @@ func (h *RoomHandler) handleCreateInvite(ctx context.Context, req *muxrpc.Reques
 			req.CloseWithError(fmt.Errorf("room.createInvite: get caller: %w", err))
 			return
 		}
-		if !isInternalMember(h.server, ctx, caller) {
+		isMember, err := isInternalMember(h.server, ctx, caller)
+		if err != nil {
+			observeMembershipLookupFailure(h.server, "room.createInvite", err)
+			req.CloseWithError(fmt.Errorf("room.createInvite: membership lookup: %w", err))
+			return
+		}
+		if !isMember {
 			req.CloseWithError(fmt.Errorf("room.createInvite: membership required in community mode"))
 			return
 		}
 		member, err := h.server.members.GetByFeed(ctx, caller)
-		if err == nil {
-			createdBy = member.ID
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				observeMembershipLookupFailure(h.server, "room.createInvite", err)
+				req.CloseWithError(fmt.Errorf("room.createInvite: membership lookup: %w", err))
+				return
+			}
+			observeRoomMethodFailure(h.server, "room.createInvite", "creator_member_lookup", err)
+			req.CloseWithError(fmt.Errorf("room.createInvite: get creator member: %w", err))
+			return
 		}
+		createdBy = member.ID
+	} else {
+		if h.server.keyPair == nil {
+			req.CloseWithError(fmt.Errorf("room.createInvite: room identity unavailable"))
+			return
+		}
+		creatorID, err := ensureMemberID(ctx, h.server.members, *h.server.keyPair, roomdb.RoleAdmin)
+		if err != nil {
+			observeRoomMethodFailure(h.server, "room.createInvite", "ensure_creator", err)
+			req.CloseWithError(fmt.Errorf("room.createInvite: ensure room creator: %w", err))
+			return
+		}
+		createdBy = creatorID
 	}
 
 	token, err := h.server.invites.Create(ctx, createdBy)
 	if err != nil {
+		observeRoomMethodFailure(h.server, "room.createInvite", "create_invite", err)
 		req.CloseWithError(fmt.Errorf("room.createInvite: create: %w", err))
 		return
 	}
@@ -164,12 +194,19 @@ func (h *RoomHandler) handleRegisterAlias(ctx context.Context, req *muxrpc.Reque
 		req.CloseWithError(fmt.Errorf("room.registerAlias: get caller: %w", err))
 		return
 	}
-	if !isInternalMember(h.server, ctx, caller) {
+	isMember, err := isInternalMember(h.server, ctx, caller)
+	if err != nil {
+		observeMembershipLookupFailure(h.server, "room.registerAlias", err)
+		req.CloseWithError(fmt.Errorf("room.registerAlias: membership lookup: %w", err))
+		return
+	}
+	if !isMember {
 		req.CloseWithError(fmt.Errorf("room.registerAlias: membership required"))
 		return
 	}
 	mode, err := h.server.config.GetPrivacyMode(ctx)
 	if err != nil {
+		observeRoomMethodFailure(h.server, "room.registerAlias", "privacy_mode", err)
 		req.CloseWithError(fmt.Errorf("room.registerAlias: get mode: %w", err))
 		return
 	}
@@ -190,10 +227,12 @@ func (h *RoomHandler) handleRegisterAlias(ctx context.Context, req *muxrpc.Reque
 	}
 
 	if err := validateAliasRegistration(*h.server.keyPair, caller, alias, sig); err != nil {
+		observeRoomMethodFailure(h.server, "room.registerAlias", "invalid_signature", err)
 		req.CloseWithError(fmt.Errorf("room.registerAlias: invalid signature: %w", err))
 		return
 	}
 	if err := h.server.aliases.Register(ctx, alias, caller, sig); err != nil {
+		observeRoomMethodFailure(h.server, "room.registerAlias", "register", err)
 		req.CloseWithError(fmt.Errorf("room.registerAlias: register: %w", err))
 		return
 	}
@@ -223,7 +262,13 @@ func (h *RoomHandler) handleRevokeAlias(ctx context.Context, req *muxrpc.Request
 		req.CloseWithError(fmt.Errorf("room.revokeAlias: get caller: %w", err))
 		return
 	}
-	if !isInternalMember(h.server, ctx, caller) {
+	isMember, err := isInternalMember(h.server, ctx, caller)
+	if err != nil {
+		observeMembershipLookupFailure(h.server, "room.revokeAlias", err)
+		req.CloseWithError(fmt.Errorf("room.revokeAlias: membership lookup: %w", err))
+		return
+	}
+	if !isMember {
 		req.CloseWithError(fmt.Errorf("room.revokeAlias: membership required"))
 		return
 	}
@@ -313,9 +358,23 @@ func (h *RoomHandler) handleAttendants(ctx context.Context, req *muxrpc.Request)
 		req.CloseWithError(fmt.Errorf("room.attendants: get caller: %w", err))
 		return
 	}
-	if !isInternalMember(h.server, ctx, caller) {
-		req.CloseWithError(fmt.Errorf("room.attendants: membership required"))
+	isMember, err := isInternalMember(h.server, ctx, caller)
+	if err != nil {
+		observeMembershipLookupFailure(h.server, "room.attendants", err)
+		req.CloseWithError(fmt.Errorf("room.attendants: membership lookup: %w", err))
 		return
+	}
+	if !isMember {
+		mode, err := h.server.config.GetPrivacyMode(ctx)
+		if err != nil {
+			observeRoomMethodFailure(h.server, "room.attendants", "privacy_mode", err)
+			req.CloseWithError(fmt.Errorf("room.attendants: get mode: %w", err))
+			return
+		}
+		if mode != roomdb.ModeOpen {
+			req.CloseWithError(fmt.Errorf("room.attendants: membership required"))
+			return
+		}
 	}
 	peers, events, cancel := h.server.state.SubscribeAttendants()
 	go h.streamAttendants(ctx, req, peers, events, cancel)
@@ -357,6 +416,23 @@ func (h *RoomHandler) streamAttendants(ctx context.Context, req *muxrpc.Request,
 			if !ok {
 				return
 			}
+			if evt.Type == roomstate.AttendantEventResync {
+				fresh := h.server.state.Attendants()
+				ids := make([]string, 0, len(fresh))
+				for _, p := range fresh {
+					if p.ID.String() != bridgeFeed {
+						ids = append(ids, p.ID.String())
+					}
+				}
+				payload, _ := json.Marshal(map[string]interface{}{
+					"type": "state",
+					"ids":  ids,
+				})
+				if _, err := sink.Write(payload); err != nil {
+					return
+				}
+				continue
+			}
 			if evt.ID.String() == bridgeFeed {
 				continue
 			}
@@ -379,6 +455,7 @@ func (h *RoomHandler) handleMetadata(ctx context.Context, req *muxrpc.Request) {
 
 	mode, err := h.server.config.GetPrivacyMode(ctx)
 	if err != nil {
+		observeRoomMethodFailure(h.server, "room.metadata", "privacy_mode", err)
 		req.CloseWithError(fmt.Errorf("room.metadata: get mode: %w", err))
 		return
 	}
@@ -390,7 +467,12 @@ func (h *RoomHandler) handleMetadata(ctx context.Context, req *muxrpc.Request) {
 
 	membership := false
 	if caller, err := h.getCallerFeed(req); err == nil {
-		membership = isInternalMember(h.server, ctx, caller)
+		membership, err = isInternalMember(h.server, ctx, caller)
+		if err != nil {
+			observeMembershipLookupFailure(h.server, "room.metadata", err)
+			req.CloseWithError(fmt.Errorf("room.metadata: membership lookup: %w", err))
+			return
+		}
 	}
 
 	req.Return(ctx, MetadataResult{

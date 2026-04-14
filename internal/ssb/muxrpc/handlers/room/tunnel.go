@@ -105,12 +105,14 @@ func (h *TunnelHandler) handleAnnounce(ctx context.Context, req *muxrpc.Request)
 
 	feedRef, err := AuthenticatedFeedFromAddr(req.RemoteAddr())
 	if err != nil {
+		observeRoomMethodFailure(h.server, "tunnel.announce", "get_caller", err)
 		req.CloseWithError(fmt.Errorf("tunnel.announce: get caller: %w", err))
 		return
 	}
 
 	// Check if peer is denied (always applies)
 	if h.server.denied.HasFeed(ctx, feedRef) {
+		observeRoomMethodFailure(h.server, "tunnel.announce", "denied", fmt.Errorf("denied key"))
 		req.CloseWithError(fmt.Errorf("tunnel.announce: denied"))
 		return
 	}
@@ -118,24 +120,32 @@ func (h *TunnelHandler) handleAnnounce(ctx context.Context, req *muxrpc.Request)
 	var hookFailed bool
 
 	memberCheckStart := time.Now()
-	isMember := isInternalMember(h.server, ctx, feedRef)
+	isMember, err := isInternalMember(h.server, ctx, feedRef)
 	memberCheckMs := time.Since(memberCheckStart).Milliseconds()
+	if err != nil {
+		observeMembershipLookupFailure(h.server, "tunnel.announce", err)
+		req.CloseWithError(fmt.Errorf("tunnel.announce: membership lookup: %w", err))
+		return
+	}
 
 	// In open mode, allow anonymous announcements; otherwise require membership
 	if !isMember {
 		if h.server.config != nil {
 			mode, err := h.server.config.GetPrivacyMode(ctx)
 			if err != nil {
+				observeRoomMethodFailure(h.server, "tunnel.announce", "privacy_mode", err)
 				req.CloseWithError(fmt.Errorf("tunnel.announce: get privacy mode: %w", err))
 				return
 			}
 			if mode != roomdb.ModeOpen {
+				observeRoomMethodFailure(h.server, "tunnel.announce", "membership_required", fmt.Errorf("membership required"))
 				req.CloseWithError(fmt.Errorf("tunnel.announce: membership required"))
 				return
 			}
 			// Open mode: allow anonymous peer
 		} else {
 			// No config available: require membership
+			observeRoomMethodFailure(h.server, "tunnel.announce", "membership_required", fmt.Errorf("membership required"))
 			req.CloseWithError(fmt.Errorf("tunnel.announce: membership required"))
 			return
 		}
@@ -153,6 +163,7 @@ func (h *TunnelHandler) handleAnnounce(ctx context.Context, req *muxrpc.Request)
 	if h.announceHook != nil {
 		if err := h.announceHook(feedRef); err != nil {
 			hookFailed = true
+			observeRoomMethodFailure(h.server, "tunnel.announce", "hook", err)
 			if h.metrics != nil {
 				h.metrics.OnTunnelAnnounceFailure()
 			}
@@ -176,24 +187,34 @@ func (h *TunnelHandler) handleLeave(ctx context.Context, req *muxrpc.Request) {
 
 	feedRef, err := AuthenticatedFeedFromAddr(req.RemoteAddr())
 	if err != nil {
+		observeRoomMethodFailure(h.server, "tunnel.leave", "get_caller", err)
 		req.CloseWithError(fmt.Errorf("tunnel.leave: get caller: %w", err))
 		return
 	}
 
 	// In open mode, allow anonymous peers to leave; otherwise require membership
-	if !isInternalMember(h.server, ctx, feedRef) {
+	isMember, err := isInternalMember(h.server, ctx, feedRef)
+	if err != nil {
+		observeMembershipLookupFailure(h.server, "tunnel.leave", err)
+		req.CloseWithError(fmt.Errorf("tunnel.leave: membership lookup: %w", err))
+		return
+	}
+	if !isMember {
 		if h.server.config != nil {
 			mode, err := h.server.config.GetPrivacyMode(ctx)
 			if err != nil {
+				observeRoomMethodFailure(h.server, "tunnel.leave", "privacy_mode", err)
 				req.CloseWithError(fmt.Errorf("tunnel.leave: get privacy mode: %w", err))
 				return
 			}
 			if mode != roomdb.ModeOpen {
+				observeRoomMethodFailure(h.server, "tunnel.leave", "membership_required", fmt.Errorf("membership required"))
 				req.CloseWithError(fmt.Errorf("tunnel.leave: membership required"))
 				return
 			}
 			// Open mode: allow anonymous peer to leave
 		} else {
+			observeRoomMethodFailure(h.server, "tunnel.leave", "membership_required", fmt.Errorf("membership required"))
 			req.CloseWithError(fmt.Errorf("tunnel.leave: membership required"))
 			return
 		}

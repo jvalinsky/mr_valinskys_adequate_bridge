@@ -2,8 +2,11 @@ package room
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/url"
 	"regexp"
@@ -85,12 +88,81 @@ func AuthenticatedFeedFromAddr(addr net.Addr) (refs.FeedRef, error) {
 	return secretstream.AuthenticatedFeedFromAddr(addr)
 }
 
-func isInternalMember(s *RoomServer, ctx context.Context, feed refs.FeedRef) bool {
+func isInternalMember(s *RoomServer, ctx context.Context, feed refs.FeedRef) (bool, error) {
 	if s == nil || s.members == nil {
-		return false
+		return false, fmt.Errorf("room members service unavailable")
 	}
 	_, err := s.members.GetByFeed(ctx, feed)
-	return err == nil
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return false, err
+}
+
+func ensureMemberID(ctx context.Context, members roomdb.MembersService, feed refs.FeedRef, role roomdb.Role) (int64, error) {
+	if members == nil {
+		return 0, fmt.Errorf("room members service unavailable")
+	}
+
+	member, err := members.GetByFeed(ctx, feed)
+	if err == nil {
+		return member.ID, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return 0, err
+	}
+
+	memberID, addErr := members.Add(ctx, feed, role)
+	if addErr == nil {
+		return memberID, nil
+	}
+
+	// Handle races on unique pub_key by re-reading the row after a failed insert.
+	member, lookupErr := members.GetByFeed(ctx, feed)
+	if lookupErr == nil {
+		return member.ID, nil
+	}
+
+	return 0, fmt.Errorf("add member: %w", addErr)
+}
+
+func observeMembershipLookupFailure(server *RoomServer, method string, err error) {
+	errorKind := roomErrorKind(err)
+	if server != nil && server.observer != nil {
+		server.observer.OnRoomMembershipLookupFailure(method, errorKind)
+		server.observer.OnRoomMethodFailure(method, "membership_lookup", errorKind)
+	}
+	slog.Warn("room membership lookup failed", "method", method, "error_kind", errorKind, "error", err)
+}
+
+func observeRoomMethodFailure(server *RoomServer, method, reason string, err error) {
+	errorKind := roomErrorKind(err)
+	if server != nil && server.observer != nil {
+		server.observer.OnRoomMethodFailure(method, reason, errorKind)
+	}
+	slog.Warn("room method failed", "method", method, "reason", reason, "error_kind", errorKind, "error", err)
+}
+
+func roomErrorKind(err error) string {
+	if err == nil {
+		return "none"
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		return "not_found"
+	}
+	lower := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(lower, "sqlite_busy"),
+		strings.Contains(lower, "database is locked"),
+		strings.Contains(lower, "database table is locked"),
+		strings.Contains(lower, "locked"):
+		return "sqlite_busy"
+	default:
+		return "other"
+	}
 }
 
 func roomFeatures(mode roomdb.PrivacyMode) []string {

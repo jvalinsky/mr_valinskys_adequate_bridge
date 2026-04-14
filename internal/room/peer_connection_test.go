@@ -150,10 +150,13 @@ func TestPeerAnnouncesTunnel(t *testing.T) {
 	rpc := muxrpc.NewServer(ctx, shs, nil, nil)
 
 	tunnelAddr := "net:1.2.3.4:8008~shs:" + clientKey.FeedRef().String()
-	var announceResp interface{}
-	err = rpc.Async(ctx, &announceResp, muxrpc.TypeJSON, muxrpc.Method{"tunnel", "announce"}, tunnelAddr)
+	var announceResp bool
+	err = rpc.Sync(ctx, &announceResp, muxrpc.TypeJSON, muxrpc.Method{"tunnel", "announce"}, tunnelAddr)
 	if err != nil {
 		t.Fatalf("tunnel.announce call failed: %v", err)
+	}
+	if !announceResp {
+		t.Fatalf("expected tunnel.announce to return true")
 	}
 
 	t.Logf("announce response: %+v", announceResp)
