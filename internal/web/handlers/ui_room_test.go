@@ -101,10 +101,26 @@ func TestRoomInviteCreateRedirectIncludesJoinURL(t *testing.T) {
 		t.Fatalf("expected 303, got %d", rr.Code)
 	}
 	location := rr.Header().Get("Location")
-	for _, want := range []string{"/room/aliases", "message=Invite+created", "invite_url="} {
+	for _, want := range []string{"/room/aliases", "message=Invite+created"} {
 		if !strings.Contains(location, want) {
 			t.Fatalf("redirect missing %q: %s", want, location)
 		}
+	}
+	if strings.Contains(location, "invite_url=") {
+		t.Fatalf("redirect should not include invite_url: %s", location)
+	}
+	cookies := rr.Result().Cookies()
+	foundFlash := false
+	for _, c := range cookies {
+		if c.Name == roomInviteFlashCookieName {
+			foundFlash = true
+			if strings.TrimSpace(c.Value) == "" {
+				t.Fatalf("expected invite flash cookie to carry encoded invite URL")
+			}
+		}
+	}
+	if !foundFlash {
+		t.Fatalf("expected invite flash cookie %q to be set", roomInviteFlashCookieName)
 	}
 }
 

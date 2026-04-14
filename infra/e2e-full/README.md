@@ -24,6 +24,8 @@ The compose file in [`infra/e2e-full/docker-compose.yml`](./docker-compose.yml) 
 | `seeder` | Publishes test ATProto records into the local PDS |
 | `test-runner` | Connects Tildefriends, verifies replication, and checks reverse-sync side effects |
 | `bridge-admin-ui` | Standalone admin UI bound to `0.0.0.0:8080` with HTTP basic auth |
+| `ssb-client-demo` | Optional `ssbclient-demo` profile service exposing the repo `ssb-client` on `http://127.0.0.1:8081` |
+| `demo-runner-ssbclient` | Optional `ssbclient-demo` profile verifier for bridge room join + bridged bot sync |
 
 ## Running the Stack
 
@@ -33,11 +35,26 @@ Fast path:
 ./scripts/e2e_full_up.sh
 ```
 
+SSB client demo path (keeps the stack up by default):
+
+```bash
+./scripts/e2e_full_ssbclient_demo.sh
+```
+
+On first run, the script auto-builds `blebbit/relay:latest` via `infra/local-atproto/build-relay.sh` if the image is not already present.
+
 Direct compose invocation:
 
 ```bash
 docker compose -f infra/e2e-full/docker-compose.yml up --build -d
 docker compose -f infra/e2e-full/docker-compose.yml wait test-runner
+```
+
+Direct compose invocation for the `ssbclient-demo` profile:
+
+```bash
+docker compose -p mvab-e2e-full-demo -f infra/e2e-full/docker-compose.yml --profile ssbclient-demo up --build -d
+docker compose -p mvab-e2e-full-demo -f infra/e2e-full/docker-compose.yml wait demo-runner-ssbclient
 ```
 
 If `KEEP_E2E=1` is set, `scripts/e2e_full_up.sh` leaves the stack up for inspection on success.
@@ -56,6 +73,7 @@ If `KEEP_E2E=1` is set, `scripts/e2e_full_up.sh` leaves the stack up for inspect
 | `ROOM_MODE` | `open` |
 | `BRIDGE_RELAY_URL` | `ws://pds:80/xrpc/com.atproto.sync.subscribeRepos` |
 | `BRIDGE_PLC_URL` | `http://plc:2582` |
+| `BRIDGE_XRPC_HOST` | `http://pds:80` |
 | `BRIDGE_ATPROTO_INSECURE` | `1` |
 | `BRIDGE_REVERSE_SYNC_ENABLE` | `1` |
 | `BRIDGE_REVERSE_CREDENTIALS_FILE` | `/data/reverse-credentials.json` |
@@ -100,6 +118,7 @@ Useful commands:
 docker compose -f infra/e2e-full/docker-compose.yml logs bridge
 docker compose -f infra/e2e-full/docker-compose.yml logs bridge-admin-ui
 docker compose -f infra/e2e-full/docker-compose.yml logs test-runner
+docker compose -p mvab-e2e-full-demo -f infra/e2e-full/docker-compose.yml logs demo-runner-ssbclient
 docker exec -it <bridge-container> /scripts/debug_ebt_state.sh
 docker exec -it <bridge-container> /scripts/debug_muxrpc_capture.sh
 ```
@@ -107,6 +126,10 @@ docker exec -it <bridge-container> /scripts/debug_muxrpc_capture.sh
 The admin UI is exposed on `http://127.0.0.1:8080` with:
 - user: `admin`
 - password env in compose: `BRIDGE_UI_AUTH_PASS=e2e-password`
+
+The `ssbclient-demo` profile exposes `ssb-client` on `http://127.0.0.1:8081` with:
+- user: `demo`
+- password: `ssbclient-password`
 
 ## See Also
 

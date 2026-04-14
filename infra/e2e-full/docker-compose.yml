@@ -39,6 +39,7 @@ services:
       BRIDGE_FIREHOSE_ENABLE: "1"
       BRIDGE_RELAY_URL: "ws://pds:80/xrpc/com.atproto.sync.subscribeRepos"
       BRIDGE_PLC_URL: "http://plc:2582"
+      BRIDGE_XRPC_HOST: "http://pds:80"
       BRIDGE_ATPROTO_INSECURE: "1"
       BRIDGE_CLEAN_START: "1"
       BRIDGE_MODE: firehose
@@ -125,7 +126,7 @@ services:
       dockerfile: infra/e2e-tildefriends/Dockerfile.bridge
     depends_on:
       bridge:
-        condition: service_started
+        condition: service_healthy
     environment:
       DB_PATH: /data/bridge.sqlite
       REPO_PATH: /data/ssb-repo
@@ -182,7 +183,59 @@ services:
     networks:
       - atproto-network
 
+  # ── Repo SSB Client Demo (forward bridge sync) ──────────────────
+  ssb-client-demo:
+    profiles: ["ssbclient-demo"]
+    build:
+      context: ../..
+      dockerfile: infra/e2e-full/Dockerfile.ssbclient
+    command: ["--http-listen-addr", "0.0.0.0:8080", "--listen-addr", "0.0.0.0:8008", "--repo-path", "/data", "--ui-auth-user", "demo", "--ui-auth-pass-env", "SSB_CLIENT_UI_AUTH_PASS", "--room-http-addr", "http://bridge:8976", "--room-mode", "open", "serve"]
+    environment:
+      SSB_CLIENT_UI_AUTH_PASS: ssbclient-password
+    ports:
+      - "8081:8080"
+      - "8009:8008"
+    volumes:
+      - ssb-client-demo-data:/data
+    depends_on:
+      bridge:
+        condition: service_healthy
+    networks:
+      - atproto-network
+
+  demo-runner-ssbclient:
+    profiles: ["ssbclient-demo"]
+    build:
+      context: ../..
+      dockerfile: infra/e2e-tildefriends/Dockerfile.bridge
+    entrypoint: ["/bin/bash", "/scripts/test_runner_ssbclient_demo.sh"]
+    environment:
+      BRIDGE_HTTP_ADDR: bridge:8976
+      BRIDGE_DB_PATH: /bridge-data/bridge.sqlite
+      BRIDGE_REPO_PATH: /bridge-data/ssb-repo
+      SSB_CLIENT_BASE_URL: http://ssb-client-demo:8080
+      BOT_SEED: e2e-full-seed
+      PDS_HOST: http://pds:80
+      BRIDGE_PLC_URL: http://plc:2582
+      SSB_CLIENT_AUTH_USER: demo
+      SSB_CLIENT_AUTH_PASS: ssbclient-password
+      MAX_WAIT_SECS: "${E2E_FULL_MAX_WAIT_SECS:-300}"
+      POLL_INTERVAL: "${E2E_FULL_POLL_INTERVAL:-5}"
+    volumes:
+      - bridge-data:/bridge-data
+      - ./test_runner_ssbclient_demo.sh:/scripts/test_runner_ssbclient_demo.sh:ro
+    depends_on:
+      bridge:
+        condition: service_healthy
+      seeder:
+        condition: service_started
+      ssb-client-demo:
+        condition: service_started
+    networks:
+      - atproto-network
+
 volumes:
   bridge-data:
   tf-data:
   ssb-client-e2e-data:
+  ssb-client-demo-data:

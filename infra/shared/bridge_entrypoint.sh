@@ -23,6 +23,7 @@ BRIDGE_MODE="${BRIDGE_MODE:-seeded}"
 BRIDGE_FIREHOSE_ENABLE="${BRIDGE_FIREHOSE_ENABLE:-0}"
 BRIDGE_RELAY_URL="${BRIDGE_RELAY_URL:-}"
 BRIDGE_PLC_URL="${BRIDGE_PLC_URL:-https://plc.directory}"
+BRIDGE_XRPC_HOST="${BRIDGE_XRPC_HOST:-}"
 BRIDGE_ATPROTO_INSECURE="${BRIDGE_ATPROTO_INSECURE:-0}"
 BRIDGE_CLEAN_START="${BRIDGE_CLEAN_START:-0}"
 BRIDGE_REVERSE_SYNC_ENABLE="${BRIDGE_REVERSE_SYNC_ENABLE:-0}"
@@ -107,6 +108,10 @@ bridge_cli_args+=(
   --publish-workers 2
   --plc-url "${BRIDGE_PLC_URL}"
 )
+
+if [[ -n "${BRIDGE_XRPC_HOST}" ]]; then
+  bridge_cli_args+=(--xrpc-host "${BRIDGE_XRPC_HOST}")
+fi
 
 if [ "${BRIDGE_ATPROTO_INSECURE}" = "1" ]; then
   bridge_cli_args+=(--atproto-insecure)

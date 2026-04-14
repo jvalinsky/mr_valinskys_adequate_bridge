@@ -199,12 +199,12 @@ func TestRequestLogMiddlewareRedactsSensitiveQueryFields(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 
-	req := httptest.NewRequest(http.MethodGet, "/state?cursor=123&token=abc123&password=shh", nil)
+	req := httptest.NewRequest(http.MethodGet, "/state?cursor=123&token=abc123&password=shh&invite_url=http%3A%2F%2F127.0.0.1%2Fjoin%3Ftoken%3Droom123", nil)
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 
 	logLine := buf.String()
-	if strings.Contains(logLine, "abc123") || strings.Contains(logLine, "shh") {
+	if strings.Contains(logLine, "abc123") || strings.Contains(logLine, "shh") || strings.Contains(logLine, "room123") {
 		t.Fatalf("expected sensitive values to be redacted, got log: %s", logLine)
 	}
 	if !strings.Contains(logLine, "REDACTED") {
