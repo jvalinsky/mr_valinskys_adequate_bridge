@@ -653,7 +653,7 @@ const pageLayout = `
         .detail-card {
             border: 1px solid var(--line);
             border-radius: 12px;
-            background: #fff;
+            background: var(--panel-solid);
             padding: 12px;
             display: grid;
             gap: 6px;
@@ -672,6 +672,13 @@ const pageLayout = `
             font-size: 0.92rem;
             line-height: 1.45;
             word-break: break-word;
+        }
+
+        .detail-card dd.empty,
+        .detail-card .empty {
+            color: var(--muted);
+            font-style: italic;
+            opacity: 0.7;
         }
 
         pre {
@@ -977,10 +984,10 @@ const dashboardContent = `
         <p class="subtitle" id="health-subtitle"><strong>{{.RuntimeHealth}}</strong> &middot; {{.RuntimeHealthDescription}}</p>
         <dl class="details-grid" style="margin-top:10px">
             <div class="detail-card"><dt>Bridge Status</dt><dd id="health-bridge-status">{{.BridgeStatus}}</dd></div>
-            <div class="detail-card"><dt>Last Heartbeat</dt><dd id="health-last-heartbeat">{{if .LastHeartbeat}}{{.LastHeartbeat}}{{else}}(not set){{end}}</dd></div>
-            <div class="detail-card"><dt>Bridge Replay Cursor</dt><dd id="health-replay-cursor">{{if .BridgeReplayCursor}}{{.BridgeReplayCursor}}{{else}}(not set){{end}}</dd></div>
-            <div class="detail-card"><dt>Relay Source Cursor</dt><dd id="health-relay-cursor">{{if .RelaySourceCursor}}{{.RelaySourceCursor}}{{else}}(not set){{end}}</dd></div>
-            <div class="detail-card"><dt>Event-Log Head</dt><dd id="health-event-log-head">{{if .EventLogHeadCursor}}{{.EventLogHeadCursor}}{{else}}(not set){{end}}</dd></div>
+            <div class="detail-card"><dt>Last Heartbeat</dt><dd id="health-last-heartbeat">{{if .LastHeartbeat}}{{.LastHeartbeat}}{{else}}<span class="empty">(not set)</span>{{end}}</dd></div>
+            <div class="detail-card"><dt>Bridge Replay Cursor</dt><dd id="health-replay-cursor">{{if .BridgeReplayCursor}}{{.BridgeReplayCursor}}{{else}}<span class="empty">(not set)</span>{{end}}</dd></div>
+            <div class="detail-card"><dt>Relay Source Cursor</dt><dd id="health-relay-cursor">{{if .RelaySourceCursor}}{{.RelaySourceCursor}}{{else}}<span class="empty">(not set)</span>{{end}}</dd></div>
+            <div class="detail-card"><dt>Event-Log Head</dt><dd id="health-event-log-head">{{if .EventLogHeadCursor}}{{.EventLogHeadCursor}}{{else}}<span class="empty">(not set)</span>{{end}}</dd></div>
         </dl>
     </article>
 
@@ -1157,7 +1164,7 @@ const accountsContent = `
                     <td>{{.PublishedMessages}}</td>
                     <td class="{{if gt .FailedMessages 0}}tone-danger{{end}}">{{.FailedMessages}}</td>
                     <td class="{{if gt .DeferredMessages 0}}tone-warning{{end}}">{{.DeferredMessages}}</td>
-                    <td>{{if .LastPublishedAt}}{{.LastPublishedAt}}{{else}}(none){{end}}</td>
+                        <td>{{if .LastPublishedAt}}{{.LastPublishedAt}}{{else}}<span class="empty">(none)</span>{{end}}</td>
                     <td style="font-size:0.8rem;white-space:nowrap">{{fmtTime .CreatedAt}}</td>
 	                    <td>
 	                        <div style="display:flex;gap:6px;align-items:center">
@@ -1365,11 +1372,11 @@ const messageDetailContent = `
     <h2 class="page-title" style="font-size:1.2rem">Lifecycle Timeline</h2>
     <div class="details-grid" style="margin-top:10px">
         <div class="detail-card"><dt>Created</dt><dd>{{.CreatedAt}}</dd></div>
-        <div class="detail-card"><dt>Published</dt><dd>{{if .PublishedAt}}{{.PublishedAt}}{{else}}(not published){{end}}</dd></div>
-        <div class="detail-card"><dt>Last Publish Attempt</dt><dd>{{if .LastPublishAttemptAt}}{{.LastPublishAttemptAt}}{{else}}(none){{end}}</dd></div>
-        <div class="detail-card"><dt>Last Defer Attempt</dt><dd>{{if .LastDeferAttemptAt}}{{.LastDeferAttemptAt}}{{else}}(none){{end}}</dd></div>
-        <div class="detail-card"><dt>Deleted At</dt><dd>{{if .DeletedAt}}{{.DeletedAt}}{{else}}(not deleted){{end}}</dd></div>
-        <div class="detail-card"><dt>Deleted Seq</dt><dd>{{if .DeletedSeq}}{{.DeletedSeq}}{{else}}(none){{end}}</dd></div>
+        <div class="detail-card"><dt>Published</dt><dd>{{if .PublishedAt}}{{.PublishedAt}}{{else}}<span class="empty">(not published)</span>{{end}}</dd></div>
+        <div class="detail-card"><dt>Last Publish Attempt</dt><dd>{{if .LastPublishAttemptAt}}{{.LastPublishAttemptAt}}{{else}}<span class="empty">(none)</span>{{end}}</dd></div>
+        <div class="detail-card"><dt>Last Defer Attempt</dt><dd>{{if .LastDeferAttemptAt}}{{.LastDeferAttemptAt}}{{else}}<span class="empty">(none)</span>{{end}}</dd></div>
+        <div class="detail-card"><dt>Deleted At</dt><dd>{{if .DeletedAt}}{{.DeletedAt}}{{else}}<span class="empty">(not deleted)</span>{{end}}</dd></div>
+        <div class="detail-card"><dt>Deleted Seq</dt><dd>{{if .DeletedSeq}}{{.DeletedSeq}}{{else}}<span class="empty">(none)</span>{{end}}</dd></div>
     </div>
 </section>
 
@@ -1379,8 +1386,8 @@ const messageDetailContent = `
         <dl class="details-grid" style="margin-top:10px">
             <div class="detail-card"><dt>Author DID</dt><dd class="mono">{{.ATDID}}</dd></div>
             <div class="detail-card"><dt>Record Type</dt><dd>{{.Type}}</dd></div>
-            <div class="detail-card"><dt>AT CID</dt><dd class="mono">{{if .ATCID}}{{.ATCID}}{{else}}(none){{end}}</dd></div>
-            <div class="detail-card"><dt>SSB Ref</dt><dd class="mono">{{if .SSBMsgRef}}{{.SSBMsgRef}}{{else}}pending{{end}}</dd></div>
+            <div class="detail-card"><dt>AT CID</dt><dd class="mono">{{if .ATCID}}{{.ATCID}}{{else}}<span class="empty">(none)</span>{{end}}</dd></div>
+            <div class="detail-card"><dt>SSB Ref</dt><dd class="mono">{{if .SSBMsgRef}}{{.SSBMsgRef}}{{else}}<span class="empty">pending</span>{{end}}</dd></div>
             <div class="detail-card"><dt>Publish Attempts</dt><dd>{{.PublishAttempts}}</dd></div>
             <div class="detail-card"><dt>Defer Attempts</dt><dd>{{.DeferAttempts}}</dd></div>
         </dl>
