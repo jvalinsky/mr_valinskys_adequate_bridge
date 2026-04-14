@@ -245,6 +245,7 @@ GOFLAGS=-mod=mod go test ./...
 ./scripts/local_bridge_e2e.sh
 ./scripts/e2e_tildefriends.sh
 ./scripts/e2e_full_up.sh
+./scripts/e2e_full_ssbclient_demo.sh
 ```
 
 Live and testnet coverage:
@@ -266,6 +267,7 @@ Live and testnet coverage:
 | `scripts/atproto_harness_e2e.sh` | Local or verdverm/testnet-backed ATProto harness run |
 | `scripts/e2e_tildefriends.sh` | Room/EBT-focused Docker E2E with Tildefriends |
 | `scripts/e2e_full_up.sh` | Full-stack Docker E2E with reverse bootstrap and admin UI |
+| `scripts/e2e_full_ssbclient_demo.sh` | Docker demo: repo `ssb-client` joins bridge room and syncs bridged ATProto bot posts |
 
 ### Local and testnet ATProto stacks
 
