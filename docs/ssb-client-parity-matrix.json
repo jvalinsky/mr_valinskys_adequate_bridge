@@ -1,0 +1,50 @@
+{
+  "updated_at": "2026-04-13",
+  "baseline": ["tildefriends", "planetary", "patchwork", "manyverse", "oasis"],
+  "legend": {
+    "done": "implemented and exposed",
+    "partial": "implemented with known limits",
+    "planned": "tracked but not yet implemented"
+  },
+  "rpc": [
+    {"name": "whoami", "status": "done", "notes": "async"},
+    {"name": "createHistoryStream", "status": "done", "notes": "source"},
+    {"name": "ebt.replicate", "status": "done", "notes": "duplex"},
+    {"name": "blobs.add/get/has/size/want/createWants", "status": "done", "notes": "blob plugin"},
+    {"name": "room.metadata/members/attendants", "status": "partial", "notes": "metadata shape divergence documented"},
+    {"name": "tunnel.announce/leave/connect/endpoints/isRoom/ping", "status": "done", "notes": "room tunnel flows"},
+    {"name": "httpAuth.requestSolution/invalidateAllSolutions", "status": "done", "notes": "SIP-009 flow"},
+    {"name": "invite.use", "status": "done", "notes": "room consume path"},
+    {"name": "invite.create", "status": "partial", "notes": "manifest present; muxrpc handler wiring pending"}
+  ],
+  "api": [
+    {"path": "/api/capabilities", "status": "done"},
+    {"path": "/api/timeline", "status": "done"},
+    {"path": "/api/thread/{msgKey}", "status": "done"},
+    {"path": "/api/channels", "status": "done"},
+    {"path": "/api/votes", "status": "done"},
+    {"path": "/api/search", "status": "done"},
+    {"path": "/api/followers", "status": "done"},
+    {"path": "/api/conversations", "status": "done"},
+    {"path": "/api/conversations/{id}", "status": "done"},
+    {"path": "/api/messages/send", "status": "done"},
+    {"path": "/api/room/state", "status": "done"},
+    {"path": "/api/room/invites", "status": "done", "notes": "list + create + revoke"}
+  ],
+  "ui_workflows": [
+    {"name": "feed browsing", "status": "partial"},
+    {"name": "threads/replies", "status": "partial"},
+    {"name": "channels/hashtags", "status": "partial"},
+    {"name": "followers/following", "status": "partial"},
+    {"name": "reactions/votes", "status": "partial"},
+    {"name": "encrypted DM send/read", "status": "partial"},
+    {"name": "room diagnostics", "status": "partial"},
+    {"name": "mobile UX hardening", "status": "planned"}
+  ],
+  "known_gaps": [
+    "private-box decryption indexing not implemented",
+    "timeline-mode feed UI migration incomplete",
+    "vote/reaction compose UX pending",
+    "private-group membership UX pending"
+  ]
+}
