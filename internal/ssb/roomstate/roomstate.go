@@ -18,6 +18,12 @@ type AttendantEvent struct {
 	ID   refs.FeedRef
 }
 
+const (
+	AttendantEventJoined = "joined"
+	AttendantEventLeft   = "left"
+	AttendantEventResync = "resync"
+)
+
 type TunnelEvent struct {
 	Type string
 	Info PeerInfo
@@ -101,7 +107,7 @@ func (m *Manager) AddAttendant(id refs.FeedRef, addr string) {
 		Connected: time.Now(),
 	}
 	if !existed {
-		m.broadcastAttendantLocked(AttendantEvent{Type: "joined", ID: id})
+		m.broadcastAttendantLocked(AttendantEvent{Type: AttendantEventJoined, ID: id})
 	}
 }
 
@@ -112,7 +118,7 @@ func (m *Manager) RemoveAttendant(id refs.FeedRef) {
 	_, existed := m.attendants[id.String()]
 	delete(m.attendants, id.String())
 	if existed {
-		m.broadcastAttendantLocked(AttendantEvent{Type: "left", ID: id})
+		m.broadcastAttendantLocked(AttendantEvent{Type: AttendantEventLeft, ID: id})
 	}
 }
 
@@ -217,6 +223,20 @@ func (m *Manager) broadcastAttendantLocked(event AttendantEvent) {
 		select {
 		case ch <- event:
 		default:
+			// Preserve liveness under burst traffic by forcing subscribers to
+			// receive a fresh state snapshot when their channel overflows.
+			for {
+				select {
+				case <-ch:
+				default:
+					goto drained
+				}
+			}
+		drained:
+			select {
+			case ch <- AttendantEvent{Type: AttendantEventResync}:
+			default:
+			}
 		}
 	}
 }

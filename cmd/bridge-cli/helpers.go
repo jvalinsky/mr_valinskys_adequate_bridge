@@ -120,7 +120,7 @@ func resolveLiveXRPCHost(explicitHost string) (string, error) {
 	return backfill.NormalizeServiceEndpoint(explicitHost)
 }
 
-func resolveLiveBlobHostResolver(explicitHost, plcURL string, insecure bool) (blobbridge.HostResolver, error) {
+func resolveLivePDSHostResolver(explicitHost, plcURL string, insecure bool) (backfill.HostResolver, error) {
 	if strings.TrimSpace(explicitHost) != "" {
 		host, err := backfill.NormalizeServiceEndpoint(explicitHost)
 		if err != nil {
@@ -140,6 +140,10 @@ func resolveLiveBlobHostResolver(explicitHost, plcURL string, insecure bool) (bl
 		PLCURL:     plcURL,
 		HTTPClient: httpClient,
 	}, nil
+}
+
+func resolveLiveBlobHostResolver(explicitHost, plcURL string, insecure bool) (blobbridge.HostResolver, error) {
+	return resolveLivePDSHostResolver(explicitHost, plcURL, insecure)
 }
 
 func fallbackValue(value, fallback string) string {
@@ -301,21 +305,35 @@ func runRoomTunnelBootstrap(ctx context.Context, ssbRT *ssbruntime.Runtime, room
 		}
 		logger.Printf("event=room_tunnel_announce_success feed=%s room=%s", bridgeFeed.Ref(), roomRT.Addr())
 
+		waitCh := rpc.Wait()
 		ticker := time.NewTicker(reannounceEvery)
 		keepSession := true
 		for keepSession {
 			select {
 			case <-ctx.Done():
 				ticker.Stop()
-				return
-			case <-ticker.C:
-				ticker.Stop()
+				leaveCtx, leaveCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				_ = leaveRoomPeer(leaveCtx, rpc)
+				leaveCancel()
 				_ = peer.Conn.Close()
-				logger.Printf("event=room_tunnel_reconnecting")
-				if !waitForRetry(ctx, 1*time.Second) {
+				return
+			case <-waitCh:
+				ticker.Stop()
+				logger.Printf("event=room_tunnel_disconnected")
+				if !waitForRetry(ctx, 2*time.Second) {
 					return
 				}
 				keepSession = false
+			case <-ticker.C:
+				if err := announceRoomPeer(ctx, rpc); err != nil {
+					logger.Printf("event=room_tunnel_reannounce_failed err=%v", err)
+					ticker.Stop()
+					_ = peer.Conn.Close()
+					if !waitForRetry(ctx, 2*time.Second) {
+						return
+					}
+					keepSession = false
+				}
 			}
 		}
 	}

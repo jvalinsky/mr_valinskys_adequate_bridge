@@ -144,4 +144,19 @@ var (
 		Name: "bridge_room_tunnel_announce_failures_total",
 		Help: "Total number of tunnel.announce failures in the SSB room",
 	})
+
+	RoomMethodFailures = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "bridge_room_method_failures_total",
+		Help: "Total number of room/tunnel method failures by method and reason",
+	}, []string{"method", "reason", "error_kind"})
+
+	RoomMembershipLookupFailures = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "bridge_room_membership_lookup_failures_total",
+		Help: "Total number of membership lookup failures in room/tunnel methods",
+	}, []string{"method", "error_kind"})
+
+	RoomSQLiteBusyErrors = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "bridge_room_sqlite_busy_total",
+		Help: "Total number of SQLITE_BUSY/locked errors seen in room/tunnel handlers",
+	}, []string{"method"})
 )

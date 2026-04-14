@@ -40,8 +40,8 @@ type Options struct {
 	RoomMode     string
 	RoomHTTPAddr string
 
-	GossipDB     gossip.Database
-	DialTimeout  time.Duration
+	GossipDB    gossip.Database
+	DialTimeout time.Duration
 }
 
 type Sbot struct {
@@ -222,6 +222,9 @@ func New(opts Options) (*Sbot, error) {
 		Network:    net,
 		manifest:   manifest,
 		handlerMux: handlerMux,
+		roomDB:     roomDB,
+		roomState:  roomState,
+		roomSrv:    roomSrv,
 	}, nil
 }
 
@@ -385,6 +388,7 @@ func (s *Sbot) Connect(ctx context.Context, addr string, remote ed25519.PublicKe
 	}
 	s.netServer.AddPeer(peer)
 	s.trackOutgoingPeer(peer)
+	s.startPeerReplication(peer, addr)
 	return peer, nil
 }
 
@@ -407,6 +411,28 @@ func (s *Sbot) trackOutgoingPeer(peer *network.Peer) {
 		<-peer.RPC().Wait()
 		s.netServer.RemovePeer(peer)
 		_ = peer.Conn.Close()
+	}()
+}
+
+func (s *Sbot) startPeerReplication(peer *network.Peer, addr string) {
+	if s == nil || s.ebt == nil || peer == nil || peer.RPC() == nil {
+		return
+	}
+
+	go func() {
+		src, sink, err := peer.RPC().Duplex(s.connectionContext(), muxrpc.TypeJSON, muxrpc.Method{"ebt", "replicate"}, 3)
+		if err != nil {
+			fmt.Printf("sbot: failed to initiate ebt.replicate on %s: %v\n", addr, err)
+			return
+		}
+
+		rx := muxrpc.NewByteSourceAdapter(src)
+		tx := muxrpc.NewByteSinkWriter(sink)
+		remoteFeed, _ := network.GetFeedRefFromAddr(peer.Conn.RemoteAddr())
+
+		if err := s.ebt.HandleDuplex(s.connectionContext(), tx, rx, addr, remoteFeed); err != nil && err != context.Canceled {
+			fmt.Printf("sbot: ebt replication error on %s: %v\n", addr, err)
+		}
 	}()
 }
 
@@ -470,6 +496,34 @@ func (s *Sbot) EBT() *replication.EBTHandler {
 
 func (s *Sbot) HandlerMux() *muxrpc.HandlerMux {
 	return s.handlerMux
+}
+
+func (s *Sbot) Manifest() *muxrpc.Manifest {
+	return s.manifest
+}
+
+func (s *Sbot) RoomDB() *sqlite.DB {
+	return s.roomDB
+}
+
+func (s *Sbot) RoomState() *roomstate.Manager {
+	return s.roomState
+}
+
+func (s *Sbot) RoomServer() *room.RoomServer {
+	return s.roomSrv
+}
+
+func (s *Sbot) RoomEnabled() bool {
+	return s.opts.EnableRoom
+}
+
+func (s *Sbot) RoomMode() string {
+	return s.opts.RoomMode
+}
+
+func (s *Sbot) RoomHTTPAddr() string {
+	return s.opts.RoomHTTPAddr
 }
 
 func (s *Sbot) StateMatrix() *replication.StateMatrix {

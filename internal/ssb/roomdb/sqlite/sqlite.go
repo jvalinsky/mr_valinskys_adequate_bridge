@@ -23,13 +23,18 @@ type DB struct {
 }
 
 func Open(path string) (*DB, error) {
-	conn, err := sql.Open("sqlite", path+"?_journal_mode=WAL&_busy_timeout=5000")
+	conn, err := sql.Open("sqlite", path+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(ON)")
 	if err != nil {
 		return nil, fmt.Errorf("roomdb: open db: %w", err)
 	}
+	conn.SetMaxOpenConns(1)
+	conn.SetMaxIdleConns(1)
 
 	if err := conn.Ping(); err != nil {
 		return nil, fmt.Errorf("roomdb: ping db: %w", err)
+	}
+	if err := validateConnectionPragmas(conn); err != nil {
+		return nil, fmt.Errorf("roomdb: validate pragmas: %w", err)
 	}
 
 	db := &DB{conn: conn}
@@ -38,6 +43,34 @@ func Open(path string) (*DB, error) {
 	}
 
 	return db, nil
+}
+
+func validateConnectionPragmas(conn *sql.DB) error {
+	var journalMode string
+	if err := conn.QueryRow("PRAGMA journal_mode").Scan(&journalMode); err != nil {
+		return fmt.Errorf("read journal_mode: %w", err)
+	}
+	if strings.ToLower(strings.TrimSpace(journalMode)) != "wal" {
+		return fmt.Errorf("unexpected journal_mode %q", journalMode)
+	}
+
+	var busyTimeout int
+	if err := conn.QueryRow("PRAGMA busy_timeout").Scan(&busyTimeout); err != nil {
+		return fmt.Errorf("read busy_timeout: %w", err)
+	}
+	if busyTimeout < 5000 {
+		return fmt.Errorf("unexpected busy_timeout %d", busyTimeout)
+	}
+
+	var foreignKeys int
+	if err := conn.QueryRow("PRAGMA foreign_keys").Scan(&foreignKeys); err != nil {
+		return fmt.Errorf("read foreign_keys: %w", err)
+	}
+	if foreignKeys != 1 {
+		return fmt.Errorf("unexpected foreign_keys %d", foreignKeys)
+	}
+
+	return nil
 }
 
 func (db *DB) migrate() error {

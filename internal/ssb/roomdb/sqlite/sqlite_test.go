@@ -3,6 +3,8 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
@@ -22,6 +24,39 @@ func openTestDB(t *testing.T) *DB {
 	}
 	t.Cleanup(func() { db.Close() })
 	return db
+}
+
+func TestOpen_ConfiguresConnectionPragmas(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "room.sqlite")
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+
+	var journalMode string
+	if err := db.conn.QueryRow("PRAGMA journal_mode").Scan(&journalMode); err != nil {
+		t.Fatalf("read journal_mode: %v", err)
+	}
+	if strings.ToLower(strings.TrimSpace(journalMode)) != "wal" {
+		t.Fatalf("expected journal_mode wal, got %q", journalMode)
+	}
+
+	var busyTimeout int
+	if err := db.conn.QueryRow("PRAGMA busy_timeout").Scan(&busyTimeout); err != nil {
+		t.Fatalf("read busy_timeout: %v", err)
+	}
+	if busyTimeout < 5000 {
+		t.Fatalf("expected busy_timeout >= 5000, got %d", busyTimeout)
+	}
+
+	var foreignKeys int
+	if err := db.conn.QueryRow("PRAGMA foreign_keys").Scan(&foreignKeys); err != nil {
+		t.Fatalf("read foreign_keys: %v", err)
+	}
+	if foreignKeys != 1 {
+		t.Fatalf("expected foreign_keys=1, got %d", foreignKeys)
+	}
 }
 
 func testFeed(b byte) refs.FeedRef {

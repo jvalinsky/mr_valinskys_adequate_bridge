@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/backfill"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 )
@@ -180,6 +181,22 @@ func TestDedupeStrings(t *testing.T) {
 }
 
 func TestResolveLiveBlobHostResolver(t *testing.T) {
+	pdsResolver, err := resolveLivePDSHostResolver("https://example.com", "https://plc.directory", false)
+	if err != nil {
+		t.Fatalf("explicit host should not error: %v", err)
+	}
+	if _, ok := pdsResolver.(backfill.FixedHostResolver); !ok {
+		t.Fatalf("explicit host should return FixedHostResolver, got %T", pdsResolver)
+	}
+
+	pdsResolver, err = resolveLivePDSHostResolver("", "https://plc.directory", false)
+	if err != nil {
+		t.Fatalf("empty host should not error: %v", err)
+	}
+	if _, ok := pdsResolver.(backfill.DIDPDSResolver); !ok {
+		t.Fatalf("empty host should return DIDPDSResolver, got %T", pdsResolver)
+	}
+
 	// Test with explicit host
 	resolver, err := resolveLiveBlobHostResolver("https://example.com", "https://plc.directory", false)
 	if err != nil {
@@ -187,6 +204,9 @@ func TestResolveLiveBlobHostResolver(t *testing.T) {
 	}
 	if resolver == nil {
 		t.Error("explicit_host should return non-nil resolver")
+	}
+	if _, ok := resolver.(backfill.FixedHostResolver); !ok {
+		t.Errorf("explicit host should return FixedHostResolver, got %T", resolver)
 	}
 
 	// Test with empty host (should use DIDPDSResolver)
@@ -196,6 +216,9 @@ func TestResolveLiveBlobHostResolver(t *testing.T) {
 	}
 	if resolver == nil {
 		t.Error("empty host should return non-nil resolver")
+	}
+	if _, ok := resolver.(backfill.DIDPDSResolver); !ok {
+		t.Errorf("empty host should return DIDPDSResolver, got %T", resolver)
 	}
 
 	// Test with insecure flag

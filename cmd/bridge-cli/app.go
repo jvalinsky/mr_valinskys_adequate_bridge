@@ -133,16 +133,12 @@ func (a *BridgeApp) Init(ctx context.Context) error {
 		Client: httpClient,
 	}
 
-	blobHostResolver, err := resolveLiveBlobHostResolver(a.cfg.XRPCReadHost, a.cfg.PLCURL, a.cfg.AtprotoInsecure)
+	pdsResolver, err := resolveLivePDSHostResolver(a.cfg.XRPCReadHost, a.cfg.PLCURL, a.cfg.AtprotoInsecure)
 	if err != nil {
 		return err
 	}
 
-	blobBridge := blobbridge.NewWithResolver(a.db, a.ssbRuntime.BlobStore(), blobHostResolver, httpClient, a.logger)
-	pdsResolver := backfill.DIDPDSResolver{
-		PLCURL:     a.cfg.PLCURL,
-		HTTPClient: httpClient,
-	}
+	blobBridge := blobbridge.NewWithResolver(a.db, a.ssbRuntime.BlobStore(), pdsResolver, httpClient, a.logger)
 	a.indexer = atindex.New(a.db, pdsResolver, backfill.XRPCRepoFetcher{HTTPClient: httpClient}, a.cfg.RelayURL, a.logger)
 	recordFetcher := bridge.NewPDSAwareRecordFetcher(pdsResolver, xrpcClient)
 
