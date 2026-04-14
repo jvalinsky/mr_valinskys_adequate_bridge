@@ -488,7 +488,6 @@ func runServeUI(c *cli.Context) error {
 		r.Use(websecurity.BasicAuthMiddleware(authUser, authPass))
 	}
 	csrfConfig := websecurity.DefaultCSRFConfig()
-	csrfConfig.ExemptPathPrefixes = []string{"/api/atproto"}
 	r.Use(websecurity.CSRFMiddleware(csrfConfig))
 
 	manager := bots.NewManager([]byte(botSeed), nil, nil, nil)

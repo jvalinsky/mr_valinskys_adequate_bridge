@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -9,6 +10,8 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/web/templates"
 )
+
+const roomInviteFlashCookieName = "bridge_room_invite_flash"
 
 func (h *UIHandler) handleRoomOverview(w http.ResponseWriter, r *http.Request) {
 	overview := h.loadRoomOverview(r)
@@ -148,7 +151,7 @@ func (h *UIHandler) handleRoomAliasesInvites(w http.ResponseWriter, r *http.Requ
 	overview := h.loadRoomOverview(r)
 	inviteRows := make([]templates.RoomInviteRow, 0)
 	aliasRows := make([]templates.RoomAliasRow, 0)
-	inviteJoinURL := strings.TrimSpace(r.URL.Query().Get("invite_url"))
+	inviteJoinURL := consumeRoomInviteFlash(w, r)
 	if overview.Available {
 		invites, err := h.roomOps.InvitesList(r.Context())
 		if err != nil {
@@ -311,7 +314,8 @@ func (h *UIHandler) handleRoomInviteCreate(w http.ResponseWriter, r *http.Reques
 	}
 
 	joinURL := h.roomOps.JoinURL(token)
-	target := "/room/aliases?message=" + url.QueryEscape("Invite created") + "&invite_url=" + url.QueryEscape(joinURL)
+	setRoomInviteFlash(w, r, joinURL)
+	target := "/room/aliases?message=" + url.QueryEscape("Invite created")
 	http.Redirect(w, r, target, http.StatusSeeOther)
 }
 
@@ -457,4 +461,44 @@ func redirectRoomStatus(w http.ResponseWriter, r *http.Request, path, message, e
 		target += "?" + vals.Encode()
 	}
 	http.Redirect(w, r, target, http.StatusSeeOther)
+}
+
+func setRoomInviteFlash(w http.ResponseWriter, r *http.Request, inviteURL string) {
+	trimmed := strings.TrimSpace(inviteURL)
+	if trimmed == "" {
+		return
+	}
+	encoded := base64.RawURLEncoding.EncodeToString([]byte(trimmed))
+	http.SetCookie(w, &http.Cookie{
+		Name:     roomInviteFlashCookieName,
+		Value:    encoded,
+		Path:     "/room/aliases",
+		MaxAge:   120,
+		HttpOnly: true,
+		Secure:   r.TLS != nil,
+		SameSite: http.SameSiteStrictMode,
+	})
+}
+
+func consumeRoomInviteFlash(w http.ResponseWriter, r *http.Request) string {
+	cookie, err := r.Cookie(roomInviteFlashCookieName)
+	if err != nil || cookie == nil {
+		return ""
+	}
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     roomInviteFlashCookieName,
+		Value:    "",
+		Path:     "/room/aliases",
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   r.TLS != nil,
+		SameSite: http.SameSiteStrictMode,
+	})
+
+	decoded, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(cookie.Value))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(decoded))
 }

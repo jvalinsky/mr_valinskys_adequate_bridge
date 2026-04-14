@@ -132,8 +132,16 @@ func runServe(c *cli.Context) error {
 	if authConfigured {
 		r.Use(websecurity.BasicAuthMiddleware(authUser, authPass))
 	}
+	r.Use(clientMutationGuardMiddleware())
 
-	ui := newClientUIHandler(ssbClient, logger, slogger)
+	ui := newClientUIHandler(ssbClient, keyPair, logger, slogger, repoPath)
+	if ui.index != nil {
+		defer func() {
+			if err := ui.index.Close(); err != nil {
+				logger.Printf("ui index close failed: %v", err)
+			}
+		}()
+	}
 	ui.Mount(r)
 
 	server := &http.Server{
@@ -205,16 +213,33 @@ func loadInitialPeers(ctx context.Context, peersFile string, logger *log.Logger,
 
 type clientUIHandler struct {
 	sbot      *sbot.Sbot
+	keyPair   *keys.KeyPair
 	log       *log.Logger
 	slog      *slog.Logger
+	index     *uiIndex
+	indexPath string
 	startTime time.Time
 }
 
-func newClientUIHandler(sb *sbot.Sbot, logger *log.Logger, slogger *slog.Logger) *clientUIHandler {
+func newClientUIHandler(sb *sbot.Sbot, keyPair *keys.KeyPair, logger *log.Logger, slogger *slog.Logger, repoPath string) *clientUIHandler {
+	var idx *uiIndex
+	indexPath := ""
+	if repoPath != "" {
+		indexPath = filepath.Join(repoPath, "ui-index.sqlite")
+		if created, err := newUIIndex(repoPath); err != nil {
+			logger.Printf("ui index init failed: %v", err)
+		} else {
+			idx = created
+		}
+	}
+
 	return &clientUIHandler{
 		sbot:      sb,
+		keyPair:   keyPair,
 		log:       logger,
 		slog:      slogger,
+		index:     idx,
+		indexPath: indexPath,
 		startTime: time.Now(),
 	}
 }

@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-var sensitiveQueryTerms = []string{"pass", "password", "token", "secret", "auth", "key"}
+var sensitiveQueryTerms = []string{"pass", "password", "token", "secret", "auth", "key", "invite_url"}
 
 const (
 	// DefaultCSRFCookieName is the session cookie that stores the CSRF token.
