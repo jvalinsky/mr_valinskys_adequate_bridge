@@ -1,7 +1,6 @@
 package sbot
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -74,8 +73,6 @@ func (f *FeedManagerAdapter) AppendSignedMessage(raw []byte) (*refs.FeedRef, int
 }
 
 func (f *FeedManagerAdapter) AppendReplicatedMessage(raw []byte) (*refs.FeedRef, int64, error) {
-	raw = bytes.TrimSpace(raw)
-
 	msg, contentBytes, err := legacy.ParseSignedMessageJSON(raw)
 	if err != nil {
 		return f.appendBendyMessage(raw, err)

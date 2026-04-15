@@ -808,8 +808,6 @@ func (v *DefaultSignatureVerifier) Verify(content []byte, metadata *Metadata) er
 		return fmt.Errorf("invalid signature length: %d (expected %d)", len(metadata.Sig), ed25519.SignatureSize)
 	}
 
-	content = bytes.TrimSpace(content)
-
 	msg, _, err := legacy.ParseSignedMessageJSON(content)
 	if err != nil {
 		return fmt.Errorf("parse signed message: %w", err)

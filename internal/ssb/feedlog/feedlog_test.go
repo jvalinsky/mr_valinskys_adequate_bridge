@@ -514,6 +514,37 @@ func TestDefaultSignatureVerifierRejectsWhitespaceMutations(t *testing.T) {
 	}
 }
 
+func TestDefaultSignatureVerifierRejectsOuterWhitespaceMutations(t *testing.T) {
+	kp, err := keys.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, metadata := createTestSignedMessage(t, kp, 1)
+
+	cases := []struct {
+		name    string
+		mutated []byte
+	}{
+		{
+			name:    "leading space",
+			mutated: append([]byte(" "), raw...),
+		},
+		{
+			name:    "trailing newline",
+			mutated: append(append([]byte(nil), raw...), '\n'),
+		},
+	}
+
+	verifier := &DefaultSignatureVerifier{}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := verifier.Verify(tc.mutated, metadata); err == nil {
+				t.Fatalf("expected %s mutation to fail strict verification", tc.name)
+			}
+		})
+	}
+}
+
 func TestDefaultSignatureVerifierRejectsTopLevelOrderMutations(t *testing.T) {
 	kp, err := keys.Generate()
 	if err != nil {
