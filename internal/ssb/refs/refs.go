@@ -27,6 +27,8 @@ const (
 	RefAlgoFeedSSB1      RefAlgo = "ed25519"
 	RefAlgoFeedBendyButt RefAlgo = "bendybutt-v1"
 	RefAlgoFeedGabby     RefAlgo = "gabbygrove-v1"
+	RefAlgoFeedBamboo    RefAlgo = "bamboo"
+	RefAlgoFeedIndexed   RefAlgo = "indexed-v1"
 )
 
 type RefAlgoMessage string
@@ -34,6 +36,9 @@ type RefAlgoMessage string
 const (
 	RefAlgoMessageSSB1      RefAlgoMessage = "sha256"
 	RefAlgoMessageBendyButt RefAlgoMessage = "bendybutt-v1"
+	RefAlgoMessageGabby     RefAlgoMessage = "gabbygrove-v1"
+	RefAlgoMessageBamboo    RefAlgoMessage = "bamboo"
+	RefAlgoMessageIndexed   RefAlgoMessage = "indexed-v1"
 )
 
 type FeedRef struct {
@@ -109,7 +114,7 @@ func ParseFeedRef(s string) (*FeedRef, error) {
 		algoStr := s[idx+1:]
 		s = s[:idx]
 		switch RefAlgo(algoStr) {
-		case RefAlgoFeedSSB1, RefAlgoFeedBendyButt, RefAlgoFeedGabby:
+		case RefAlgoFeedSSB1, RefAlgoFeedBendyButt, RefAlgoFeedGabby, RefAlgoFeedBamboo, RefAlgoFeedIndexed:
 			algo = RefAlgo(algoStr)
 		default:
 			return nil, ErrInvalidFeedRef
@@ -205,7 +210,7 @@ func ParseMessageRef(s string) (*MessageRef, error) {
 		algoStr := s[idx+1:]
 		s = s[:idx]
 		switch RefAlgoMessage(algoStr) {
-		case RefAlgoMessageSSB1, RefAlgoMessageBendyButt:
+		case RefAlgoMessageSSB1, RefAlgoMessageBendyButt, RefAlgoMessageGabby, RefAlgoMessageBamboo, RefAlgoMessageIndexed:
 			algo = RefAlgoMessage(algoStr)
 		default:
 			return nil, ErrInvalidMessageRef

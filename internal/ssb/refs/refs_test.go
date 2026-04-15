@@ -71,6 +71,48 @@ func TestMessageRefParse(t *testing.T) {
 	}
 }
 
+func TestKnownNonClassicFeedRefsParse(t *testing.T) {
+	algos := []RefAlgo{
+		RefAlgoFeedBendyButt,
+		RefAlgoFeedGabby,
+		RefAlgoFeedBamboo,
+		RefAlgoFeedIndexed,
+	}
+	for _, algo := range algos {
+		t.Run(string(algo), func(t *testing.T) {
+			original := MustNewFeedRef([]byte("abcdefghijklmnopqrstuvwxyz123456"), algo)
+			parsed, err := ParseFeedRef(original.String())
+			if err != nil {
+				t.Fatalf("ParseFeedRef(%q): %v", original.String(), err)
+			}
+			if !parsed.Equal(*original) {
+				t.Fatalf("parsed ref mismatch: got %s want %s", parsed.String(), original.String())
+			}
+		})
+	}
+}
+
+func TestKnownNonClassicMessageRefsParse(t *testing.T) {
+	algos := []RefAlgoMessage{
+		RefAlgoMessageBendyButt,
+		RefAlgoMessageGabby,
+		RefAlgoMessageBamboo,
+		RefAlgoMessageIndexed,
+	}
+	for _, algo := range algos {
+		t.Run(string(algo), func(t *testing.T) {
+			original := MustNewMessageRef([]byte("abcdefghijklmnopqrstuvwxyz123456"), algo)
+			parsed, err := ParseMessageRef(original.String())
+			if err != nil {
+				t.Fatalf("ParseMessageRef(%q): %v", original.String(), err)
+			}
+			if !parsed.Equal(*original) {
+				t.Fatalf("parsed ref mismatch: got %s want %s", parsed.String(), original.String())
+			}
+		})
+	}
+}
+
 func TestMessageRefJSON(t *testing.T) {
 	original := MustNewMessageRef([]byte("abcdefghijklmnopqrstuvwxyz123456"), RefAlgoMessageSSB1)
 
@@ -261,6 +303,46 @@ func TestParseSSBURIAcceptsDeprecatedAlgorithmAliases(t *testing.T) {
 	}
 	if !parsedBlob.(*BlobURI).Ref.Equal(*blob) {
 		t.Fatalf("parsed deprecated blob ref mismatch")
+	}
+}
+
+func TestSSBURIRoundTripKnownNonClassicFormats(t *testing.T) {
+	feedFormats := []RefAlgo{
+		RefAlgoFeedBendyButt,
+		RefAlgoFeedGabby,
+		RefAlgoFeedBamboo,
+		RefAlgoFeedIndexed,
+	}
+	for _, algo := range feedFormats {
+		t.Run("feed/"+string(algo), func(t *testing.T) {
+			feed := MustNewFeedRef([]byte("abcdefghijklmnopqrstuvwxyz123456"), algo)
+			parsed, err := ParseSSBURI((&FeedURI{Ref: feed}).String())
+			if err != nil {
+				t.Fatalf("ParseSSBURI(feed): %v", err)
+			}
+			if !parsed.(*FeedURI).Ref.Equal(*feed) {
+				t.Fatalf("parsed feed mismatch")
+			}
+		})
+	}
+
+	messageFormats := []RefAlgoMessage{
+		RefAlgoMessageBendyButt,
+		RefAlgoMessageGabby,
+		RefAlgoMessageBamboo,
+		RefAlgoMessageIndexed,
+	}
+	for _, algo := range messageFormats {
+		t.Run("message/"+string(algo), func(t *testing.T) {
+			msg := MustNewMessageRef([]byte("abcdefghijklmnopqrstuvwxyz123456"), algo)
+			parsed, err := ParseSSBURI((&MessageURI{Ref: msg}).String())
+			if err != nil {
+				t.Fatalf("ParseSSBURI(message): %v", err)
+			}
+			if !parsed.(*MessageURI).Ref.Equal(*msg) {
+				t.Fatalf("parsed message mismatch")
+			}
+		})
 	}
 }
 

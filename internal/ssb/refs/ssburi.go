@@ -125,6 +125,10 @@ func parseFeedURI(parts []string) (*FeedURI, error) {
 		algo = RefAlgoFeedBendyButt
 	case "gabbygrove-v1":
 		algo = RefAlgoFeedGabby
+	case "bamboo":
+		algo = RefAlgoFeedBamboo
+	case "indexed-v1":
+		algo = RefAlgoFeedIndexed
 	default:
 		return nil, ErrInvalidResource
 	}
@@ -153,6 +157,12 @@ func parseMessageURI(parts []string) (*MessageURI, error) {
 		algo = RefAlgoMessageSSB1
 	case "bendybutt-v1":
 		algo = RefAlgoMessageBendyButt
+	case "gabbygrove-v1":
+		algo = RefAlgoMessageGabby
+	case "bamboo":
+		algo = RefAlgoMessageBamboo
+	case "indexed-v1":
+		algo = RefAlgoMessageIndexed
 	default:
 		return nil, ErrInvalidResource
 	}
@@ -204,6 +214,10 @@ func feedURIFormat(algo RefAlgo) (string, bool) {
 		return "bendybutt-v1", true
 	case RefAlgoFeedGabby:
 		return "gabbygrove-v1", true
+	case RefAlgoFeedBamboo:
+		return "bamboo", true
+	case RefAlgoFeedIndexed:
+		return "indexed-v1", true
 	default:
 		return "", false
 	}
@@ -215,6 +229,12 @@ func messageURIFormat(algo RefAlgoMessage) (string, bool) {
 		return "classic", true
 	case RefAlgoMessageBendyButt:
 		return "bendybutt-v1", true
+	case RefAlgoMessageGabby:
+		return "gabbygrove-v1", true
+	case RefAlgoMessageBamboo:
+		return "bamboo", true
+	case RefAlgoMessageIndexed:
+		return "indexed-v1", true
 	default:
 		return "", false
 	}
