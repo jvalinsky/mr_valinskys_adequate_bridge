@@ -40,6 +40,7 @@ bridge-live.sqlite
 *.test
 *.html
 /demo-repo/
+/tmp/e2e-tildefriends/
 /vendor/
 .claude/settings.local.json
 
