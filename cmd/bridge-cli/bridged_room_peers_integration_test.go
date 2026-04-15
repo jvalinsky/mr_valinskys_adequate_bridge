@@ -50,7 +50,7 @@ func TestBridgedRoomPeerManagerIntegrationActivePeersAndTunnelTargets(t *testing
 	}
 	defer database.Close()
 
-	botManager := bots.NewManager([]byte(seed), nil, nil, nil)
+	botManager := bots.NewManager([]byte(seed), nil, nil)
 	feedA, err := botManager.GetFeedID(didA)
 	if err != nil {
 		t.Fatalf("derive feedA: %v", err)

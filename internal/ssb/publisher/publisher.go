@@ -20,22 +20,14 @@ type Publisher struct {
 	keyPair      *keys.KeyPair
 	log          feedlog.Log
 	receiveLog   feedlog.Log
-	hmacKey      []byte
 	afterPublish func(refs.FeedRef, int64)
 }
 
 type Options struct {
-	HMACKey      []byte
 	AfterPublish func(refs.FeedRef, int64)
 }
 
 type Option func(*Options)
-
-func WithHMAC(key []byte) Option {
-	return func(o *Options) {
-		o.HMACKey = key
-	}
-}
 
 func WithAfterPublish(fn func(refs.FeedRef, int64)) Option {
 	return func(o *Options) {
@@ -65,7 +57,6 @@ func New(keyPair *keys.KeyPair, receiveLog feedlog.Log, users feedlog.MultiLog, 
 		keyPair:      keyPair,
 		log:          log,
 		receiveLog:   receiveLog,
-		hmacKey:      o.HMACKey,
 		afterPublish: o.AfterPublish,
 	}, nil
 }
@@ -103,7 +94,7 @@ func (p *Publisher) Publish(content []byte) (refs.MessageRef, error) {
 		Content:   contentObj,
 	}
 
-	msgRef, sig, err := msg.Sign(p.keyPair, p.hmacKey)
+	msgRef, sig, err := msg.Sign(p.keyPair)
 	if err != nil {
 		return refs.MessageRef{}, fmt.Errorf("publisher: failed to sign: %w", err)
 	}

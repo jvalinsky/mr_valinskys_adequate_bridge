@@ -18,11 +18,6 @@ const (
 )
 
 func buildAppConfigFromCLI(c *cli.Context, mode appMode) (AppConfig, error) {
-	hmacKey, err := parseHMACKey(c.String("hmac-key"))
-	if err != nil {
-		return AppConfig{}, err
-	}
-
 	repoPath, err := resolveSharedRepoPath(c)
 	if err != nil {
 		return AppConfig{}, err
@@ -32,7 +27,6 @@ func buildAppConfigFromCLI(c *cli.Context, mode appMode) (AppConfig, error) {
 		DBPath:          dbPath,
 		RepoPath:        repoPath,
 		BotSeed:         botSeed,
-		HMACKey:         hmacKey,
 		AppKey:          c.String("app-key"),
 		PublishWorkers:  c.Int("publish-workers"),
 		PLCURL:          c.String("plc-url"),

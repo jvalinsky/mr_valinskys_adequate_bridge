@@ -34,7 +34,7 @@ func (f *fakeBridgedRoomPeerAccountLister) setAccounts(accounts []db.BridgedAcco
 
 func deriveFeedForDID(t *testing.T, seed, did string) string {
 	t.Helper()
-	mgr := bots.NewManager([]byte(seed), nil, nil, nil)
+	mgr := bots.NewManager([]byte(seed), nil, nil)
 	feed, err := mgr.GetFeedID(did)
 	if err != nil {
 		t.Fatalf("derive feed for %s: %v", did, err)

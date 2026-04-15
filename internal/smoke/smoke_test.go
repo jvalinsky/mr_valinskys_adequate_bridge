@@ -50,7 +50,7 @@ func TestBridgeSmoke(t *testing.T) {
 		seed      = "smoke-seed-001"
 	)
 
-	manager := bots.NewManager([]byte(seed), nil, nil, nil)
+	manager := bots.NewManager([]byte(seed), nil, nil)
 	for _, did := range []string{didSource, didTarget} {
 		feedRef, err := manager.GetFeedID(did)
 		if err != nil {

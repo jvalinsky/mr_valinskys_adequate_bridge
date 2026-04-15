@@ -145,25 +145,6 @@ func TestCloseWithNilNode(t *testing.T) {
 	}
 }
 
-func TestOpenWithHMACKey(t *testing.T) {
-	ctx := context.Background()
-	hmacKey := [32]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32}
-	rt, err := Open(ctx, Config{
-		RepoPath:   filepath.Join(t.TempDir(), "repo"),
-		MasterSeed: []byte("test-master-seed"),
-		HMACKey:    &hmacKey,
-	}, log.New(io.Discard, "", 0))
-	if err != nil {
-		t.Fatalf("open runtime with HMAC: %v", err)
-	}
-	defer rt.Close()
-
-	node := rt.Node()
-	if node == nil {
-		t.Fatal("expected non-nil sbot node")
-	}
-}
-
 func TestOpenWithKeyPair(t *testing.T) {
 	ctx := context.Background()
 	rt, err := Open(ctx, Config{

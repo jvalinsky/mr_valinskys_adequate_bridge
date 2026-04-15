@@ -114,7 +114,7 @@ func main() {
 			defer database.Close()
 
 			// Ensure account exists
-			manager := bots.NewManager([]byte(botSeed), nil, nil, nil)
+			manager := bots.NewManager([]byte(botSeed), nil, nil)
 			feedRef, err := manager.GetFeedID(did)
 			if err != nil {
 				return fmt.Errorf("derive feed: %w", err)

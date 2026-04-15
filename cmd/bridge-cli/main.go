@@ -140,10 +140,6 @@ func main() {
 						Name:  "ssb-repo-path",
 						Usage: "deprecated: legacy bridge repo path alias (use --repo-path)",
 					},
-					&cli.StringFlag{
-						Name:  "hmac-key",
-						Usage: "optional 32-byte HMAC key (base64, hex, or raw) for SSB message signing",
-					},
 					&cli.IntFlag{
 						Name:  "publish-workers",
 						Value: 1,
@@ -297,10 +293,6 @@ func main() {
 						Name:  "ssb-repo-path",
 						Usage: "deprecated: legacy bridge repo path alias (use --repo-path)",
 					},
-					&cli.StringFlag{
-						Name:  "hmac-key",
-						Usage: "optional 32-byte HMAC key (base64, hex, or raw) for SSB message signing",
-					},
 					&cli.IntFlag{
 						Name:  "publish-workers",
 						Value: 1,
@@ -355,10 +347,6 @@ func main() {
 					&cli.StringFlag{
 						Name:  "ssb-repo-path",
 						Usage: "deprecated: legacy bridge repo path alias (use --repo-path)",
-					},
-					&cli.StringFlag{
-						Name:  "hmac-key",
-						Usage: "optional 32-byte HMAC key (base64, hex, or raw) for SSB message signing",
 					},
 					&cli.IntFlag{
 						Name:  "publish-workers",

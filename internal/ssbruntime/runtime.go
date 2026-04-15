@@ -35,7 +35,6 @@ type Config struct {
 	RepoPath    string
 	ListenAddr  string
 	MasterSeed  []byte
-	HMACKey     *[32]byte
 	KeyPair     *keys.KeyPair
 	AppKey      string
 	GossipDB    *db.DB
@@ -79,9 +78,6 @@ func Open(ctx context.Context, cfg Config, logger *log.Logger) (*Runtime, error)
 	}
 
 	appKey := cfg.AppKey
-	if cfg.HMACKey != nil {
-		appKey = string(cfg.HMACKey[:])
-	}
 
 	var gossipDB gossip.Database
 	if cfg.GossipDB != nil {
@@ -122,7 +118,7 @@ func Open(ctx context.Context, cfg Config, logger *log.Logger) (*Runtime, error)
 		receiveLog: rxLog,
 		userFeeds:  userFeeds,
 		blobStore:  blobStore,
-		manager:    bots.NewManager(cfg.MasterSeed, rxLog, userFeeds, cfg.HMACKey),
+		manager:    bots.NewManager(cfg.MasterSeed, rxLog, userFeeds),
 	}
 
 	existingFeeds, err := userFeeds.List()

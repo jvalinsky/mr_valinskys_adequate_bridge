@@ -33,7 +33,7 @@ func (m *mockMultiLog) Close() error                    { return nil }
 func TestDeriveKeyPair(t *testing.T) {
 	masterSeed := []byte("test_master_seed_for_bridge_bot_manager")
 
-	manager := NewManager(masterSeed, nil, nil, nil)
+	manager := NewManager(masterSeed, nil, nil)
 
 	atDID := "did:plc:abc123def456"
 
@@ -63,7 +63,7 @@ func TestDeriveKeyPair(t *testing.T) {
 
 func TestGetFeedID(t *testing.T) {
 	masterSeed := []byte("test_master_seed_for_bridge_bot_manager")
-	manager := NewManager(masterSeed, nil, nil, nil)
+	manager := NewManager(masterSeed, nil, nil)
 
 	atDID := "did:plc:test123"
 	feedRef, err := manager.GetFeedID(atDID)
@@ -87,7 +87,7 @@ func TestGetFeedID(t *testing.T) {
 
 func TestGetKeyPair(t *testing.T) {
 	masterSeed := []byte("test_master_seed_for_bridge_bot_manager")
-	manager := NewManager(masterSeed, nil, nil, nil)
+	manager := NewManager(masterSeed, nil, nil)
 
 	atDID := "did:plc:keypair123"
 	kp1, err := manager.GetKeyPair(atDID)
@@ -109,7 +109,7 @@ func TestGetPublisher(t *testing.T) {
 	rxLog := &mockLog{}
 	users := &mockMultiLog{}
 
-	manager := NewManager(masterSeed, rxLog, users, nil)
+	manager := NewManager(masterSeed, rxLog, users)
 
 	atDID := "did:plc:publisher123"
 	pub, err := manager.GetPublisher(atDID)
@@ -130,27 +130,9 @@ func TestGetPublisher(t *testing.T) {
 	}
 }
 
-func TestGetPublisherWithHMAC(t *testing.T) {
-	masterSeed := []byte("test_master_seed_for_bridge_bot_manager")
-	rxLog := &mockLog{}
-	users := &mockMultiLog{}
-	hmacKey := &[32]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32}
-
-	manager := NewManager(masterSeed, rxLog, users, hmacKey)
-
-	atDID := "did:plc:hmac123"
-	pub, err := manager.GetPublisher(atDID)
-	if err != nil {
-		t.Fatalf("failed to get publisher with HMAC: %v", err)
-	}
-	if pub == nil {
-		t.Fatalf("expected non-nil publisher with HMAC")
-	}
-}
-
 func TestGetFeedIDDifferentDIDs(t *testing.T) {
 	masterSeed := []byte("test_master_seed_for_bridge_bot_manager")
-	manager := NewManager(masterSeed, nil, nil, nil)
+	manager := NewManager(masterSeed, nil, nil)
 
 	dids := []string{
 		"did:plc:aaa111",
@@ -205,7 +187,7 @@ func TestGetPublisherWithError(t *testing.T) {
 	rxLog := &errorLog{}
 	users := &errorMultiLog{}
 
-	manager := NewManager(masterSeed, rxLog, users, nil)
+	manager := NewManager(masterSeed, rxLog, users)
 
 	atDID := "did:plc:error123"
 	_, err := manager.GetPublisher(atDID)
@@ -215,7 +197,7 @@ func TestGetPublisherWithError(t *testing.T) {
 }
 
 func TestGetFeedIDWithInvalidDID(t *testing.T) {
-	m := NewManager([]byte("00000000000000000000000000000000"), &mockLog{}, &mockMultiLog{}, nil)
+	m := NewManager([]byte("00000000000000000000000000000000"), &mockLog{}, &mockMultiLog{})
 
 	_, err := m.GetFeedID("")
 	if err == nil {
@@ -224,7 +206,7 @@ func TestGetFeedIDWithInvalidDID(t *testing.T) {
 }
 
 func TestGetPublisherWithInvalidDID(t *testing.T) {
-	m := NewManager([]byte("00000000000000000000000000000000"), &mockLog{}, &mockMultiLog{}, nil)
+	m := NewManager([]byte("00000000000000000000000000000000"), &mockLog{}, &mockMultiLog{})
 
 	_, err := m.GetPublisher("")
 	if err == nil {

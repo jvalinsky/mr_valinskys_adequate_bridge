@@ -54,7 +54,6 @@ type AppConfig struct {
 	DBPath                  string
 	RepoPath                string
 	BotSeed                 string
-	HMACKey                 *[32]byte
 	AppKey                  string
 	SSBListenAddr           string
 	PublishWorkers          int
@@ -114,7 +113,6 @@ func (a *BridgeApp) Init(ctx context.Context) error {
 		RepoPath:    a.cfg.RepoPath,
 		ListenAddr:  a.cfg.SSBListenAddr,
 		MasterSeed:  []byte(a.cfg.BotSeed),
-		HMACKey:     a.cfg.HMACKey,
 		AppKey:      a.cfg.AppKey,
 		GossipDB:    a.db,
 		DialTimeout: a.cfg.SSBDialTimeout,

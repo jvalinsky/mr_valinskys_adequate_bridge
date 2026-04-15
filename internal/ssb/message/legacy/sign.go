@@ -3,7 +3,6 @@ package legacy
 import (
 	"bytes"
 	"crypto/ed25519"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -89,19 +88,22 @@ func (s Signature) Verify(content []byte, r refs.FeedRef) error {
 	return nil
 }
 
-func (m *Message) Sign(kp *keys.KeyPair, hmacKey []byte) (*refs.MessageRef, []byte, error) {
+// Sign signs the message using the author's Ed25519 private key.
+// Per SSB Protocol Guide, the signature is computed over the raw formatted JSON:
+//
+//	signature = nacl_sign_detached(
+//	  msg: formatted_json_message,
+//	  key: authors_longterm_sk
+//	)
+//
+// HMAC is NOT used for message signing - it is only for the secret handshake
+// network identifier authentication.
+func (m *Message) Sign(kp *keys.KeyPair) (*refs.MessageRef, []byte, error) {
 	m.Hash = HashAlgorithm
 
 	contentToSign, err := m.marshalForSigning()
 	if err != nil {
 		return nil, nil, err
-	}
-
-	if hmacKey != nil {
-		h := sha256.New()
-		h.Write(hmacKey)
-		h.Write(contentToSign)
-		contentToSign = h.Sum(nil)
 	}
 
 	sig := ed25519.Sign(kp.Private(), contentToSign)

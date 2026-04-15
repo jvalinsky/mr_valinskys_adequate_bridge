@@ -89,7 +89,7 @@ func newBridgedRoomPeerManager(cfg bridgedRoomPeerManagerConfig, logger *log.Log
 	m := &BridgedRoomPeerManager{
 		cfg:        cfg,
 		logger:     logger,
-		keyManager: bots.NewManager([]byte(cfg.BotSeed), nil, nil, nil),
+		keyManager: bots.NewManager([]byte(cfg.BotSeed), nil, nil),
 		sessions:   make(map[string]*bridgedRoomPeerSession),
 	}
 	m.ensureMemberFn = m.ensureRoomMember

@@ -70,7 +70,7 @@ func runAccountAdd(ctx context.Context, dbPath, botSeed, did string) error {
 	}
 	defer database.Close()
 
-	manager := bots.NewManager([]byte(botSeed), nil, nil, nil)
+	manager := bots.NewManager([]byte(botSeed), nil, nil)
 	feedRef, err := manager.GetFeedID(did)
 	if err != nil {
 		return fmt.Errorf("derive feed id: %w", err)
@@ -490,7 +490,7 @@ func runServeUI(c *cli.Context) error {
 	csrfConfig := websecurity.DefaultCSRFConfig()
 	r.Use(websecurity.CSRFMiddleware(csrfConfig))
 
-	manager := bots.NewManager([]byte(botSeed), nil, nil, nil)
+	manager := bots.NewManager([]byte(botSeed), nil, nil)
 	ui := handlers.NewUIHandler(database, uiLogger, atpClient, blobStore, ssbStatus, manager).WithATProto(database, indexer)
 	if reverseCreds, err := bridge.LoadReverseCredentials(c.String("reverse-credentials-file")); err != nil {
 		return err

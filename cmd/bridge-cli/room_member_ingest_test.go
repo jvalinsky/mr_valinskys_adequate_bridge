@@ -145,7 +145,7 @@ func signedRoomHistoryPayload(t *testing.T, sourceKeys *keys.KeyPair, keyed bool
 		Hash:      legacy.HashAlgorithm,
 		Content:   content,
 	}
-	msgRef, sig, err := msg.Sign(sourceKeys, nil)
+	msgRef, sig, err := msg.Sign(sourceKeys)
 	if err != nil {
 		t.Fatalf("sign message: %v", err)
 	}

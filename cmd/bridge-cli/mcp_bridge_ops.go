@@ -54,7 +54,7 @@ func registerBridgeOpsTools(s *server.MCPServer, database *db.DB, seed string) {
 			if did == "" {
 				return mcpError("did must not be empty")
 			}
-			manager := bots.NewManager([]byte(seed), nil, nil, nil)
+			manager := bots.NewManager([]byte(seed), nil, nil)
 			feedRef, err := manager.GetFeedID(did)
 			if err != nil {
 				return mcpErrorf("derive feed id: %v", err)

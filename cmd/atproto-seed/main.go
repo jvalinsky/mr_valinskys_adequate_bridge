@@ -114,7 +114,7 @@ func main() {
 				}
 				defer database.Close()
 
-				manager := bots.NewManager([]byte(botSeed), nil, nil, nil)
+				manager := bots.NewManager([]byte(botSeed), nil, nil)
 				feedRef, err := manager.GetFeedID(sess.Did)
 				if err != nil {
 					return fmt.Errorf("derive ref: %w", err)

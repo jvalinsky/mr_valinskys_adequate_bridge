@@ -204,7 +204,7 @@ func TestMessageSigning(t *testing.T) {
 		Content:   map[string]interface{}{"type": "test", "text": "hello"},
 	}
 
-	msgRef, sig, err := msg.Sign(keyPair, nil)
+	msgRef, sig, err := msg.Sign(keyPair)
 	if err != nil {
 		t.Fatalf("failed to sign message: %v", err)
 	}
@@ -224,50 +224,6 @@ func TestMessageSigning(t *testing.T) {
 
 	if !ed25519.Verify(pub[:], contentToSign, sig) {
 		t.Error("signature verification failed")
-	}
-}
-
-func TestHMACMessageSigning(t *testing.T) {
-	seed := make([]byte, 32)
-	for i := range seed {
-		seed[i] = byte(i)
-	}
-
-	keyPair := keys.FromSeed(*(*[32]byte)(seed[:32]))
-	hmacKey := []byte("test-hmac-key-32-bytes-long!!")
-
-	pub := keyPair.Public()
-	feedRef, _ := refs.NewFeedRef(pub[:], refs.RefAlgoFeedSSB1)
-
-	msg := &legacy.Message{
-		Author:    *feedRef,
-		Sequence:  1,
-		Timestamp: time.Now().UnixMilli(),
-		Hash:      "sha256",
-		Content:   map[string]interface{}{"type": "test", "text": "hello with hmac"},
-	}
-
-	msgRef, sig, err := msg.Sign(keyPair, hmacKey)
-	if err != nil {
-		t.Fatalf("failed to sign message with HMAC: %v", err)
-	}
-
-	if len(sig) != ed25519.SignatureSize {
-		t.Errorf("signature length: got %d, want %d", len(sig), ed25519.SignatureSize)
-	}
-
-	if msgRef == nil {
-		t.Error("message ref is nil")
-	}
-
-	contentToSign, _ := msg.MarshalForSigning()
-	h := sha256.New()
-	h.Write(hmacKey)
-	h.Write(contentToSign)
-	hashed := h.Sum(nil)
-
-	if !ed25519.Verify(pub[:], hashed, sig) {
-		t.Error("HMAC signature verification failed")
 	}
 }
 
@@ -335,7 +291,7 @@ func TestVerifyMessageCompat(t *testing.T) {
 		Content:   map[string]interface{}{"type": "about", "name": "Test User"},
 	}
 
-	_, sig, err := msg.Sign(keyPair, nil)
+	_, sig, err := msg.Sign(keyPair)
 	if err != nil {
 		t.Fatalf("failed to sign: %v", err)
 	}

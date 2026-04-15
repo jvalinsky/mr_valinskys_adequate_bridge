@@ -19,17 +19,15 @@ type Manager struct {
 	masterSeed []byte
 	receiveLog feedlog.Log
 	userFeeds  feedlog.MultiLog
-	hmacKey    *[32]byte
 	keyPairs   map[string]*keys.KeyPair
 }
 
-func NewManager(masterSeed []byte, rxLog feedlog.Log, users feedlog.MultiLog, hmacKey *[32]byte) *Manager {
+func NewManager(masterSeed []byte, rxLog feedlog.Log, users feedlog.MultiLog) *Manager {
 	return &Manager{
 		publishers: make(map[string]*publisher.Publisher),
 		masterSeed: masterSeed,
 		receiveLog: rxLog,
 		userFeeds:  users,
-		hmacKey:    hmacKey,
 		keyPairs:   make(map[string]*keys.KeyPair),
 	}
 }
@@ -47,12 +45,7 @@ func (m *Manager) GetPublisher(atDID string) (*publisher.Publisher, error) {
 		return nil, fmt.Errorf("failed to derive keypair: %w", err)
 	}
 
-	var hmacKey []byte
-	if m.hmacKey != nil {
-		hmacKey = m.hmacKey[:]
-	}
-
-	pub, err := publisher.New(kp, m.receiveLog, m.userFeeds, publisher.WithHMAC(hmacKey))
+	pub, err := publisher.New(kp, m.receiveLog, m.userFeeds)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create publisher: %w", err)
 	}
