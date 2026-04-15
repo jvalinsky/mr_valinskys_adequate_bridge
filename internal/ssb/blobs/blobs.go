@@ -1,7 +1,6 @@
 package blobs
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,10 +12,13 @@ import (
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/feedlog"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/protocoltrace"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 )
 
 const DefaultMaxSize = 5 << 20
+
+var ErrBlobTooLarge = errors.New("blobs: blob exceeds max size")
 
 type BlobStore interface {
 	Put(r io.Reader) ([]byte, error)
@@ -30,6 +32,12 @@ type WantManager interface {
 	Want(ref *refs.BlobRef) error
 	CancelWant(ref *refs.BlobRef) error
 	Wants() ([]refs.BlobRef, error)
+	Subscribe(ctx context.Context) (<-chan WantEvent, func())
+}
+
+type WantEvent struct {
+	Ref  refs.BlobRef
+	Want bool
 }
 
 type Store struct {
@@ -68,6 +76,8 @@ type WantManagerImpl struct {
 	mu       sync.RWMutex
 	wants    map[string]time.Time
 	canceled map[string]struct{}
+	nextSub  uint64
+	subs     map[uint64]chan WantEvent
 }
 
 func NewWantManager(bs BlobStore) *WantManagerImpl {
@@ -75,6 +85,7 @@ func NewWantManager(bs BlobStore) *WantManagerImpl {
 		bs:       bs,
 		wants:    make(map[string]time.Time),
 		canceled: make(map[string]struct{}),
+		subs:     make(map[uint64]chan WantEvent),
 	}
 }
 
@@ -89,6 +100,7 @@ func (wm *WantManagerImpl) Want(ref *refs.BlobRef) error {
 	refStr := ref.Ref()
 	delete(wm.canceled, refStr)
 	wm.wants[refStr] = time.Now()
+	wm.notifyLocked(WantEvent{Ref: *ref, Want: true})
 	return nil
 }
 
@@ -103,6 +115,7 @@ func (wm *WantManagerImpl) CancelWant(ref *refs.BlobRef) error {
 	refStr := ref.Ref()
 	delete(wm.wants, refStr)
 	wm.canceled[refStr] = struct{}{}
+	wm.notifyLocked(WantEvent{Ref: *ref, Want: false})
 	return nil
 }
 
@@ -133,6 +146,46 @@ func (wm *WantManagerImpl) IsCanceled(ref *refs.BlobRef) bool {
 	defer wm.mu.RUnlock()
 	_, canceled := wm.canceled[ref.Ref()]
 	return canceled
+}
+
+func (wm *WantManagerImpl) Subscribe(ctx context.Context) (<-chan WantEvent, func()) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ch := make(chan WantEvent, 16)
+
+	wm.mu.Lock()
+	wm.nextSub++
+	id := wm.nextSub
+	wm.subs[id] = ch
+	wm.mu.Unlock()
+
+	var once sync.Once
+	cancel := func() {
+		once.Do(func() {
+			wm.mu.Lock()
+			if _, ok := wm.subs[id]; ok {
+				delete(wm.subs, id)
+				close(ch)
+			}
+			wm.mu.Unlock()
+		})
+	}
+	go func() {
+		<-ctx.Done()
+		cancel()
+	}()
+
+	return ch, cancel
+}
+
+func (wm *WantManagerImpl) notifyLocked(ev WantEvent) {
+	for _, ch := range wm.subs {
+		select {
+		case ch <- ev:
+		default:
+		}
+	}
 }
 
 type Handler struct {
@@ -286,9 +339,23 @@ func (h *Handler) handleGet(ctx context.Context, req *muxrpc.Request) {
 		req.CloseWithError(fmt.Errorf("blobs.get: invalid ref: %w", err))
 		return
 	}
+	start := time.Now()
+	bytesSent := 0
+	errKind := ""
+	defer func() {
+		protocoltrace.Emit(protocoltrace.Event{
+			Phase:    "blob_get",
+			Method:   "blobs.get",
+			BlobRef:  ref.String(),
+			Bytes:    bytesSent,
+			ErrKind:  errKind,
+			Duration: time.Since(start),
+		})
+	}()
 
 	rc, err := h.bs.Get(ref.Hash())
 	if err != nil {
+		errKind = protocoltrace.ErrKind(err)
 		slog.Debug("blobs.get not found", "hash", hashStr)
 		req.CloseWithError(fmt.Errorf("blobs.get: not found"))
 		return
@@ -308,13 +375,16 @@ func (h *Handler) handleGet(ctx context.Context, req *muxrpc.Request) {
 		n, err := rc.Read(buf)
 		if n > 0 {
 			if _, werr := sink.Write(buf[:n]); werr != nil {
+				errKind = protocoltrace.ErrKind(werr)
 				return
 			}
+			bytesSent += n
 		}
 		if err != nil {
 			if err == io.EOF {
 				break
 			}
+			errKind = protocoltrace.ErrKind(err)
 			return
 		}
 	}
@@ -354,9 +424,23 @@ func (h *Handler) handleGetSlice(ctx context.Context, req *muxrpc.Request) {
 		req.CloseWithError(fmt.Errorf("blobs.getSlice: invalid ref: %w", err))
 		return
 	}
+	start := time.Now()
+	bytesSent := 0
+	errKind := ""
+	defer func() {
+		protocoltrace.Emit(protocoltrace.Event{
+			Phase:    "blob_get_slice",
+			Method:   "blobs.getSlice",
+			BlobRef:  ref.String(),
+			Bytes:    bytesSent,
+			ErrKind:  errKind,
+			Duration: time.Since(start),
+		})
+	}()
 
 	rc, err := h.bs.GetRange(ref.Hash(), args.Start, args.Size)
 	if err != nil {
+		errKind = protocoltrace.ErrKind(err)
 		slog.Debug("blobs.getSlice not found", "hash", args.Hash)
 		req.CloseWithError(fmt.Errorf("blobs.getSlice: not found"))
 		return
@@ -374,13 +458,16 @@ func (h *Handler) handleGetSlice(ctx context.Context, req *muxrpc.Request) {
 		n, err := rc.Read(buf)
 		if n > 0 {
 			if _, werr := sink.Write(buf[:n]); werr != nil {
+				errKind = protocoltrace.ErrKind(werr)
 				return
 			}
+			bytesSent += n
 		}
 		if err != nil {
 			if err == io.EOF {
 				break
 			}
+			errKind = protocoltrace.ErrKind(err)
 			return
 		}
 	}
@@ -400,27 +487,30 @@ func (h *Handler) handleAdd(ctx context.Context, req *muxrpc.Request) {
 		return
 	}
 
-	var allData []byte
-	for src.Next(ctx) {
-		b, err := src.Bytes()
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			req.CloseWithError(fmt.Errorf("blobs.add: read: %w", err))
-			return
-		}
-		allData = append(allData, b...)
-	}
-
-	hash, err := h.bs.Put(bytes.NewReader(allData))
+	reader := &muxRPCBlobReader{ctx: ctx, src: src, max: DefaultMaxSize}
+	start := time.Now()
+	hash, err := h.bs.Put(reader)
 	if err != nil {
+		protocoltrace.Emit(protocoltrace.Event{
+			Phase:    "blob_add",
+			Method:   "blobs.add",
+			Bytes:    int(reader.bytesRead),
+			ErrKind:  protocoltrace.ErrKind(err),
+			Duration: time.Since(start),
+		})
 		req.CloseWithError(fmt.Errorf("blobs.add: store failed: %w", err))
 		return
 	}
 
 	blobRef, _ := refs.NewBlobRef(hash)
-	slog.Debug("blobs.add", "size", len(allData), "hash", blobRef.String())
+	protocoltrace.Emit(protocoltrace.Event{
+		Phase:    "blob_add",
+		Method:   "blobs.add",
+		BlobRef:  blobRef.String(),
+		Bytes:    int(reader.bytesRead),
+		Duration: time.Since(start),
+	})
+	slog.Debug("blobs.add", "size", reader.bytesRead, "hash", blobRef.String())
 	req.Return(ctx, blobRef.String())
 }
 
@@ -440,6 +530,9 @@ func (h *Handler) handleCreateWants(ctx context.Context, req *muxrpc.Request) {
 		return
 	}
 
+	events, cancel := h.wm.Subscribe(ctx)
+	defer cancel()
+
 	wants, err := h.wm.Wants()
 	if err != nil {
 		req.CloseWithError(fmt.Errorf("blobs.createWants: get wants: %w", err))
@@ -451,6 +544,80 @@ func (h *Handler) handleCreateWants(ctx context.Context, req *muxrpc.Request) {
 		if _, err := sink.Write(data); err != nil {
 			return
 		}
+		protocoltrace.Emit(protocoltrace.Event{
+			Phase:   "blob_want",
+			Method:  "blobs.createWants",
+			BlobRef: want.Ref(),
+		})
 	}
-	_ = req.Close()
+
+	for {
+		select {
+		case <-ctx.Done():
+			_ = req.Close()
+			return
+		case ev, ok := <-events:
+			if !ok {
+				_ = req.Close()
+				return
+			}
+			protocoltrace.Emit(protocoltrace.Event{
+				Phase:   "blob_want",
+				Method:  "blobs.createWants",
+				BlobRef: ev.Ref.Ref(),
+			})
+			if !ev.Want {
+				continue
+			}
+			data, _ := json.Marshal(ev.Ref.Ref())
+			if _, err := sink.Write(data); err != nil {
+				return
+			}
+		}
+	}
+}
+
+type muxRPCBlobReader struct {
+	ctx       context.Context
+	src       muxrpc.ByteSourceReader
+	max       int64
+	buf       []byte
+	bytesRead int64
+	err       error
+}
+
+func (r *muxRPCBlobReader) Read(p []byte) (int, error) {
+	if r.err != nil {
+		return 0, r.err
+	}
+	for len(r.buf) == 0 {
+		if !r.src.Next(r.ctx) {
+			if err := r.src.Err(); err != nil {
+				r.err = err
+				return 0, err
+			}
+			r.err = io.EOF
+			return 0, io.EOF
+		}
+		b, err := r.src.Bytes()
+		if err != nil {
+			if err == io.EOF {
+				continue
+			}
+			r.err = err
+			return 0, err
+		}
+		if len(b) == 0 {
+			continue
+		}
+		if r.max > 0 && r.bytesRead+int64(len(b)) > r.max {
+			r.err = ErrBlobTooLarge
+			return 0, r.err
+		}
+		r.bytesRead += int64(len(b))
+		r.buf = append(r.buf[:0], b...)
+	}
+	n := copy(p, r.buf)
+	r.buf = r.buf[n:]
+	return n, nil
 }

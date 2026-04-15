@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -62,9 +63,21 @@ func (m *mockBlobStore) Size(hash []byte) (int64, error) {
 func TestWantManager(t *testing.T) {
 	wm := NewWantManager(&mockBlobStore{})
 	ref := refs.MustNewBlobRef(make([]byte, 32))
+	subCtx, cancelSub := context.WithCancel(context.Background())
+	events, stop := wm.Subscribe(subCtx)
+	defer stop()
+	defer cancelSub()
 
 	if err := wm.Want(ref); err != nil {
 		t.Fatal(err)
+	}
+	select {
+	case ev := <-events:
+		if !ev.Want || !ev.Ref.Equal(*ref) {
+			t.Fatalf("unexpected want event: %+v", ev)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for want event")
 	}
 
 	if !wm.IsWanted(ref) {
@@ -78,6 +91,14 @@ func TestWantManager(t *testing.T) {
 
 	if err := wm.CancelWant(ref); err != nil {
 		t.Fatal(err)
+	}
+	select {
+	case ev := <-events:
+		if ev.Want || !ev.Ref.Equal(*ref) {
+			t.Fatalf("unexpected cancel event: %+v", ev)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for cancel event")
 	}
 
 	if wm.IsWanted(ref) {
@@ -139,6 +160,54 @@ func TestBlobsHandler(t *testing.T) {
 		}
 	})
 
+	t.Run("createWants stays open when there are no wants", func(t *testing.T) {
+		src, err := client.Source(ctx, muxrpc.TypeJSON, muxrpc.Method{"blobs", "createWants"})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		shortCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+		defer cancel()
+
+		if src.Next(shortCtx) {
+			t.Fatal("expected no immediate wants")
+		}
+		if !errors.Is(src.Err(), context.DeadlineExceeded) {
+			t.Fatalf("expected source to remain open until caller context deadline, got %v", src.Err())
+		}
+	})
+
+	t.Run("createWants emits wants added after stream opens", func(t *testing.T) {
+		src, err := client.Source(ctx, muxrpc.TypeJSON, muxrpc.Method{"blobs", "createWants"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer src.Cancel(nil)
+
+		h := sha256.Sum256([]byte("wanted after open"))
+		ref, _ := refs.NewBlobRef(h[:])
+		if err := wm.Want(ref); err != nil {
+			t.Fatal(err)
+		}
+
+		readCtx, cancel := context.WithTimeout(ctx, time.Second)
+		defer cancel()
+		if !src.Next(readCtx) {
+			t.Fatalf("expected live want event, err=%v", src.Err())
+		}
+		got, err := src.Bytes()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var gotRef string
+		if err := json.Unmarshal(got, &gotRef); err != nil {
+			t.Fatalf("decode want frame %q: %v", got, err)
+		}
+		if gotRef != ref.Ref() {
+			t.Fatalf("want ref = %s, want %s", gotRef, ref.Ref())
+		}
+	})
+
 	t.Run("add", func(t *testing.T) {
 		sink, err := client.Sink(ctx, muxrpc.TypeBinary, muxrpc.Method{"blobs", "add"})
 		if err != nil {
@@ -161,4 +230,37 @@ func TestBlobsHandler(t *testing.T) {
 			t.Error("blob not added")
 		}
 	})
+}
+
+type fakeByteSource struct {
+	frames [][]byte
+	idx    int
+	err    error
+}
+
+func (s *fakeByteSource) Next(ctx context.Context) bool {
+	return s.idx < len(s.frames)
+}
+
+func (s *fakeByteSource) Bytes() ([]byte, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	b := s.frames[s.idx]
+	s.idx++
+	return b, nil
+}
+
+func (s *fakeByteSource) Err() error { return nil }
+
+func TestMuxRPCBlobReaderEnforcesMaxSize(t *testing.T) {
+	reader := &muxRPCBlobReader{
+		ctx: context.Background(),
+		src: &fakeByteSource{frames: [][]byte{[]byte("1234"), []byte("56")}},
+		max: 5,
+	}
+	got, err := io.ReadAll(reader)
+	if !errors.Is(err, ErrBlobTooLarge) {
+		t.Fatalf("expected ErrBlobTooLarge, got data=%q err=%v", got, err)
+	}
 }
