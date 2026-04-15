@@ -10,6 +10,7 @@ import (
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/crypto"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/feedlog"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/formats"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/keys"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/message/legacy"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
@@ -99,13 +100,23 @@ func (p *Publisher) Publish(content []byte) (refs.MessageRef, error) {
 		return refs.MessageRef{}, fmt.Errorf("publisher: failed to sign: %w", err)
 	}
 
+	raw, err := msg.MarshalWithSignature(sig)
+	if err != nil {
+		return refs.MessageRef{}, fmt.Errorf("publisher: failed to marshal signed message: %w", err)
+	}
+
 	metadata := &feedlog.Metadata{
-		Author:    p.feed.String(),
-		Sequence:  msg.Sequence,
-		Previous:  "",
-		Timestamp: int64(msg.Timestamp),
-		Sig:       sig,
-		Hash:      msgRef.String(),
+		Author:           p.feed.String(),
+		Sequence:         msg.Sequence,
+		Previous:         "",
+		Timestamp:        int64(msg.Timestamp),
+		Sig:              sig,
+		Hash:             msgRef.String(),
+		FeedFormat:       string(formats.FeedEd25519),
+		MessageFormat:    string(formats.MessageSHA256),
+		RawValue:         raw,
+		CanonicalRef:     msgRef.String(),
+		ValidationStatus: "validated",
 	}
 
 	if previous != nil {
@@ -118,10 +129,6 @@ func (p *Publisher) Publish(content []byte) (refs.MessageRef, error) {
 	}
 
 	if p.receiveLog != nil {
-		raw, err := msg.MarshalWithSignature(sig)
-		if err != nil {
-			return refs.MessageRef{}, fmt.Errorf("publisher: failed to marshal signed message: %w", err)
-		}
 		if _, err := p.receiveLog.Append(raw, metadata); err != nil {
 			return refs.MessageRef{}, fmt.Errorf("publisher: failed to append receive log: %w", err)
 		}

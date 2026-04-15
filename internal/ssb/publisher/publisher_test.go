@@ -1,11 +1,13 @@
 package publisher
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"testing"
 	"time"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/feedlog"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/formats"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/keys"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/message/legacy"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
@@ -137,6 +139,30 @@ func TestPublisherAppendsReceiveLogAndCallsAfterPublish(t *testing.T) {
 	}
 	if gotRef.String() != ref.String() {
 		t.Fatalf("receive log ref mismatch: got %q want %q", gotRef.String(), ref.String())
+	}
+	if len(rxMsg.Metadata.RawValue) == 0 {
+		t.Fatal("expected receive-log metadata RawValue to be populated")
+	}
+	if !bytes.Equal(rxMsg.Metadata.RawValue, rxMsg.Value) {
+		t.Fatal("receive-log metadata RawValue does not match stored raw payload")
+	}
+
+	userLog, ok := users.logs[aliceKeys.FeedRef().String()]
+	if !ok {
+		t.Fatal("expected publisher user log to exist")
+	}
+	userMsg, ok := userLog.messages[1]
+	if !ok {
+		t.Fatal("expected user log entry at seq 1")
+	}
+	if len(userMsg.Metadata.RawValue) == 0 {
+		t.Fatal("expected user-log metadata RawValue to be populated")
+	}
+	if !bytes.Equal(userMsg.Metadata.RawValue, rxMsg.Value) {
+		t.Fatal("user-log metadata RawValue does not match receive-log raw payload")
+	}
+	if userMsg.Metadata.MessageFormat != string(formats.MessageSHA256) {
+		t.Fatalf("unexpected message format: %q", userMsg.Metadata.MessageFormat)
 	}
 	if callbackSeq != 1 {
 		t.Fatalf("after publish seq mismatch: got %d want 1", callbackSeq)

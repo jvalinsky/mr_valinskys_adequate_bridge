@@ -11,9 +11,12 @@ import (
 	"time"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/feedlog"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/message/legacy"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 )
+
+const historyClassicFixture = `{"previous":null,"author":"@6iF2pmL9+jpnM515551HTgVVOGCUZ9qfE8Y3DmdFz7w=.ed25519","sequence":1,"timestamp":1775622534000,"hash":"sha256","content":{"type":"contact","contact":"@HY3zOj73zbLT5wG76eUZXIKTMB4to/voRbYWESXyVtA=.ed25519","following":true},"signature":"IFefnN3fb4bEpWfFtMD2lyn30yQXtmSPVCB0JQQv05WkHVADzz675PiMAf5JLXosTUPfP02IvTeKHdQd1JGPAw==.sig.ed25519"}`
 
 func TestParseHistoryStreamArgsRejectsConflictingSequenceAndSeq(t *testing.T) {
 	_, err := parseHistoryStreamArgs(json.RawMessage(`[{"id":"@AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=.ed25519","sequence":1,"seq":2}]`))
@@ -169,6 +172,63 @@ func TestCreateHistoryStreamLiveOldFalseSkipsBacklog(t *testing.T) {
 	}
 }
 
+func TestCreateHistoryStreamKeysFalseReturnsExactRawValue(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	store := newHistoryTestStore(t)
+	feed, _ := appendHistorySignedFixture(t, store, []byte(historyClassicFixture))
+
+	client := openHistoryTestClient(t, ctx, NewHistoryStreamHandler(store))
+	src, err := client.Source(ctx, muxrpc.TypeJSON, muxrpc.Method{"createHistoryStream"}, map[string]interface{}{
+		"id":    feed.String(),
+		"seq":   0,
+		"keys":  false,
+		"limit": 1,
+	})
+	if err != nil {
+		t.Fatalf("open createHistoryStream source: %v", err)
+	}
+
+	body := readHistoryRawFrame(t, ctx, src)
+	if !bytes.Equal(body, []byte(historyClassicFixture)) {
+		t.Fatalf("keys=false payload mismatch\nwant=%s\ngot=%s", historyClassicFixture, string(body))
+	}
+}
+
+func TestCreateHistoryStreamKeysTruePreservesWrappedRawValue(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	store := newHistoryTestStore(t)
+	feed, msgRef := appendHistorySignedFixture(t, store, []byte(historyClassicFixture))
+
+	client := openHistoryTestClient(t, ctx, NewHistoryStreamHandler(store))
+	src, err := client.Source(ctx, muxrpc.TypeJSON, muxrpc.Method{"createHistoryStream"}, map[string]interface{}{
+		"id":    feed.String(),
+		"limit": 1,
+	})
+	if err != nil {
+		t.Fatalf("open createHistoryStream source: %v", err)
+	}
+
+	body := readHistoryRawFrame(t, ctx, src)
+	var wrapped struct {
+		Key       string          `json:"key"`
+		Value     json.RawMessage `json:"value"`
+		Timestamp int64           `json:"timestamp"`
+	}
+	if err := json.Unmarshal(body, &wrapped); err != nil {
+		t.Fatalf("decode wrapped payload: %v", err)
+	}
+	if wrapped.Key != msgRef.String() {
+		t.Fatalf("wrapped key mismatch: got %q want %q", wrapped.Key, msgRef.String())
+	}
+	if !bytes.Equal(wrapped.Value, []byte(historyClassicFixture)) {
+		t.Fatalf("wrapped value mismatch\nwant=%s\ngot=%s", historyClassicFixture, string(wrapped.Value))
+	}
+}
+
 func newHistoryTestStore(t *testing.T) *feedlog.StoreImpl {
 	t.Helper()
 
@@ -207,6 +267,36 @@ func appendHistoryMessage(t *testing.T, store *feedlog.StoreImpl, author string,
 	}
 }
 
+func appendHistorySignedFixture(t *testing.T, store *feedlog.StoreImpl, raw []byte) (*refs.FeedRef, *refs.MessageRef) {
+	t.Helper()
+
+	msg, content, err := legacy.ParseSignedMessageJSON(raw)
+	if err != nil {
+		t.Fatalf("parse fixture: %v", err)
+	}
+	msgRef, err := legacy.SignedMessageRefFromJSON(raw)
+	if err != nil {
+		t.Fatalf("derive fixture ref: %v", err)
+	}
+
+	metadata := &feedlog.Metadata{
+		Author:        msg.Author.String(),
+		Sequence:      msg.Sequence,
+		Previous:      "",
+		Timestamp:     msg.Timestamp,
+		Hash:          msgRef.String(),
+		Sig:           msg.Signature,
+		MessageFormat: "sha256",
+		RawValue:      raw,
+	}
+	if msg.Previous != nil {
+		metadata.Previous = msg.Previous.String()
+	}
+	appendHistoryMessage(t, store, msg.Author.String(), content, metadata)
+
+	return &msg.Author, msgRef
+}
+
 func openHistoryTestClient(t *testing.T, ctx context.Context, handler muxrpc.Handler) *muxrpc.Server {
 	t.Helper()
 
@@ -239,4 +329,21 @@ func readHistoryJSONFrame(t *testing.T, ctx context.Context, src *muxrpc.ByteSou
 	if err := json.Unmarshal(body, dst); err != nil {
 		t.Fatalf("decode source frame %q: %v", string(body), err)
 	}
+}
+
+func readHistoryRawFrame(t *testing.T, ctx context.Context, src *muxrpc.ByteSource) []byte {
+	t.Helper()
+
+	if !src.Next(ctx) {
+		if err := src.Err(); err != nil {
+			t.Fatalf("source next failed: %v", err)
+		}
+		t.Fatal("source closed before next frame")
+	}
+
+	body, err := src.Bytes()
+	if err != nil {
+		t.Fatalf("read source bytes: %v", err)
+	}
+	return body
 }

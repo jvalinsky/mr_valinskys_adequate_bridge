@@ -11,6 +11,7 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/formats"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/keys"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/message/bendy"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/message/legacy"
 )
 
 const tildefriendsContactFixture = `{"previous":null,"author":"@6iF2pmL9+jpnM515551HTgVVOGCUZ9qfE8Y3DmdFz7w=.ed25519","sequence":1,"timestamp":1775622534000,"hash":"sha256","content":{"type":"contact","contact":"@HY3zOj73zbLT5wG76eUZXIKTMB4to/voRbYWESXyVtA=.ed25519","following":true},"signature":"IFefnN3fb4bEpWfFtMD2lyn30yQXtmSPVCB0JQQv05WkHVADzz675PiMAf5JLXosTUPfP02IvTeKHdQd1JGPAw==.sig.ed25519"}`
@@ -36,8 +37,9 @@ func TestFeedManagerAdapterAppendSignedMessageStoresReceiveLog(t *testing.T) {
 	store.SetSignatureVerifier(&feedlog.DefaultSignatureVerifier{})
 
 	adapter := NewFeedManagerAdapter(store)
+	fixture := mustPrettyFixture(t, tildefriendsContactFixture)
 
-	author, seq, err := adapter.AppendSignedMessage([]byte(tildefriendsContactFixture))
+	author, seq, err := adapter.AppendSignedMessage(fixture)
 	if err != nil {
 		t.Fatalf("append signed message: %v", err)
 	}
@@ -47,6 +49,14 @@ func TestFeedManagerAdapterAppendSignedMessageStoresReceiveLog(t *testing.T) {
 	}
 	if seq != 1 {
 		t.Fatalf("seq = %d, want 1", seq)
+	}
+
+	wire, err := adapter.GetMessage(author, 1)
+	if err != nil {
+		t.Fatalf("get classic wire message: %v", err)
+	}
+	if !bytes.Equal(wire, fixture) {
+		t.Fatalf("classic wire bytes mismatch")
 	}
 
 	log, err := store.Logs().Get(author.String())
@@ -100,10 +110,10 @@ func TestFeedManagerAdapterAppendSignedMessageAcceptsPreviousRef(t *testing.T) {
 	store.SetSignatureVerifier(&feedlog.DefaultSignatureVerifier{})
 
 	adapter := NewFeedManagerAdapter(store)
-	if _, _, err := adapter.AppendSignedMessage([]byte(tildefriendsContactFixtureSeq1)); err != nil {
+	if _, _, err := adapter.AppendSignedMessage(mustPrettyFixture(t, tildefriendsContactFixtureSeq1)); err != nil {
 		t.Fatalf("append seq1: %v", err)
 	}
-	author, seq, err := adapter.AppendSignedMessage([]byte(tildefriendsContactFixtureSeq2))
+	author, seq, err := adapter.AppendSignedMessage(mustPrettyFixture(t, tildefriendsContactFixtureSeq2))
 	if err != nil {
 		t.Fatalf("append seq2: %v", err)
 	}
@@ -205,4 +215,13 @@ func TestFeedManagerAdapterAppendReplicatedMessageStoresBendyRawBytes(t *testing
 	if !bytes.Equal(wire, raw) {
 		t.Fatalf("GetMessage did not return raw bendy bytes")
 	}
+}
+
+func mustPrettyFixture(t *testing.T, raw string) []byte {
+	t.Helper()
+	pretty, err := legacy.PrettyPrint([]byte(raw))
+	if err != nil {
+		t.Fatalf("pretty print fixture: %v", err)
+	}
+	return pretty
 }

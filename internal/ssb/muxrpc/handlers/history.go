@@ -2,14 +2,12 @@ package handlers
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"time"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/feedlog"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/formats"
-	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/message/legacy"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 )
@@ -193,42 +191,29 @@ func (h *HistoryStreamHandler) writeMessage(ctx context.Context, sink *muxrpc.By
 		return formats.UnsupportedMessage(formats.MessageFormat(msg.MessageFormat), "createHistoryStream", "history")
 	}
 
-	payload := signedMessagePayload(msg)
-	var body interface{} = payload
-	if args.Keys == nil || *args.Keys {
-		body = map[string]interface{}{
-			"key":       msg.Key,
-			"value":     payload,
-			"timestamp": msg.Received,
-		}
-	}
-
-	data, err := json.Marshal(body)
+	raw, err := feedlog.ClassicSignedMessageRaw(msg, nil, seq)
 	if err != nil {
-		return fmt.Errorf("failed to marshal message: %w", err)
+		return fmt.Errorf("derive classic wire payload: %w", err)
 	}
-	_, err = sink.Write(data)
+
+	if args.Keys == nil || *args.Keys {
+		body := struct {
+			Key       string          `json:"key"`
+			Value     json.RawMessage `json:"value"`
+			Timestamp int64           `json:"timestamp"`
+		}{
+			Key:       msg.Key,
+			Value:     raw,
+			Timestamp: msg.Received,
+		}
+		data, err := json.Marshal(body)
+		if err != nil {
+			return fmt.Errorf("failed to marshal message: %w", err)
+		}
+		_, err = sink.Write(data)
+		return err
+	}
+
+	_, err = sink.Write(raw)
 	return err
-}
-
-func signedMessagePayload(msg *feedlog.StoredMessage) map[string]interface{} {
-	var content interface{}
-	if err := json.Unmarshal(msg.Value, &content); err != nil {
-		content = string(msg.Value)
-	}
-
-	var previous interface{} = nil
-	if msg.Metadata.Previous != "" {
-		previous = msg.Metadata.Previous
-	}
-
-	return map[string]interface{}{
-		"previous":  previous,
-		"author":    msg.Metadata.Author,
-		"sequence":  msg.Metadata.Sequence,
-		"timestamp": msg.Metadata.Timestamp,
-		"hash":      legacy.HashAlgorithm,
-		"content":   content,
-		"signature": base64.StdEncoding.EncodeToString(msg.Metadata.Sig) + ".sig.ed25519",
-	}
 }

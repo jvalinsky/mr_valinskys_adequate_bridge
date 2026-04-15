@@ -405,6 +405,7 @@ bridge-cli --db bridge.sqlite retry-failures --did did:plc:example --limit 200
 ## SSB Data Reset (Wipe and Re-backfill)
 
 When the SSB log contains stale or malformed messages from a previous bridge version, or when empty feed entries are polluting the EBT state matrix, wipe the SSB data directory and re-backfill from ATProto.
+This is also the recovery path for strict signature interop fixes: the replay republishes each feed from sequence 1 with canonical signed bytes.
 
 1. Stop the bridge service.
 

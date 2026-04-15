@@ -797,6 +797,9 @@ type SignatureVerifier interface {
 type DefaultSignatureVerifier struct{}
 
 func (v *DefaultSignatureVerifier) Verify(content []byte, metadata *Metadata) error {
+	if metadata == nil {
+		return errors.New("missing metadata")
+	}
 	if len(metadata.Sig) == 0 {
 		return errors.New("missing signature")
 	}
@@ -805,9 +808,19 @@ func (v *DefaultSignatureVerifier) Verify(content []byte, metadata *Metadata) er
 		return fmt.Errorf("invalid signature length: %d (expected %d)", len(metadata.Sig), ed25519.SignatureSize)
 	}
 
-	msg, err := legacy.VerifySignedMessageJSON(content)
+	content = bytes.TrimSpace(content)
+
+	msg, _, err := legacy.ParseSignedMessageJSON(content)
 	if err != nil {
 		return fmt.Errorf("parse signed message: %w", err)
+	}
+
+	signable, sigFromWire, err := legacy.ExtractSignature(content)
+	if err != nil {
+		return fmt.Errorf("extract signature: %w", err)
+	}
+	if err := sigFromWire.Verify(signable, msg.Author); err != nil {
+		return fmt.Errorf("verify raw signed message: %w", err)
 	}
 
 	msgRef, err := legacy.SignedMessageRefFromJSON(content)
@@ -821,7 +834,10 @@ func (v *DefaultSignatureVerifier) Verify(content []byte, metadata *Metadata) er
 	if metadata.Sequence != 0 && metadata.Sequence != msg.Sequence {
 		return fmt.Errorf("sequence mismatch: metadata=%d message=%d", metadata.Sequence, msg.Sequence)
 	}
-	if len(metadata.Sig) > 0 && !bytes.Equal(metadata.Sig, msg.Signature) {
+	if !bytes.Equal(sigFromWire, msg.Signature) {
+		return errors.New("signature mismatch between wire payload and parsed message")
+	}
+	if !bytes.Equal(metadata.Sig, sigFromWire) {
 		return errors.New("signature mismatch")
 	}
 	if metadata.Hash != "" && metadata.Hash != msgRef.String() {

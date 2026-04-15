@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -370,17 +371,7 @@ func TestSignatureVerification(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	signed := &legacy.SignedMessage{
-		Previous:  msg.Previous,
-		Author:    msg.Author,
-		Sequence:  msg.Sequence,
-		Timestamp: msg.Timestamp,
-		Hash:      msg.Hash,
-		Content:   msg.Content,
-		Signature: sig,
-	}
-
-	signedJSON, err := json.Marshal(signed)
+	signedJSON, err := msg.MarshalWithSignature(sig)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -489,16 +480,7 @@ func createTestSignedMessage(t *testing.T, kp *keys.KeyPair, seq int64) ([]byte,
 		t.Fatal(err)
 	}
 
-	signed := &legacy.SignedMessage{
-		Author:    msg.Author,
-		Sequence:  msg.Sequence,
-		Timestamp: msg.Timestamp,
-		Hash:      msg.Hash,
-		Content:   msg.Content,
-		Signature: sig,
-	}
-
-	signedJSON, err := json.Marshal(signed)
+	signedJSON, err := msg.MarshalWithSignature(sig)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -512,6 +494,93 @@ func createTestSignedMessage(t *testing.T, kp *keys.KeyPair, seq int64) ([]byte,
 	}
 
 	return signedJSON, metadata
+}
+
+func TestDefaultSignatureVerifierRejectsWhitespaceMutations(t *testing.T) {
+	kp, err := keys.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, metadata := createTestSignedMessage(t, kp, 1)
+
+	mutated := bytes.Replace(raw, []byte(`"author": "`), []byte(`"author" : "`), 1)
+	if bytes.Equal(mutated, raw) {
+		t.Fatal("expected whitespace mutation to change payload")
+	}
+
+	verifier := &DefaultSignatureVerifier{}
+	if err := verifier.Verify(mutated, metadata); err == nil {
+		t.Fatal("expected whitespace-mutated message to fail strict verification")
+	}
+}
+
+func TestDefaultSignatureVerifierRejectsTopLevelOrderMutations(t *testing.T) {
+	kp, err := keys.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, metadata := createTestSignedMessage(t, kp, 1)
+
+	var parsed struct {
+		Author    string          `json:"author"`
+		Sequence  int64           `json:"sequence"`
+		Timestamp int64           `json:"timestamp"`
+		Hash      string          `json:"hash"`
+		Content   json.RawMessage `json:"content"`
+		Signature string          `json:"signature"`
+	}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		t.Fatalf("unmarshal signed message: %v", err)
+	}
+
+	mutated := []byte(fmt.Sprintf(`{"previous":null,"sequence":%d,"author":"%s","timestamp":%d,"hash":"%s","content":%s,"signature":"%s"}`,
+		parsed.Sequence,
+		parsed.Author,
+		parsed.Timestamp,
+		parsed.Hash,
+		parsed.Content,
+		parsed.Signature,
+	))
+
+	verifier := &DefaultSignatureVerifier{}
+	if err := verifier.Verify(mutated, metadata); err == nil {
+		t.Fatal("expected top-level-order-mutated message to fail strict verification")
+	}
+}
+
+func TestDefaultSignatureVerifierAcceptsFixtureSignedMessage(t *testing.T) {
+	const fixture = `{"previous":null,"author":"@6iF2pmL9+jpnM515551HTgVVOGCUZ9qfE8Y3DmdFz7w=.ed25519","sequence":1,"timestamp":1775622534000,"hash":"sha256","content":{"type":"contact","contact":"@HY3zOj73zbLT5wG76eUZXIKTMB4to/voRbYWESXyVtA=.ed25519","following":true},"signature":"IFefnN3fb4bEpWfFtMD2lyn30yQXtmSPVCB0JQQv05WkHVADzz675PiMAf5JLXosTUPfP02IvTeKHdQd1JGPAw==.sig.ed25519"}`
+	prettyFixture, err := legacy.PrettyPrint([]byte(fixture))
+	if err != nil {
+		t.Fatalf("pretty print fixture: %v", err)
+	}
+
+	msg, _, err := legacy.ParseSignedMessageJSON(prettyFixture)
+	if err != nil {
+		t.Fatalf("parse fixture: %v", err)
+	}
+	msgRef, err := legacy.SignedMessageRefFromJSON(prettyFixture)
+	if err != nil {
+		t.Fatalf("fixture ref: %v", err)
+	}
+
+	metadata := &Metadata{
+		Author:    msg.Author.String(),
+		Sequence:  msg.Sequence,
+		Timestamp: msg.Timestamp,
+		Hash:      msgRef.String(),
+		Sig:       msg.Signature,
+	}
+
+	verifier := &DefaultSignatureVerifier{}
+	if err := verifier.Verify(prettyFixture, metadata); err != nil {
+		t.Fatalf("fixture must verify: %v", err)
+	}
+
+	gotSig := base64.StdEncoding.EncodeToString(msg.Signature) + ".sig.ed25519"
+	if !bytes.Contains([]byte(fixture), []byte(gotSig)) {
+		t.Fatalf("fixture signature suffix mismatch: %s", gotSig)
+	}
 }
 
 // createTestStore is a helper that creates a temporary store for testing
