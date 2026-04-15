@@ -141,6 +141,10 @@ func (m *mockFeedManager) GetMessage(author *refs.FeedRef, seq int64) ([]byte, e
 }
 
 func (m *mockFeedManager) AppendSignedMessage(raw []byte) (*refs.FeedRef, int64, error) {
+	return m.AppendReplicatedMessage(raw)
+}
+
+func (m *mockFeedManager) AppendReplicatedMessage(raw []byte) (*refs.FeedRef, int64, error) {
 	return nil, 0, nil
 }
 

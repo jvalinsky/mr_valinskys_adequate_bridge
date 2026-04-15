@@ -381,6 +381,7 @@ type FeedManager interface {
 	GetFeedSeq(author *refs.FeedRef) (int64, error)
 	GetMessage(author *refs.FeedRef, seq int64) ([]byte, error)
 	AppendSignedMessage(raw []byte) (*refs.FeedRef, int64, error)
+	AppendReplicatedMessage(raw []byte) (*refs.FeedRef, int64, error)
 }
 
 var ErrNotFound = fmt.Errorf("message not found")
@@ -464,7 +465,7 @@ func (h *EBTHandler) HandleDuplex(ctx context.Context, tx Writer, rx ByteSourceR
 
 		var frontierUpdate NetworkFrontier
 		if err := json.Unmarshal(data, &frontierUpdate); err != nil {
-			author, seq, appendErr := h.store.AppendSignedMessage(data)
+			author, seq, appendErr := h.store.AppendReplicatedMessage(data)
 			if appendErr != nil {
 				slog.Debug("ebt handle duplex failed to decode message", "err", err, "append_err", appendErr)
 				continue

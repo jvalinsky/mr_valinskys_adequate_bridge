@@ -1,11 +1,16 @@
 package sbot
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/bfe"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/feedlog"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/formats"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/keys"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/message/bendy"
 )
 
 const tildefriendsContactFixture = `{"previous":null,"author":"@6iF2pmL9+jpnM515551HTgVVOGCUZ9qfE8Y3DmdFz7w=.ed25519","sequence":1,"timestamp":1775622534000,"hash":"sha256","content":{"type":"contact","contact":"@HY3zOj73zbLT5wG76eUZXIKTMB4to/voRbYWESXyVtA=.ed25519","following":true},"signature":"IFefnN3fb4bEpWfFtMD2lyn30yQXtmSPVCB0JQQv05WkHVADzz675PiMAf5JLXosTUPfP02IvTeKHdQd1JGPAw==.sig.ed25519"}`
@@ -130,5 +135,74 @@ func TestFeedManagerAdapterAppendSignedMessageAcceptsPreviousRef(t *testing.T) {
 	}
 	if got, want := rxMsg.Metadata.Hash, "%Qj7wiyE+u7iZaUfMJP01u3Ra10c8SIGdHtKYUqaIg0A=.sha256"; got != want {
 		t.Fatalf("receive log metadata hash = %s, want %s", got, want)
+	}
+}
+
+func TestFeedManagerAdapterAppendReplicatedMessageStoresBendyRawBytes(t *testing.T) {
+	tempDir := t.TempDir()
+	store, err := feedlog.NewStore(feedlog.Config{
+		DBPath:   filepath.Join(tempDir, "flume.sqlite"),
+		RepoPath: tempDir,
+	})
+	if err != nil {
+		t.Fatalf("new store: %v", err)
+	}
+	defer store.Close()
+
+	kp, err := keys.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub := kp.Public()
+	authorBFE := bfe.EncodeFeed("bendybutt-v1", pub[:])
+	msg, err := bendy.CreateMessage(authorBFE, 1, nil, 123, map[string]interface{}{"type": "post", "text": "bendy"}, kp)
+	if err != nil {
+		t.Fatalf("create bendy message: %v", err)
+	}
+	raw, err := msg.Encode()
+	if err != nil {
+		t.Fatalf("encode bendy message: %v", err)
+	}
+	msgRef, err := msg.ToRefsMessage()
+	if err != nil {
+		t.Fatalf("message ref: %v", err)
+	}
+
+	adapter := NewFeedManagerAdapter(store)
+	author, seq, err := adapter.AppendReplicatedMessage(raw)
+	if err != nil {
+		t.Fatalf("append bendy message: %v", err)
+	}
+	if seq != 1 {
+		t.Fatalf("seq = %d, want 1", seq)
+	}
+	if author.Algo() != "bendybutt-v1" {
+		t.Fatalf("author algo = %s, want bendybutt-v1", author.Algo())
+	}
+
+	log, err := store.Logs().Get(author.String())
+	if err != nil {
+		t.Fatalf("get bendy log: %v", err)
+	}
+	stored, err := log.Get(1)
+	if err != nil {
+		t.Fatalf("get stored bendy message: %v", err)
+	}
+	if stored.FeedFormat != string(formats.FeedBendyButtV1) || stored.MessageFormat != string(formats.MessageBendyButtV1) {
+		t.Fatalf("stored formats = %s/%s", stored.FeedFormat, stored.MessageFormat)
+	}
+	if stored.Metadata.Hash != msgRef.String() {
+		t.Fatalf("stored hash = %s, want %s", stored.Metadata.Hash, msgRef.String())
+	}
+	if !bytes.Equal(stored.RawValue, raw) {
+		t.Fatalf("stored raw bytes mismatch")
+	}
+
+	wire, err := adapter.GetMessage(author, 1)
+	if err != nil {
+		t.Fatalf("get bendy wire message: %v", err)
+	}
+	if !bytes.Equal(wire, raw) {
+		t.Fatalf("GetMessage did not return raw bendy bytes")
 	}
 }
