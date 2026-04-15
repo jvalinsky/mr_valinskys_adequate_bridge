@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/feedlog"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/formats"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/message/legacy"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
@@ -55,6 +56,11 @@ func (h *HistoryStreamHandler) HandleCall(ctx context.Context, req *muxrpc.Reque
 	feedRef, err := refs.ParseFeedRef(args.ID)
 	if err != nil {
 		req.CloseWithError(fmt.Errorf("parse feed ref: %w", err))
+		return
+	}
+	feedFormat := formats.FeedFromRef(feedRef)
+	if feedFormat != formats.FeedEd25519 {
+		req.CloseWithError(formats.UnsupportedFeed(feedFormat, "createHistoryStream", "history"))
 		return
 	}
 
@@ -182,6 +188,9 @@ func (h *HistoryStreamHandler) writeMessage(ctx context.Context, sink *muxrpc.By
 	msg, err := log.Get(seq)
 	if err != nil {
 		return fmt.Errorf("failed to get message at seq %d: %w", seq, err)
+	}
+	if msg.MessageFormat != "" && msg.MessageFormat != string(formats.MessageSHA256) {
+		return formats.UnsupportedMessage(formats.MessageFormat(msg.MessageFormat), "createHistoryStream", "history")
 	}
 
 	payload := signedMessagePayload(msg)
