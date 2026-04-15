@@ -150,3 +150,23 @@ Detailed implementation plan at `docs/plans/2026-04-15-ssb-signature-compliance-
 
 - `/logs/8FA2460B-CE2E-48D5-9654-256AA1FCD6FA/gobot-2026-04-15_03-17.log`: Scuttlego logs with verification errors
 - Plan file: `docs/plans/2026-04-15-ssb-signature-compliance-fix.md`
+
+## Phase 1 Completion
+
+**Date**: 2026-04-15
+**Commit**: `b1ffa7c`
+
+All HMAC-related code removed:
+- `sign.go`: Removed hmacKey parameter from Sign()
+- `publisher.go`: Removed WithHMAC() option, hmacKey field
+- `manager.go`: Removed hmacKey field, updated NewManager() signature
+- `runtime.go`: Removed HMACKey from Config
+- `main.go`: Removed --hmac-key flag (3 occurrences)
+- `config_factory.go`: Removed HMACKey parsing
+- `app.go`: Removed HMACKey from AppConfig
+
+**Tests**: All 28 test packages pass after changes.
+
+## Phase 2: Debug Signature Failure
+
+Started background subagent to compare bridge signing vs go-ssb reference implementation.

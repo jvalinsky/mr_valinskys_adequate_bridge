@@ -58,7 +58,7 @@ func TestSignedMessageVerify(t *testing.T) {
 		Content:   map[string]interface{}{"type": "post", "text": "hello"},
 	}
 
-	_, sig, err := msg.Sign(aliceKeys, nil)
+	_, sig, err := msg.Sign(aliceKeys)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestVerifySignedMessageJSONWithMentionsArray(t *testing.T) {
 		},
 	}
 
-	_, sig, err := msg.Sign(aliceKeys, nil)
+	_, sig, err := msg.Sign(aliceKeys)
 	if err != nil {
 		t.Fatalf("sign message: %v", err)
 	}
