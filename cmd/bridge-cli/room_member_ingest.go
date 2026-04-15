@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -19,6 +20,7 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc"
 	muxhandlers "github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc/handlers"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/network"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/protocoltrace"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/sbot"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/secretstream"
@@ -26,6 +28,8 @@ import (
 )
 
 const roomMemberIngestRetry = 2 * time.Second
+
+var errRoomHistoryFrameNonClassic = errors.New("non-classic history frame")
 
 type roomMemberIngestAccountLister interface {
 	GetAllBridgedAccounts(ctx context.Context) ([]db.BridgedAccount, error)
@@ -254,6 +258,12 @@ func (m *roomMemberIngestManager) streamFeed(ctx context.Context, target refs.Fe
 	}
 	defer roomPeer.Conn.Close()
 	m.logger.Printf("event=room_member_ingest_room_connected feed=%s room=%s", target.String(), m.cfg.RoomRuntime.Addr())
+	protocoltrace.Emit(protocoltrace.Event{
+		Phase:  "room_member_ingest_room_connected",
+		Feed:   target.String(),
+		Method: "room.connect",
+		Target: target.String(),
+	})
 
 	roomRPC := roomPeer.RPC()
 	if roomRPC == nil {
@@ -268,6 +278,13 @@ func (m *roomMemberIngestManager) streamFeed(ctx context.Context, target refs.Fe
 		return fmt.Errorf("tunnel.connect %s: %w", target.String(), err)
 	}
 	m.logger.Printf("event=room_member_ingest_tunnel_connected feed=%s", target.String())
+	protocoltrace.Emit(protocoltrace.Event{
+		Phase:  "room_member_ingest_tunnel_connected",
+		Feed:   target.String(),
+		Method: "tunnel.connect",
+		Portal: m.cfg.RoomRuntime.RoomFeed().String(),
+		Target: target.String(),
+	})
 
 	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -276,12 +293,38 @@ func (m *roomMemberIngestManager) streamFeed(ctx context.Context, target refs.Fe
 	shsClient, err := secretstream.NewClient(streamConn, secretstream.NewAppKey(m.cfg.AppKey), m.cfg.Sbot.KeyPair.Private(), ed25519.PublicKey(target.PubKey()))
 	if err != nil {
 		_ = streamConn.Close()
+		protocoltrace.Emit(protocoltrace.Event{
+			Phase:   "room_member_ingest_inner_shs_failed",
+			Feed:    target.String(),
+			Method:  "tunnel.connect",
+			Portal:  m.cfg.RoomRuntime.RoomFeed().String(),
+			Target:  target.String(),
+			ErrKind: protocoltrace.ErrKind(err),
+		})
 		return fmt.Errorf("tunnel.connect inner SHS init: %w", err)
 	}
+	shsStart := time.Now()
 	if err := shsClient.Handshake(); err != nil {
 		_ = streamConn.Close()
+		protocoltrace.Emit(protocoltrace.Event{
+			Phase:    "room_member_ingest_inner_shs_failed",
+			Feed:     target.String(),
+			Method:   "tunnel.connect",
+			Portal:   m.cfg.RoomRuntime.RoomFeed().String(),
+			Target:   target.String(),
+			ErrKind:  protocoltrace.ErrKind(err),
+			Duration: time.Since(shsStart),
+		})
 		return fmt.Errorf("tunnel.connect inner SHS handshake: %w", err)
 	}
+	protocoltrace.Emit(protocoltrace.Event{
+		Phase:    "room_member_ingest_inner_shs_ok",
+		Feed:     target.String(),
+		Method:   "tunnel.connect",
+		Portal:   m.cfg.RoomRuntime.RoomFeed().String(),
+		Target:   target.String(),
+		Duration: time.Since(shsStart),
+	})
 
 	endpoint := muxrpc.NewServer(streamCtx, shsClient, nil, nil)
 	defer endpoint.Terminate()
@@ -309,6 +352,12 @@ func (m *roomMemberIngestManager) streamFeed(ctx context.Context, target refs.Fe
 		return fmt.Errorf("open createHistoryStream for %s: %w", target.String(), err)
 	}
 	m.logger.Printf("event=room_member_ingest_history_opened feed=%s start_seq=%d", target.String(), lastSeq)
+	protocoltrace.Emit(protocoltrace.Event{
+		Phase:  "room_member_ingest_history_opened",
+		Feed:   target.String(),
+		Method: "createHistoryStream",
+		Target: target.String(),
+	})
 
 	for historySource.Next(streamCtx) {
 		payload, err := historySource.Bytes()
@@ -316,6 +365,18 @@ func (m *roomMemberIngestManager) streamFeed(ctx context.Context, target refs.Fe
 			return fmt.Errorf("read createHistoryStream frame for %s: %w", target.String(), err)
 		}
 		if err := m.ingestHistoryFrame(target, payload); err != nil {
+			if errors.Is(err, errRoomHistoryFrameNonClassic) {
+				m.logger.Printf("event=room_member_ingest_history_skipped feed=%s reason=non_classic_frame bytes=%d", target.String(), len(payload))
+				protocoltrace.Emit(protocoltrace.Event{
+					Phase:   "room_member_ingest_history_skipped",
+					Feed:    target.String(),
+					Method:  "createHistoryStream",
+					Target:  target.String(),
+					Bytes:   len(payload),
+					ErrKind: "decode",
+				})
+				continue
+			}
 			return fmt.Errorf("ingest history frame for %s: %w", target.String(), err)
 		}
 	}
@@ -323,6 +384,12 @@ func (m *roomMemberIngestManager) streamFeed(ctx context.Context, target refs.Fe
 		return fmt.Errorf("history stream ended for %s: %w", target.String(), err)
 	}
 	m.logger.Printf("event=room_member_ingest_history_closed feed=%s", target.String())
+	protocoltrace.Emit(protocoltrace.Event{
+		Phase:  "room_member_ingest_history_closed",
+		Feed:   target.String(),
+		Method: "createHistoryStream",
+		Target: target.String(),
+	})
 	return nil
 }
 
@@ -342,12 +409,12 @@ func (m *roomMemberIngestManager) lastKnownSeq(author string) (int64, error) {
 }
 
 func (m *roomMemberIngestManager) ingestHistoryFrame(target refs.FeedRef, payload []byte) error {
-	var env roomHistoryEnvelope
-	if err := json.Unmarshal(payload, &env); err != nil {
-		return fmt.Errorf("decode history envelope: %w", err)
+	env, err := decodeRoomHistoryEnvelope(payload)
+	if err != nil {
+		return err
 	}
 
-	sig, err := legacy.NewSignatureFromBase64([]byte(strings.TrimSpace(env.Value.Signature)))
+	sig, err := legacy.ParseSignatureString(strings.TrimSpace(env.Value.Signature))
 	if err != nil {
 		return fmt.Errorf("parse signature: %w", err)
 	}
@@ -412,7 +479,42 @@ func (m *roomMemberIngestManager) ingestHistoryFrame(target refs.FeedRef, payloa
 		m.cfg.Sbot.NotifyFeedSeq(parsedFeed, env.Value.Sequence)
 	}
 	m.logger.Printf("event=room_member_ingest_appended feed=%s seq=%d target=%s", author, env.Value.Sequence, target.String())
+	protocoltrace.Emit(protocoltrace.Event{
+		Phase:  "room_member_ingest_history_appended",
+		Feed:   author,
+		Method: "createHistoryStream",
+		Target: target.String(),
+	})
 	return nil
+}
+
+func decodeRoomHistoryEnvelope(payload []byte) (roomHistoryEnvelope, error) {
+	var env roomHistoryEnvelope
+	if err := json.Unmarshal(payload, &env); err != nil {
+		return roomHistoryEnvelope{}, fmt.Errorf("decode history envelope: %w", err)
+	}
+	if roomHistoryValueLooksClassic(env.Value) || strings.TrimSpace(env.Key) != "" {
+		return env, nil
+	}
+
+	var direct roomHistorySignedValue
+	if err := json.Unmarshal(payload, &direct); err != nil {
+		return roomHistoryEnvelope{}, fmt.Errorf("decode direct history message: %w", err)
+	}
+	if roomHistoryValueLooksClassic(direct) {
+		return roomHistoryEnvelope{Value: direct}, nil
+	}
+	return roomHistoryEnvelope{}, errRoomHistoryFrameNonClassic
+}
+
+func roomHistoryValueLooksClassic(value roomHistorySignedValue) bool {
+	return strings.TrimSpace(value.Author) != "" ||
+		strings.TrimSpace(value.Signature) != "" ||
+		value.Sequence != 0 ||
+		value.Timestamp != 0 ||
+		strings.TrimSpace(value.Hash) != "" ||
+		value.Previous != nil ||
+		len(bytes.TrimSpace(value.Content)) > 0
 }
 
 func roomHistoryRawSignedMessage(env roomHistoryEnvelope, sig legacy.Signature) ([]byte, error) {

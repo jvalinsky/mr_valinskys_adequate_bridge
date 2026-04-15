@@ -62,6 +62,7 @@ func buildAppConfigFromCLI(c *cli.Context, mode appMode) (AppConfig, error) {
 		cfg.ReverseSyncBatchSize = c.Int("reverse-sync-batch-size")
 		cfg.HTTPTimeout = c.Duration("http-timeout")
 		cfg.SSBDialTimeout = c.Duration("ssb-dial-timeout")
+		cfg.SSBProtocolTrace = c.Bool("ssb-protocol-trace")
 	case appModeBackfill:
 		cfg.XRPCReadHost = c.String("xrpc-host")
 		cfg.HTTPTimeout = c.Duration("http-timeout")

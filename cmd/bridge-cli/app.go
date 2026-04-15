@@ -21,6 +21,7 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/metrics"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/publishqueue"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/room"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/protocoltrace"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomdb"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssbruntime"
@@ -79,6 +80,7 @@ type AppConfig struct {
 	ReverseSyncBatchSize    int
 	HTTPTimeout             time.Duration
 	SSBDialTimeout          time.Duration
+	SSBProtocolTrace        bool
 }
 
 func (a *BridgeApp) MCPServer() *server.MCPServer {
@@ -93,6 +95,8 @@ func NewBridgeApp(cfg AppConfig, logger *log.Logger) *BridgeApp {
 }
 
 func (a *BridgeApp) Init(ctx context.Context) error {
+	protocoltrace.Configure(a.cfg.SSBProtocolTrace, os.Getenv("MVAB_TEST_RUN_ID"), a.logger)
+
 	var err error
 	a.db, err = db.Open(a.cfg.DBPath)
 	if err != nil {
@@ -549,6 +553,8 @@ func (a *BridgeApp) Stop() error {
 			errs = append(errs, fmt.Errorf("close db: %w", err))
 		}
 	}
+
+	protocoltrace.Configure(false, "", nil)
 
 	return errors.Join(errs...)
 }

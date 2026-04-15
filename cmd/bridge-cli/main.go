@@ -252,16 +252,20 @@ func main() {
 						Value: 100,
 						Usage: "maximum receive-log entries to inspect per reverse-sync batch",
 					},
-				&cli.DurationFlag{
-					Name:  "http-timeout",
-					Value: 30 * time.Second,
-					Usage: "HTTP client timeout for ATProto XRPC, blob, and backfill operations",
-				},
-				&cli.DurationFlag{
-					Name:  "ssb-dial-timeout",
-					Value: 10 * time.Second,
-					Usage: "TCP dial timeout for SSB peer connections",
-				},
+					&cli.DurationFlag{
+						Name:  "http-timeout",
+						Value: 30 * time.Second,
+						Usage: "HTTP client timeout for ATProto XRPC, blob, and backfill operations",
+					},
+					&cli.DurationFlag{
+						Name:  "ssb-dial-timeout",
+						Value: 10 * time.Second,
+						Usage: "TCP dial timeout for SSB peer connections",
+					},
+					&cli.BoolFlag{
+						Name:  "ssb-protocol-trace",
+						Usage: "enable metadata-only SSB protocol trace logging for room/tunnel/muxrpc debugging",
+					},
 				},
 				Action: runStart,
 			},

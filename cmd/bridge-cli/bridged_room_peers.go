@@ -18,6 +18,7 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc"
 	legacyhandlers "github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc/handlers"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/network"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/protocoltrace"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomdb"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/secretstream"
@@ -491,6 +492,15 @@ func (h *bridgedPeerTunnelConnectHandler) HandleCall(ctx context.Context, req *m
 		req.CloseWithError(fmt.Errorf("tunnel.connect: target mismatch want=%s got=%s", h.feed.String(), args.Target.String()))
 		return
 	}
+	protocoltrace.Emit(protocoltrace.Event{
+		Phase:  "bridged_peer_tunnel_connect_in",
+		Feed:   h.feed.String(),
+		Method: "tunnel.connect",
+		Req:    req.ID(),
+		Origin: args.Origin.String(),
+		Portal: args.Portal.String(),
+		Target: h.feed.String(),
+	})
 
 	source := req.Source()
 	if source == nil {
@@ -509,13 +519,45 @@ func (h *bridgedPeerTunnelConnectHandler) HandleCall(ctx context.Context, req *m
 
 	shs, err := secretstream.NewServer(streamConn, h.appKey, h.kp.Private())
 	if err != nil {
+		protocoltrace.Emit(protocoltrace.Event{
+			Phase:   "bridged_peer_inner_shs_failed",
+			Feed:    h.feed.String(),
+			Method:  "tunnel.connect",
+			Req:     req.ID(),
+			Origin:  args.Origin.String(),
+			Portal:  args.Portal.String(),
+			Target:  h.feed.String(),
+			ErrKind: protocoltrace.ErrKind(err),
+		})
 		req.CloseWithError(fmt.Errorf("tunnel.connect: inner SHS init: %w", err))
 		return
 	}
+	shsStart := time.Now()
 	if err := shs.Handshake(); err != nil {
+		protocoltrace.Emit(protocoltrace.Event{
+			Phase:    "bridged_peer_inner_shs_failed",
+			Feed:     h.feed.String(),
+			Method:   "tunnel.connect",
+			Req:      req.ID(),
+			Origin:   args.Origin.String(),
+			Portal:   args.Portal.String(),
+			Target:   h.feed.String(),
+			ErrKind:  protocoltrace.ErrKind(err),
+			Duration: time.Since(shsStart),
+		})
 		req.CloseWithError(fmt.Errorf("tunnel.connect: inner SHS handshake: %w", err))
 		return
 	}
+	protocoltrace.Emit(protocoltrace.Event{
+		Phase:    "bridged_peer_inner_shs_ok",
+		Feed:     h.feed.String(),
+		Method:   "tunnel.connect",
+		Req:      req.ID(),
+		Origin:   args.Origin.String(),
+		Portal:   args.Portal.String(),
+		Target:   h.feed.String(),
+		Duration: time.Since(shsStart),
+	})
 
 	innerRPC := muxrpc.NewServer(innerCtx, shs, h.inner, nil)
 	<-innerRPC.Wait()
