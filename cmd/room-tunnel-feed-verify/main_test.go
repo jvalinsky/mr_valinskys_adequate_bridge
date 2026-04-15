@@ -6,10 +6,12 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 )
 
 // ---------- splitCSV tests ----------
@@ -157,6 +159,96 @@ func TestProbeConfigValidation(t *testing.T) {
 	valid := probeConfig{RoomAddr: "x", RoomFeed: "x", KeyFile: "x", TargetFeed: "x", Timeout: time.Second}
 	if err := valid.validate(); err != nil {
 		t.Fatalf("expected valid config: %v", err)
+	}
+}
+
+func TestHistoryConfigValidation(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  historyConfig
+	}{
+		{"missing room-addr", historyConfig{RoomFeed: "x", KeyFile: "x", TargetFeed: "x", Timeout: time.Second, MinCount: 1}},
+		{"missing room-feed", historyConfig{RoomAddr: "x", KeyFile: "x", TargetFeed: "x", Timeout: time.Second, MinCount: 1}},
+		{"missing key-file", historyConfig{RoomAddr: "x", RoomFeed: "x", TargetFeed: "x", Timeout: time.Second, MinCount: 1}},
+		{"missing target-feed", historyConfig{RoomAddr: "x", RoomFeed: "x", KeyFile: "x", Timeout: time.Second, MinCount: 1}},
+		{"bad timeout", historyConfig{RoomAddr: "x", RoomFeed: "x", KeyFile: "x", TargetFeed: "x", Timeout: 0, MinCount: 1}},
+		{"bad min-count", historyConfig{RoomAddr: "x", RoomFeed: "x", KeyFile: "x", TargetFeed: "x", Timeout: time.Second, MinCount: 0}},
+		{"bad limit", historyConfig{RoomAddr: "x", RoomFeed: "x", KeyFile: "x", TargetFeed: "x", Timeout: time.Second, MinCount: 1, Limit: -1}},
+		{"bad sequence", historyConfig{RoomAddr: "x", RoomFeed: "x", KeyFile: "x", TargetFeed: "x", Timeout: time.Second, MinCount: 1, Sequence: -1}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.cfg.validate(); err == nil {
+				t.Fatal("expected validation error")
+			}
+		})
+	}
+	valid := historyConfig{RoomAddr: "x", RoomFeed: "x", KeyFile: "x", TargetFeed: "x", Timeout: time.Second, MinCount: 1}
+	if err := valid.validate(); err != nil {
+		t.Fatalf("expected valid config: %v", err)
+	}
+}
+
+func TestValidateClassicHistoryFrame(t *testing.T) {
+	author := refs.MustNewFeedRef([]byte("abcdefghijklmnopqrstuvwxyz123456"), refs.RefAlgoFeedSSB1).String()
+	payload := []byte(strings.ReplaceAll(`{
+		"key":"%msg.sha256",
+		"value":{
+			"previous":null,
+			"author":"AUTHOR",
+			"sequence":1,
+			"timestamp":12345,
+			"hash":"sha256",
+			"content":{"type":"post","text":"hello"},
+			"signature":"abc.sig.ed25519"
+		},
+		"timestamp":12346
+	}`, "AUTHOR", author))
+	frame, err := validateClassicHistoryFrame(payload, author)
+	if err != nil {
+		t.Fatalf("validate wrapped frame: %v", err)
+	}
+	if frame.Key != "%msg.sha256" || frame.Author != author || frame.Sequence != 1 || frame.FeedFormat != "ed25519" || frame.MessageFormat != "sha256" {
+		t.Fatalf("unexpected frame summary: %+v", frame)
+	}
+
+	direct := []byte(strings.ReplaceAll(`{"previous":null,"author":"AUTHOR","sequence":2,"timestamp":12346,"hash":"sha256","content":{"type":"post"},"signature":"def.sig.ed25519"}`, "AUTHOR", author))
+	frame, err = validateClassicHistoryFrame(direct, author)
+	if err != nil {
+		t.Fatalf("validate direct frame: %v", err)
+	}
+	if frame.Key != "" || frame.Sequence != 2 {
+		t.Fatalf("unexpected direct frame summary: %+v", frame)
+	}
+}
+
+func TestValidateClassicHistoryFrameRejectsInvalid(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload string
+	}{
+		{"missing author", `{"sequence":1,"timestamp":1,"hash":"sha256","content":{},"signature":"x.sig.ed25519"}`},
+		{"bad sequence", `{"author":"@a.ed25519","sequence":0,"timestamp":1,"hash":"sha256","content":{},"signature":"x.sig.ed25519"}`},
+		{"missing content", `{"author":"@a.ed25519","sequence":1,"timestamp":1,"hash":"sha256","signature":"x.sig.ed25519"}`},
+		{"bad signature", `{"author":"@a.ed25519","sequence":1,"timestamp":1,"hash":"sha256","content":{},"signature":"x"}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := validateClassicHistoryFrame([]byte(tc.payload), ""); err == nil {
+				t.Fatal("expected validation error")
+			}
+		})
+	}
+	if _, err := validateClassicHistoryFrame([]byte(`{"author":"@a.ed25519","sequence":1,"timestamp":1,"hash":"sha256","content":{},"signature":"x.sig.ed25519"}`), "@other.ed25519"); err == nil {
+		t.Fatal("expected author mismatch")
+	}
+}
+
+func TestValidateClassicHistoryFrameRejectsNonClassicFeed(t *testing.T) {
+	author := refs.MustNewFeedRef([]byte("abcdefghijklmnopqrstuvwxyz123456"), refs.RefAlgoFeedBamboo).String()
+	payload := []byte(strings.ReplaceAll(`{"previous":null,"author":"AUTHOR","sequence":1,"timestamp":1,"hash":"sha256","content":{},"signature":"x.sig.ed25519"}`, "AUTHOR", author))
+	if _, err := validateClassicHistoryFrame(payload, ""); err == nil || !strings.Contains(err.Error(), "unsupported_feed_format") {
+		t.Fatalf("expected structured unsupported format error, got %v", err)
 	}
 }
 

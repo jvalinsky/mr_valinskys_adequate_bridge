@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/formats"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/keys"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
@@ -26,7 +28,7 @@ const defaultSHSCap = "1KHLiKZvAvjbY1ziZEHMXawbCEIM6qwjCDm3VYRan/s="
 
 func main() {
 	if len(os.Args) < 2 {
-		fatalf("usage: room-tunnel-feed-verify <serve|read|probe> [flags]")
+		fatalf("usage: room-tunnel-feed-verify <serve|read|probe|history> [flags]")
 	}
 
 	switch strings.ToLower(strings.TrimSpace(os.Args[1])) {
@@ -42,8 +44,12 @@ func main() {
 		if err := runProbe(os.Args[2:]); err != nil {
 			fatalf("probe: %v", err)
 		}
+	case "history":
+		if err := runHistory(os.Args[2:]); err != nil {
+			fatalf("history: %v", err)
+		}
 	default:
-		fatalf("unknown mode %q (expected serve, read, or probe)", os.Args[1])
+		fatalf("unknown mode %q (expected serve, read, probe, or history)", os.Args[1])
 	}
 }
 
@@ -308,6 +314,141 @@ func runProbe(args []string) error {
 	return nil
 }
 
+func runHistory(args []string) error {
+	fs := flag.NewFlagSet("history", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+
+	var cfg historyConfig
+	fs.StringVar(&cfg.RoomAddr, "room-addr", "", "room muxrpc tcp address (host:port)")
+	fs.StringVar(&cfg.RoomFeed, "room-feed", "", "room feed ref (@...ed25519)")
+	fs.StringVar(&cfg.KeyFile, "key-file", "", "path to peer secret key file")
+	fs.StringVar(&cfg.TargetFeed, "target-feed", "", "target announced peer feed ref")
+	fs.StringVar(&cfg.ExpectAuthor, "expect-author", "", "expected author/feed ref in history frames (defaults to --target-feed)")
+	fs.StringVar(&cfg.SHSCap, "shs-cap", defaultSHSCap, "secret-handshake app key (base64)")
+	fs.DurationVar(&cfg.Timeout, "timeout", 20*time.Second, "history probe timeout")
+	fs.IntVar(&cfg.MinCount, "min-count", 1, "minimum valid history frames expected")
+	fs.IntVar(&cfg.Limit, "limit", 10, "createHistoryStream limit")
+	fs.Int64Var(&cfg.Sequence, "sequence", 0, "createHistoryStream starting sequence")
+	fs.BoolVar(&cfg.Live, "live", false, "keep createHistoryStream live after backlog")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := cfg.validate(); err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
+	defer cancel()
+
+	keyPair, err := ensureKeyPair(cfg.KeyFile)
+	if err != nil {
+		return fmt.Errorf("ensure keypair: %w", err)
+	}
+	roomFeed, err := refs.ParseFeedRef(cfg.RoomFeed)
+	if err != nil {
+		return fmt.Errorf("parse --room-feed: %v", err)
+	}
+	targetFeed, err := refs.ParseFeedRef(cfg.TargetFeed)
+	if err != nil {
+		return fmt.Errorf("parse --target-feed: %v", err)
+	}
+	expectAuthor := strings.TrimSpace(cfg.ExpectAuthor)
+	if expectAuthor == "" {
+		expectAuthor = targetFeed.String()
+	}
+
+	handler := &whoamiHandler{keyPair: keyPair}
+	conn, err := openRoomEndpoint(ctx, keyPair, *roomFeed, cfg.RoomAddr, cfg.SHSCap, handler)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	if _, err := verifyRoomConn(ctx, conn.Endpoint); err != nil {
+		return err
+	}
+
+	source, sink, err := conn.Endpoint.Duplex(ctx, muxrpc.TypeBinary, muxrpc.Method{"tunnel", "connect"}, tunnelConnectArg{
+		Portal: *roomFeed,
+		Target: *targetFeed,
+	})
+	if err != nil {
+		return fmt.Errorf("history tunnel.connect duplex: %w", err)
+	}
+	defer source.Cancel(nil)
+	defer sink.Close()
+
+	appKey, err := parseAppKey(cfg.SHSCap)
+	if err != nil {
+		return fmt.Errorf("parse app key: %w", err)
+	}
+
+	streamConn := muxrpc.NewByteStreamConn(ctx, source, sink, conn.netConn.RemoteAddr())
+	shsClient, err := secretstream.NewClient(streamConn, appKey, keyPair.Private(), targetFeed.PubKey())
+	if err != nil {
+		streamConn.Close()
+		return fmt.Errorf("history inner SHS init: %w", err)
+	}
+	if err := shsClient.Handshake(); err != nil {
+		streamConn.Close()
+		return fmt.Errorf("history inner SHS handshake: %w", err)
+	}
+	defer shsClient.Close()
+
+	endpoint := muxrpc.NewServer(ctx, shsClient, nil, nil)
+	defer endpoint.Terminate()
+
+	old := true
+	keys := true
+	historySource, err := endpoint.Source(ctx, muxrpc.TypeJSON, muxrpc.Method{"createHistoryStream"}, map[string]interface{}{
+		"id":       targetFeed.String(),
+		"sequence": cfg.Sequence,
+		"old":      old,
+		"keys":     keys,
+		"live":     cfg.Live,
+		"limit":    cfg.Limit,
+	})
+	if err != nil {
+		return fmt.Errorf("history createHistoryStream: %w", err)
+	}
+	defer historySource.Cancel(nil)
+
+	summary := historySummary{
+		Target:        targetFeed.String(),
+		ExpectAuthor:  expectAuthor,
+		MinCount:      cfg.MinCount,
+		FeedFormat:    string(formats.FeedFromRef(targetFeed)),
+		MessageFormat: string(formats.MessageFromFeed(formats.FeedFromRef(targetFeed))),
+		HistoryFormat: "classic",
+		Transport:     "room_tunnel",
+	}
+	for historySource.Next(ctx) {
+		payload, err := historySource.Bytes()
+		if err != nil {
+			return fmt.Errorf("history read frame: %w", err)
+		}
+		frame, err := validateClassicHistoryFrame(payload, expectAuthor)
+		if err != nil {
+			return fmt.Errorf("history frame %d invalid: %w", len(summary.Frames)+1, err)
+		}
+		summary.Frames = append(summary.Frames, frame)
+		if len(summary.Frames) >= cfg.MinCount {
+			break
+		}
+	}
+	if err := historySource.Err(); err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, context.Canceled) && len(summary.Frames) < cfg.MinCount {
+		return fmt.Errorf("history source: %w", err)
+	}
+	summary.Count = len(summary.Frames)
+	if summary.Count < cfg.MinCount {
+		return fmt.Errorf("history returned %d valid frame(s), want at least %d", summary.Count, cfg.MinCount)
+	}
+
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(summary)
+}
+
 type serveConfig struct {
 	RoomAddr     string
 	RoomFeed     string
@@ -364,6 +505,20 @@ type probeConfig struct {
 	Timeout    time.Duration
 }
 
+type historyConfig struct {
+	RoomAddr     string
+	RoomFeed     string
+	KeyFile      string
+	TargetFeed   string
+	ExpectAuthor string
+	SHSCap       string
+	Timeout      time.Duration
+	MinCount     int
+	Limit        int
+	Sequence     int64
+	Live         bool
+}
+
 type tunnelConnectArg struct {
 	Portal refs.FeedRef `json:"portal"`
 	Target refs.FeedRef `json:"target"`
@@ -408,6 +563,131 @@ func (c probeConfig) validate() error {
 		return fmt.Errorf("--timeout must be > 0")
 	}
 	return nil
+}
+
+func (c historyConfig) validate() error {
+	if strings.TrimSpace(c.RoomAddr) == "" {
+		return fmt.Errorf("--room-addr is required")
+	}
+	if strings.TrimSpace(c.RoomFeed) == "" {
+		return fmt.Errorf("--room-feed is required")
+	}
+	if strings.TrimSpace(c.KeyFile) == "" {
+		return fmt.Errorf("--key-file is required")
+	}
+	if strings.TrimSpace(c.TargetFeed) == "" {
+		return fmt.Errorf("--target-feed is required")
+	}
+	if c.Timeout <= 0 {
+		return fmt.Errorf("--timeout must be > 0")
+	}
+	if c.MinCount <= 0 {
+		return fmt.Errorf("--min-count must be > 0")
+	}
+	if c.Limit < 0 {
+		return fmt.Errorf("--limit must be >= 0")
+	}
+	if c.Sequence < 0 {
+		return fmt.Errorf("--sequence must be >= 0")
+	}
+	return nil
+}
+
+type historySummary struct {
+	Target        string                `json:"target"`
+	ExpectAuthor  string                `json:"expect_author"`
+	FeedFormat    string                `json:"feed_format"`
+	MessageFormat string                `json:"message_format"`
+	HistoryFormat string                `json:"history_format"`
+	Transport     string                `json:"transport"`
+	MinCount      int                   `json:"min_count"`
+	Count         int                   `json:"count"`
+	Frames        []historyFrameSummary `json:"frames"`
+}
+
+type historyFrameSummary struct {
+	Key           string `json:"key,omitempty"`
+	Author        string `json:"author"`
+	FeedFormat    string `json:"feed_format"`
+	Sequence      int64  `json:"sequence"`
+	Timestamp     int64  `json:"timestamp"`
+	Hash          string `json:"hash"`
+	MessageFormat string `json:"message_format"`
+	Signature     string `json:"signature"`
+}
+
+func validateClassicHistoryFrame(payload []byte, expectAuthor string) (historyFrameSummary, error) {
+	var wrapped struct {
+		Key   string          `json:"key"`
+		Value json.RawMessage `json:"value"`
+	}
+	valuePayload := bytes.TrimSpace(payload)
+	key := ""
+	if err := json.Unmarshal(payload, &wrapped); err == nil && len(wrapped.Value) > 0 {
+		valuePayload = bytes.TrimSpace(wrapped.Value)
+		key = strings.TrimSpace(wrapped.Key)
+	}
+
+	var value struct {
+		Previous  interface{}     `json:"previous"`
+		Author    string          `json:"author"`
+		Sequence  int64           `json:"sequence"`
+		Timestamp int64           `json:"timestamp"`
+		Hash      string          `json:"hash"`
+		Content   json.RawMessage `json:"content"`
+		Signature string          `json:"signature"`
+	}
+	if err := json.Unmarshal(valuePayload, &value); err != nil {
+		return historyFrameSummary{}, fmt.Errorf("decode signed value: %w", err)
+	}
+	value.Author = strings.TrimSpace(value.Author)
+	value.Hash = strings.TrimSpace(value.Hash)
+	value.Signature = strings.TrimSpace(value.Signature)
+	if value.Author == "" {
+		return historyFrameSummary{}, fmt.Errorf("missing author")
+	}
+	feedFormat := formats.FeedFromString(value.Author)
+	if feedFormat == "" {
+		return historyFrameSummary{}, fmt.Errorf("unsupported or invalid author feed ref")
+	}
+	messageFormat := formats.MessageFromString(key)
+	if messageFormat == "" {
+		messageFormat = formats.MessageSHA256
+	}
+	if feedFormat != formats.FeedEd25519 {
+		return historyFrameSummary{}, formats.UnsupportedFeed(feedFormat, "createHistoryStream", "history")
+	}
+	if messageFormat != formats.MessageSHA256 {
+		return historyFrameSummary{}, formats.UnsupportedMessage(messageFormat, "createHistoryStream", "history")
+	}
+	if expectAuthor = strings.TrimSpace(expectAuthor); expectAuthor != "" && value.Author != expectAuthor {
+		return historyFrameSummary{}, fmt.Errorf("author mismatch got=%s want=%s", value.Author, expectAuthor)
+	}
+	if value.Sequence <= 0 {
+		return historyFrameSummary{}, fmt.Errorf("invalid sequence %d", value.Sequence)
+	}
+	if value.Timestamp == 0 {
+		return historyFrameSummary{}, fmt.Errorf("missing timestamp")
+	}
+	if value.Hash == "" {
+		return historyFrameSummary{}, fmt.Errorf("missing hash")
+	}
+	if len(bytes.TrimSpace(value.Content)) == 0 {
+		return historyFrameSummary{}, fmt.Errorf("missing content")
+	}
+	if !strings.HasSuffix(value.Signature, ".sig.ed25519") {
+		return historyFrameSummary{}, fmt.Errorf("signature is not .sig.ed25519")
+	}
+	return historyFrameSummary{
+		Key:           key,
+		Author:        value.Author,
+		FeedFormat:    string(feedFormat),
+		Sequence:      value.Sequence,
+		Timestamp:     value.Timestamp,
+		Hash:          value.Hash,
+		MessageFormat: string(messageFormat),
+		Signature:     value.Signature,
+	}, nil
 }
 
 type roomConn struct {
@@ -828,4 +1108,3 @@ func parseAppKey(appKeyStr string) (secretstream.AppKey, error) {
 	copy(appKey[:], appKeyBytes)
 	return appKey, nil
 }
-
