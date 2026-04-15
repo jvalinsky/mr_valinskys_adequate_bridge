@@ -2,6 +2,7 @@ package templates
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 	"time"
 )
@@ -123,7 +124,7 @@ func TestMustPageTemplatePanic(t *testing.T) {
 }
 
 func TestMustPageTemplateFuncs(t *testing.T) {
-	tmpl := mustPageTemplate("test", `{{define "content"}}{{ fmtTime .Time }} {{ navClass .Active .Tab }} {{ navCurrent .Active .Tab }} {{ statusToneClass .Tone1 }} {{ statusToneClass .Tone2 }} {{ statusToneClass .Tone3 }} {{ statusToneClass .Tone4 }} {{ stateClass .State1 }} {{ stateClass .State2 }} {{ stateClass .State3 }} {{ stateClass .State4 }} {{ stateClass .State5 }}{{end}}`)
+	tmpl := mustPageTemplate("test", `{{define "content"}}{{ fmtTime .Time }} {{ navClass .Active .Tab }} {{ navCurrent .Active .Tab }} {{ statusToneClass .Tone1 }} {{ statusToneClass .Tone2 }} {{ statusToneClass .Tone3 }} {{ statusToneClass .Tone4 }} {{ statusToneClass .Tone5 }} {{ statusToneClass .Tone6 }} {{ statusToneClass .Tone7 }} {{ statusToneClass .Tone8 }} {{ stateClass .State1 }} {{ stateClass .State2 }} {{ stateClass .State3 }} {{ stateClass .State4 }} {{ stateClass .State5 }}{{end}}`)
 
 	var buf bytes.Buffer
 	data := struct {
@@ -135,6 +136,10 @@ func TestMustPageTemplateFuncs(t *testing.T) {
 		Tone2  string
 		Tone3  string
 		Tone4  string
+		Tone5  string
+		Tone6  string
+		Tone7  string
+		Tone8  string
 		State1 string
 		State2 string
 		State3 string
@@ -148,6 +153,10 @@ func TestMustPageTemplateFuncs(t *testing.T) {
 		Tone2:  "warning",
 		Tone3:  "danger",
 		Tone4:  "other",
+		Tone5:  "ingress",
+		Tone6:  "egress",
+		Tone7:  "bridge",
+		Tone8:  "muted",
 		State1: "published",
 		State2: "failed",
 		State3: "deferred",
@@ -158,6 +167,26 @@ func TestMustPageTemplateFuncs(t *testing.T) {
 	err := tmpl.Execute(&buf, data)
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
+	}
+	got := buf.String()
+	for _, expected := range []string{
+		"tone-success",
+		"tone-warning",
+		"tone-danger",
+		"tone-neutral",
+		"tone-ingress",
+		"tone-egress",
+		"tone-bridge",
+		"tone-muted",
+		"state-published",
+		"state-failed",
+		"state-deferred",
+		"state-deleted",
+		"state-pending",
+	} {
+		if !strings.Contains(got, expected) {
+			t.Fatalf("expected output to contain %q; got: %q", expected, got)
+		}
 	}
 
 	// Test zero time and different active tab
@@ -171,6 +200,10 @@ func TestMustPageTemplateFuncs(t *testing.T) {
 		Tone2  string
 		Tone3  string
 		Tone4  string
+		Tone5  string
+		Tone6  string
+		Tone7  string
+		Tone8  string
 		State1 string
 		State2 string
 		State3 string
@@ -183,5 +216,30 @@ func TestMustPageTemplateFuncs(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("Execute zero time failed: %v", err)
+	}
+}
+
+func TestPageLayoutIncludesProtocolColorTokens(t *testing.T) {
+	for _, token := range []string{
+		"--proto-at:",
+		"--proto-at-deep:",
+		"--proto-ssb:",
+		"--proto-ssb-deep:",
+		"--proto-bridge:",
+		"--status-ingress:",
+		"--status-egress:",
+		"--status-bridge:",
+		"--status-success:",
+		"--status-failure:",
+		".status-strip.tone-ingress",
+		".status-strip.tone-egress",
+		".status-strip.tone-bridge",
+		".pill.state-ingress",
+		".pill.state-egress",
+		".pill.state-bridge",
+	} {
+		if !strings.Contains(pageLayout, token) {
+			t.Fatalf("pageLayout missing expected token/class %q", token)
+		}
 	}
 }

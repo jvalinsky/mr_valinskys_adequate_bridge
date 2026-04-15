@@ -8,24 +8,47 @@ import (
 const cssStyle = `
 :root {
     color-scheme: light;
-    --bg: #f4f1ea;
-    --bg-subtle: #ebe6dd;
-    --panel: #fffdf9;
-    --panel-solid: #ffffff;
-    --ink: #1a2622;
-    --ink-strong: #0f1814;
-    --muted: #4a5753;
-    --line: #d7d2c6;
-    --line-strong: #c4bdb0;
-    --brand: #1a6b5a;
-    --brand-strong: #124a3e;
-    --brand-soft: #2a8f7a;
-    --warn: #8a5d12;
-    --warn-bg: #fff8e6;
-    --danger: #b33030;
-    --danger-bg: #fdeaea;
-    --ok: #1a6b35;
-    --ok-bg: #e8f6ec;
+    --proto-at: oklch(0.67 0.13 246);
+    --proto-at-deep: oklch(0.55 0.12 248);
+    --proto-ssb: oklch(0.74 0.13 70);
+    --proto-ssb-deep: oklch(0.61 0.12 60);
+    --proto-bridge: oklch(0.69 0.11 184);
+    --proto-bridge-deep: oklch(0.56 0.10 186);
+    --status-verified: oklch(0.71 0.13 152);
+    --status-error: oklch(0.63 0.17 25);
+
+    --bg-canvas: oklch(0.86 0.06 193);
+    --bg-surface: oklch(0.97 0.01 220);
+    --bg-surface-raised: oklch(0.93 0.02 220);
+    --fg-primary: oklch(0.27 0.02 230);
+    --fg-muted: oklch(0.50 0.03 220);
+    --stroke: oklch(0.64 0.03 215);
+
+    --status-ingress: var(--proto-at);
+    --status-egress: var(--proto-ssb);
+    --status-bridge: var(--proto-bridge);
+    --status-warn: var(--proto-ssb-deep);
+    --status-success: var(--status-verified);
+    --status-failure: var(--status-error);
+
+    --bg: var(--bg-canvas);
+    --bg-subtle: color-mix(in oklch, var(--bg-surface) 74%, var(--bg-canvas));
+    --panel: var(--bg-surface);
+    --panel-solid: var(--bg-surface-raised);
+    --ink: var(--fg-primary);
+    --ink-strong: color-mix(in oklch, var(--fg-primary) 86%, black);
+    --muted: var(--fg-muted);
+    --line: var(--stroke);
+    --line-strong: color-mix(in oklch, var(--stroke) 84%, var(--fg-primary));
+    --brand: var(--status-bridge);
+    --brand-strong: var(--proto-bridge-deep);
+    --brand-soft: color-mix(in oklch, var(--status-bridge) 70%, var(--status-ingress));
+    --warn: var(--status-warn);
+    --warn-bg: color-mix(in oklch, var(--status-warn) 14%, var(--panel));
+    --danger: var(--status-failure);
+    --danger-bg: color-mix(in oklch, var(--status-failure) 12%, var(--panel));
+    --ok: var(--status-success);
+    --ok-bg: color-mix(in oklch, var(--status-success) 14%, var(--panel));
     --shadow: 0 10px 24px rgba(28, 41, 36, 0.08);
     --shadow-hover: 0 14px 32px rgba(28, 41, 36, 0.12);
     --radius: 14px;
@@ -36,24 +59,12 @@ const cssStyle = `
 @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
         color-scheme: dark;
-        --bg: #121a17;
-        --bg-subtle: #1a2521;
-        --panel: #1e2925;
-        --panel-solid: #232d28;
-        --ink: #e4ebe8;
-        --ink-strong: #f0f6f3;
-        --muted: #8a9b94;
-        --line: #2d3a34;
-        --line-strong: #3d4f46;
-        --brand: #3db892;
-        --brand-strong: #5ccda8;
-        --brand-soft: #2a9d7a;
-        --warn: #e8a935;
-        --warn-bg: #2a2215;
-        --danger: #e85a5a;
-        --danger-bg: #2a1a1a;
-        --ok: #4cc76a;
-        --ok-bg: #1a2a1e;
+        --bg-canvas: oklch(0.22 0.02 220);
+        --bg-surface: oklch(0.28 0.02 220);
+        --bg-surface-raised: oklch(0.33 0.03 220);
+        --fg-primary: oklch(0.94 0.01 220);
+        --fg-muted: oklch(0.74 0.02 220);
+        --stroke: oklch(0.48 0.03 220);
         --shadow: 0 10px 24px rgba(0, 0, 0, 0.3);
         --shadow-hover: 0 14px 32px rgba(0, 0, 0, 0.4);
     }
@@ -61,24 +72,12 @@ const cssStyle = `
 
 [data-theme="dark"] {
     color-scheme: dark;
-    --bg: #121a17;
-    --bg-subtle: #1a2521;
-    --panel: #1e2925;
-    --panel-solid: #232d28;
-    --ink: #e4ebe8;
-    --ink-strong: #f0f6f3;
-    --muted: #8a9b94;
-    --line: #2d3a34;
-    --line-strong: #3d4f46;
-    --brand: #3db892;
-    --brand-strong: #5ccda8;
-    --brand-soft: #2a9d7a;
-    --warn: #e8a935;
-    --warn-bg: #2a2215;
-    --danger: #e85a5a;
-    --danger-bg: #2a1a1a;
-    --ok: #4cc76a;
-    --ok-bg: #1a2a1e;
+    --bg-canvas: oklch(0.22 0.02 220);
+    --bg-surface: oklch(0.28 0.02 220);
+    --bg-surface-raised: oklch(0.33 0.03 220);
+    --fg-primary: oklch(0.94 0.01 220);
+    --fg-muted: oklch(0.74 0.02 220);
+    --stroke: oklch(0.48 0.03 220);
     --shadow: 0 10px 24px rgba(0, 0, 0, 0.3);
     --shadow-hover: 0 14px 32px rgba(0, 0, 0, 0.4);
 }
@@ -118,7 +117,15 @@ h2 { color: var(--brand); margin-top: 24px; }
 a { color: var(--brand); }
 
 .panel { background: var(--panel); border-radius: var(--radius); border: 1px solid var(--line); padding: 20px; box-shadow: var(--shadow); margin: 15px 0; }
-.post { background: var(--panel); border-radius: var(--radius); border: 1px solid var(--line); padding: 15px; margin: 10px 0; border-left: 4px solid var(--brand); box-shadow: var(--shadow); }
+.post {
+    --post-accent: var(--status-bridge);
+    background: linear-gradient(180deg, color-mix(in oklch, var(--post-accent) 10%, var(--panel)) 0%, var(--panel) 62%);
+    border-radius: var(--radius);
+    border: 1px solid color-mix(in oklch, var(--post-accent) 34%, var(--line));
+    padding: 15px;
+    margin: 10px 0;
+    box-shadow: var(--shadow);
+}
 .post-header { color: var(--muted); font-size: 0.85em; margin-bottom: 8px; }
 .post-content { color: var(--ink); white-space: pre-wrap; line-height: 1.5; }
 .post-content p { margin: 0.5em 0; }
@@ -126,14 +133,14 @@ a { color: var(--brand); }
 .post-content code { background: var(--bg-subtle); padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }
 .author { color: var(--brand); font-weight: bold; }
 .contact-ref { color: var(--brand-strong); font-weight: 600; }
-.post-type-post { border-left-color: var(--brand); }
-.post-type-follow, .post-type-contact, .post-type-unfollow { border-left-color: var(--ok); }
-.post-type-like, .post-type-vote { border-left-color: #9b59b6; }
-.post-type-blocking { border-left-color: var(--danger); }
-.post-type-about { border-left-color: #3498db; }
-.post-type-pub { border-left-color: var(--warn); }
-.post-type-gist { border-left-color: #e67e22; }
-.post-type-raw, .post-type-unknown { border-left-color: var(--line-strong); }
+.post-type-post { --post-accent: var(--status-bridge); }
+.post-type-follow, .post-type-contact, .post-type-unfollow { --post-accent: var(--status-success); }
+.post-type-like, .post-type-vote { --post-accent: var(--status-ingress); }
+.post-type-blocking { --post-accent: var(--status-failure); }
+.post-type-about { --post-accent: var(--status-ingress); }
+.post-type-pub { --post-accent: var(--status-warn); }
+.post-type-gist { --post-accent: var(--status-egress); }
+.post-type-raw, .post-type-unknown { --post-accent: var(--line-strong); }
 
 .message-action { color: var(--muted); font-style: italic; }
 
@@ -162,15 +169,15 @@ pre { background: var(--bg); padding: 15px; border-radius: var(--radius); overfl
 table { width: 100%%; border-collapse: collapse; margin: 15px 0; }
 th, td { padding: 12px 14px; text-align: left; border-bottom: 1px solid var(--line); }
 th { color: var(--muted); font-size: 0.85em; text-transform: uppercase; font-weight: 700; }
-tr:hover td { background: var(--bg); }
-.badge { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 0.8em; background: var(--brand); color: #fff; font-weight: 600; }
+tr:hover td { background: color-mix(in oklch, var(--status-bridge) 9%, var(--panel)); }
+.badge { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 0.8em; background: color-mix(in oklch, var(--status-bridge) 84%, var(--proto-bridge-deep)); color: oklch(0.98 0.004 220); font-weight: 600; }
 .badge.warn { background: var(--warn); }
 .badge.danger { background: var(--danger); }
 .badge.ok { background: var(--ok); }
 .status { border-radius: var(--radius); padding: 12px 14px; margin: 12px 0; border: 1px solid var(--line); background: var(--panel); }
-.status.info { border-left: 4px solid var(--brand); }
-.status.success { border-left: 4px solid var(--ok); }
-.status.error { border-left: 4px solid var(--danger); }
+.status.info { border-color: color-mix(in oklch, var(--status-bridge) 42%, var(--line)); background: color-mix(in oklch, var(--status-bridge) 12%, var(--panel)); }
+.status.success { border-color: color-mix(in oklch, var(--status-success) 42%, var(--line)); background: color-mix(in oklch, var(--status-success) 12%, var(--panel)); }
+.status.error { border-color: color-mix(in oklch, var(--status-failure) 42%, var(--line)); background: color-mix(in oklch, var(--status-failure) 12%, var(--panel)); }
 details summary { cursor: pointer; color: var(--brand); font-size: 0.9em; margin-top: 12px; font-weight: 600; }
 ul { list-style: none; padding: 0; }
 li { background: var(--panel); border: 1px solid var(--line); padding: 12px 15px; margin: 8px 0; border-radius: var(--radius); }

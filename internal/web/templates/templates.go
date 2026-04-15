@@ -25,24 +25,47 @@ const pageLayout = `
     <style>
         :root {
             color-scheme: light;
-            --bg: #f4f1ea;
-            --bg-subtle: #ebe6dd;
-            --panel: #fffdf9;
-            --panel-solid: #ffffff;
-            --ink: #1a2622;
-            --ink-strong: #0f1814;
-            --muted: #5c6b65;
-            --line: #d7d2c6;
-            --line-strong: #c4bdb0;
-            --brand: #1a6b5a;
-            --brand-strong: #124a3e;
-            --brand-soft: #2a8f7a;
-            --warn: #8a5d12;
-            --warn-bg: #fff8e6;
-            --danger: #b33030;
-            --danger-bg: #fdeaea;
-            --ok: #1a6b35;
-            --ok-bg: #e8f6ec;
+            --proto-at: oklch(0.67 0.13 246);
+            --proto-at-deep: oklch(0.55 0.12 248);
+            --proto-ssb: oklch(0.74 0.13 70);
+            --proto-ssb-deep: oklch(0.61 0.12 60);
+            --proto-bridge: oklch(0.69 0.11 184);
+            --proto-bridge-deep: oklch(0.56 0.10 186);
+            --status-verified: oklch(0.71 0.13 152);
+            --status-error: oklch(0.63 0.17 25);
+
+            --bg-canvas: oklch(0.86 0.06 193);
+            --bg-surface: oklch(0.97 0.01 220);
+            --bg-surface-raised: oklch(0.93 0.02 220);
+            --fg-primary: oklch(0.27 0.02 230);
+            --fg-muted: oklch(0.50 0.03 220);
+            --stroke: oklch(0.64 0.03 215);
+
+            --status-ingress: var(--proto-at);
+            --status-egress: var(--proto-ssb);
+            --status-bridge: var(--proto-bridge);
+            --status-warn: var(--proto-ssb-deep);
+            --status-success: var(--status-verified);
+            --status-failure: var(--status-error);
+
+            --bg: var(--bg-canvas);
+            --bg-subtle: color-mix(in oklch, var(--bg-surface) 74%, var(--bg-canvas));
+            --panel: var(--bg-surface);
+            --panel-solid: var(--bg-surface-raised);
+            --ink: var(--fg-primary);
+            --ink-strong: color-mix(in oklch, var(--fg-primary) 86%, black);
+            --muted: var(--fg-muted);
+            --line: var(--stroke);
+            --line-strong: color-mix(in oklch, var(--stroke) 84%, var(--fg-primary));
+            --brand: var(--status-bridge);
+            --brand-strong: var(--proto-bridge-deep);
+            --brand-soft: color-mix(in oklch, var(--status-bridge) 70%, var(--status-ingress));
+            --warn: var(--status-warn);
+            --warn-bg: color-mix(in oklch, var(--status-warn) 14%, var(--panel));
+            --danger: var(--status-failure);
+            --danger-bg: color-mix(in oklch, var(--status-failure) 12%, var(--panel));
+            --ok: var(--status-success);
+            --ok-bg: color-mix(in oklch, var(--status-success) 14%, var(--panel));
             --shadow: 0 4px 12px rgba(28, 41, 36, 0.06), 0 1px 3px rgba(28, 41, 36, 0.04);
             --shadow-hover: 0 8px 24px rgba(28, 41, 36, 0.1), 0 2px 8px rgba(28, 41, 36, 0.06);
             --radius: 12px;
@@ -52,24 +75,12 @@ const pageLayout = `
 
         [data-theme="dark"] {
             color-scheme: dark;
-            --bg: #121a17;
-            --bg-subtle: #1a2521;
-            --panel: #1e2925;
-            --panel-solid: #232d28;
-            --ink: #e4ebe8;
-            --ink-strong: #f0f6f3;
-            --muted: #8a9b94;
-            --line: #2d3a34;
-            --line-strong: #3d4f46;
-            --brand: #3db892;
-            --brand-strong: #5ccda8;
-            --brand-soft: #2a9d7a;
-            --warn: #e8a935;
-            --warn-bg: #2a2215;
-            --danger: #e85a5a;
-            --danger-bg: #2a1a1a;
-            --ok: #4cc76a;
-            --ok-bg: #1a2a1e;
+            --bg-canvas: oklch(0.22 0.02 220);
+            --bg-surface: oklch(0.28 0.02 220);
+            --bg-surface-raised: oklch(0.33 0.03 220);
+            --fg-primary: oklch(0.94 0.01 220);
+            --fg-muted: oklch(0.74 0.02 220);
+            --stroke: oklch(0.48 0.03 220);
             --shadow: 0 4px 12px rgba(0, 0, 0, 0.3), 0 1px 3px rgba(0, 0, 0, 0.2);
             --shadow-hover: 0 8px 24px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.25);
         }
@@ -77,24 +88,12 @@ const pageLayout = `
         @media (prefers-color-scheme: dark) {
             :root:not([data-theme="light"]) {
                 color-scheme: dark;
-                --bg: #121a17;
-                --bg-subtle: #1a2521;
-                --panel: #1e2925;
-                --panel-solid: #232d28;
-                --ink: #e4ebe8;
-                --ink-strong: #f0f6f3;
-                --muted: #8a9b94;
-                --line: #2d3a34;
-                --line-strong: #3d4f46;
-                --brand: #3db892;
-                --brand-strong: #5ccda8;
-                --brand-soft: #2a9d7a;
-                --warn: #e8a935;
-                --warn-bg: #2a2215;
-                --danger: #e85a5a;
-                --danger-bg: #2a1a1a;
-                --ok: #4cc76a;
-                --ok-bg: #1a2a1e;
+                --bg-canvas: oklch(0.22 0.02 220);
+                --bg-surface: oklch(0.28 0.02 220);
+                --bg-surface-raised: oklch(0.33 0.03 220);
+                --fg-primary: oklch(0.94 0.01 220);
+                --fg-muted: oklch(0.74 0.02 220);
+                --stroke: oklch(0.48 0.03 220);
                 --shadow: 0 4px 12px rgba(0, 0, 0, 0.3), 0 1px 3px rgba(0, 0, 0, 0.2);
                 --shadow-hover: 0 8px 24px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.25);
             }
@@ -253,21 +252,39 @@ const pageLayout = `
             color: var(--muted);
         }
 
-        .status-strip.tone-success { 
-            border-left: 1px solid var(--ok);
-            background: var(--ok-bg);
+        .status-strip.tone-success {
+            border-color: color-mix(in oklch, var(--status-success) 42%, var(--line));
+            background: color-mix(in oklch, var(--status-success) 13%, var(--panel));
         }
-        .status-strip.tone-warning { 
-            border-left: 1px solid var(--warn);
-            background: var(--warn-bg);
+
+        .status-strip.tone-warning {
+            border-color: color-mix(in oklch, var(--status-warn) 42%, var(--line));
+            background: color-mix(in oklch, var(--status-warn) 12%, var(--panel));
         }
-        .status-strip.tone-danger { 
-            border-left: 1px solid var(--danger);
-            background: var(--danger-bg);
+
+        .status-strip.tone-danger {
+            border-color: color-mix(in oklch, var(--status-failure) 42%, var(--line));
+            background: color-mix(in oklch, var(--status-failure) 12%, var(--panel));
         }
-        .status-strip.tone-neutral { 
-            border-left: 1px solid var(--brand);
-            background: var(--panel);
+
+        .status-strip.tone-neutral {
+            border-color: color-mix(in oklch, var(--status-bridge) 34%, var(--line));
+            background: color-mix(in oklch, var(--status-bridge) 8%, var(--panel));
+        }
+
+        .status-strip.tone-ingress {
+            border-color: color-mix(in oklch, var(--status-ingress) 40%, var(--line));
+            background: color-mix(in oklch, var(--status-ingress) 11%, var(--panel));
+        }
+
+        .status-strip.tone-egress {
+            border-color: color-mix(in oklch, var(--status-egress) 40%, var(--line));
+            background: color-mix(in oklch, var(--status-egress) 11%, var(--panel));
+        }
+
+        .status-strip.tone-bridge {
+            border-color: color-mix(in oklch, var(--status-bridge) 42%, var(--line));
+            background: color-mix(in oklch, var(--status-bridge) 12%, var(--panel));
         }
 
         .section {
@@ -339,9 +356,14 @@ const pageLayout = `
             font-size: 0.84rem;
         }
 
-        .tone-warning .metric-value { color: var(--warn); }
-        .tone-danger .metric-value { color: var(--danger); }
-        .tone-success .metric-value { color: var(--ok); }
+        .tone-warning .metric-value { color: var(--status-warn); }
+        .tone-danger .metric-value { color: var(--status-failure); }
+        .tone-success .metric-value { color: var(--status-success); }
+        .tone-neutral .metric-value,
+        .tone-bridge .metric-value { color: var(--status-bridge); }
+        .tone-ingress .metric-value { color: var(--status-ingress); }
+        .tone-egress .metric-value { color: var(--status-egress); }
+        .tone-muted .metric-value { color: var(--muted); }
 
         .grid-two {
             display: grid;
@@ -400,9 +422,12 @@ const pageLayout = `
             white-space: nowrap;
         }
 
-        .pill.state-published { background: var(--ok-bg); color: var(--ok); }
-        .pill.state-failed { background: var(--danger-bg); color: var(--danger); }
-        .pill.state-deferred { background: var(--warn-bg); color: var(--warn); }
+        .pill.state-published { background: color-mix(in oklch, var(--status-success) 14%, var(--panel)); color: var(--status-success); }
+        .pill.state-failed { background: color-mix(in oklch, var(--status-failure) 13%, var(--panel)); color: var(--status-failure); }
+        .pill.state-deferred { background: color-mix(in oklch, var(--status-warn) 13%, var(--panel)); color: var(--status-warn); }
+        .pill.state-ingress { background: color-mix(in oklch, var(--status-ingress) 13%, var(--panel)); color: var(--status-ingress); }
+        .pill.state-egress { background: color-mix(in oklch, var(--status-egress) 13%, var(--panel)); color: var(--status-egress); }
+        .pill.state-bridge { background: color-mix(in oklch, var(--status-bridge) 13%, var(--panel)); color: var(--status-bridge); }
         .pill.state-deleted { background: var(--bg-subtle); color: var(--muted); }
         .pill.state-pending { background: var(--bg-subtle); color: var(--muted); }
 
@@ -440,7 +465,7 @@ const pageLayout = `
         }
 
         tbody tr:hover {
-            background: rgba(26, 107, 90, 0.08);
+            background: color-mix(in oklch, var(--status-bridge) 9%, var(--panel));
         }
 
         .mono {
@@ -618,11 +643,11 @@ const pageLayout = `
         }
 
         .issue-text {
-            color: var(--danger);
+            color: var(--status-failure);
         }
 
         .issue-text.warning {
-            color: var(--warn);
+            color: var(--status-warn);
         }
 
         .issue-text.muted {
@@ -2433,6 +2458,14 @@ func mustPageTemplate(name, content string) *template.Template {
 				return "tone-warning"
 			case "danger":
 				return "tone-danger"
+			case "ingress":
+				return "tone-ingress"
+			case "egress":
+				return "tone-egress"
+			case "bridge":
+				return "tone-bridge"
+			case "muted":
+				return "tone-muted"
 			default:
 				return "tone-neutral"
 			}

@@ -116,13 +116,13 @@ func (h *UIHandler) fetchDashboardData(ctx context.Context, r *http.Request) (te
 	}
 
 	metrics := []templates.DashboardMetric{
-		{ID: "accountCount", Label: "Bridged Accounts", Value: accountCount, Tone: "neutral", Href: "/accounts", Note: "Open account roster"},
-		{ID: "messageCount", Label: "Messages Bridged", Value: messageCount, Tone: "neutral", Href: "/messages", Note: "Browse stream"},
-		{ID: "publishedCount", Label: "Messages Published", Value: publishedCount, Tone: "success", Href: "/messages?state=published", Note: "Published state"},
+		{ID: "accountCount", Label: "Bridged Accounts", Value: accountCount, Tone: "bridge", Href: "/accounts", Note: "Open account roster"},
+		{ID: "messageCount", Label: "Messages Bridged", Value: messageCount, Tone: "ingress", Href: "/messages", Note: "ATProto ingress"},
+		{ID: "publishedCount", Label: "Messages Published", Value: publishedCount, Tone: "egress", Href: "/messages?state=published", Note: "SSB egress"},
 		{ID: "publishFailureCount", Label: "Publish Failures", Value: publishFailureCount, Tone: "danger", Href: "/failures", Note: "Failed rows"},
 		{ID: "deferredCount", Label: "Messages Deferred", Value: deferredCount, Tone: "warning", Href: "/messages?state=deferred", Note: "Deferred rows"},
 		{ID: "deletedCount", Label: "Messages Deleted", Value: deletedCount, Tone: "neutral", Href: "/messages?state=deleted", Note: "Deleted tombstones"},
-		{ID: "blobCount", Label: "Blobs Bridged", Value: blobCount, Tone: "neutral", Href: "/blobs", Note: "Blob mappings"},
+		{ID: "blobCount", Label: "Blobs Bridged", Value: blobCount, Tone: "bridge", Href: "/blobs", Note: "Blob mappings"},
 	}
 
 	data = templates.DashboardData{
@@ -207,7 +207,7 @@ func (h *UIHandler) sendDashboardStats(w http.ResponseWriter, r *http.Request, f
 		h.logger.Printf("SSE dashboard data error: %v", err)
 		return
 	}
-	
+
 	// Convert data directly (no longer limited to just metrics)
 	jsonBytes, err := json.Marshal(data)
 	if err == nil {
