@@ -144,3 +144,31 @@ func TestVerifySignedMessageJSONWithMentionsArray(t *testing.T) {
 		t.Fatalf("verify complex signed message: %v\nraw=%s", err, string(raw))
 	}
 }
+
+func TestMarshalForSigningArrayFormattingHasNoTrailingCommaSpaces(t *testing.T) {
+	aliceKeys, _ := keys.Generate()
+
+	msg := &Message{
+		Author:    aliceKeys.FeedRef(),
+		Sequence:  1,
+		Timestamp: 1775699200001,
+		Hash:      "sha256",
+		Content: map[string]interface{}{
+			"type": "post",
+			"text": "array formatting check",
+			"mentions": []map[string]interface{}{
+				{"link": "@bob.ed25519", "name": "@bob"},
+				{"link": "@carol.ed25519", "name": "@carol"},
+			},
+		},
+	}
+
+	signable, err := msg.MarshalForSigning()
+	if err != nil {
+		t.Fatalf("marshal for signing: %v", err)
+	}
+
+	if bytes.Contains(signable, []byte(", \n")) {
+		t.Fatalf("signable payload contains invalid array separator ', \\n':\n%s", string(signable))
+	}
+}

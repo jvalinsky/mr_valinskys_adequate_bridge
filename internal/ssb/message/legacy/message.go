@@ -297,7 +297,7 @@ func formatArray(buf *bytes.Buffer, data []byte, depth int, indent string) error
 
 	for i, elem := range arr {
 		if i > 0 {
-			buf.WriteString(", ")
+			buf.WriteString(",")
 		}
 		if hasContent {
 			buf.WriteString("\n")
