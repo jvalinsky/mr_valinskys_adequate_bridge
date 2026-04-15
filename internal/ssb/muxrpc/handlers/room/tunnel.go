@@ -10,6 +10,7 @@ import (
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/keys"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/protocoltrace"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomdb"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/roomstate"
@@ -258,6 +259,14 @@ func (h *TunnelHandler) handleConnect(ctx context.Context, req *muxrpc.Request) 
 		req.CloseWithError(fmt.Errorf("tunnel.connect: get caller: %w", err))
 		return
 	}
+	protocoltrace.Emit(protocoltrace.Event{
+		Phase:  "room_tunnel_connect_in",
+		Method: "tunnel.connect",
+		Req:    req.ID(),
+		Origin: origin.String(),
+		Portal: args.Portal.String(),
+		Target: args.Target.String(),
+	})
 	if args.Portal != (refs.FeedRef{}) && !args.Portal.Equal(*h.server.keyPair) {
 		req.CloseWithError(fmt.Errorf("tunnel.connect: portal mismatch"))
 		return
@@ -292,6 +301,14 @@ func (h *TunnelHandler) handleConnect(ctx context.Context, req *muxrpc.Request) 
 		h.metrics.OnTunnelConnect()
 	}
 
+	protocoltrace.Emit(protocoltrace.Event{
+		Phase:  "room_tunnel_connect_forward",
+		Method: "tunnel.connect",
+		Req:    req.ID(),
+		Origin: origin.String(),
+		Portal: h.server.keyPair.String(),
+		Target: args.Target.String(),
+	})
 	targetSource, targetSink, err := targetEndpoint.Duplex(ctx, muxrpc.TypeBinary, muxrpc.Method{"tunnel", "connect"}, map[string]interface{}{
 		"origin": origin,
 		"portal": *h.server.keyPair,
@@ -329,6 +346,14 @@ func (h *TunnelHandler) handleConnect(ctx context.Context, req *muxrpc.Request) 
 	}()
 
 	wg.Wait()
+	protocoltrace.Emit(protocoltrace.Event{
+		Phase:  "room_tunnel_connect_closed",
+		Method: "tunnel.connect",
+		Req:    req.ID(),
+		Origin: origin.String(),
+		Portal: h.server.keyPair.String(),
+		Target: args.Target.String(),
+	})
 	_ = req.Close()
 }
 
