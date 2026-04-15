@@ -150,7 +150,7 @@ func New(opts Options) (*Sbot, error) {
 		Timeout: dialTimeout,
 	})
 
-	manifest := newManifest(opts.EnableEBT, opts.EnableRoom)
+	manifest := newManifest(opts.EnableEBT, opts.EnableRoom, opts.RoomHTTPAddr != "")
 	handlerMux := &muxrpc.HandlerMux{}
 
 	registerHandlers(handlerMux, feedStore, ebtHandler, blobStore, opts.KeyPair)
@@ -248,9 +248,10 @@ func loadKeyPairWithRetry(path string, attempts int, delay time.Duration) (*keys
 	return nil, lastErr
 }
 
-func newManifest(enableEBT, enableRoom bool) *muxrpc.Manifest {
+func newManifest(enableEBT, enableRoom, enableInviteUse bool) *muxrpc.Manifest {
 	m := muxrpc.NewManifest()
 
+	m.RegisterSync("manifest")
 	m.RegisterAsync("whoami")
 	m.RegisterSource("createHistoryStream")
 	m.RegisterAsync("gossip.ping")
@@ -282,11 +283,9 @@ func newManifest(enableEBT, enableRoom bool) *muxrpc.Manifest {
 		m.RegisterSource("tunnel.endpoints")
 		m.RegisterAsync("tunnel.isRoom")
 		m.RegisterSync("tunnel.ping")
-		m.RegisterAsync("httpAuth.requestSolution")
-		m.RegisterAsync("httpAuth.invalidateAllSolutions")
-
-		m.RegisterAsync("invite.create")
-		m.RegisterAsync("invite.use")
+		if enableInviteUse {
+			m.RegisterAsync("invite.use")
+		}
 	}
 
 	return m

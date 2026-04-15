@@ -1,0 +1,219 @@
+{
+  "scope": "Room + Replication SIP/SSB compliance",
+  "updated": "2026-04-15",
+  "standard_network_identifier_hex": "d4a1cb88a66f02f8db635ce26441cc5dac1b08420ceaac230839b755845a9ffb",
+  "default_advertising_policy": "Only advertise implemented methods with local compliance coverage. Unsupported formats must be explicit non-support.",
+  "surfaces": [
+    {
+      "name": "shs.app_key",
+      "type": "transport",
+      "status": "supported",
+      "advertised": true,
+      "evidence": ["secretstream app-key tests", "room-tunnel debug harness"]
+    },
+    {
+      "name": "muxrpc.termination",
+      "type": "framing",
+      "status": "supported",
+      "advertised": true,
+      "evidence": ["internal/ssb/muxrpc stream termination tests"]
+    },
+    {
+      "name": "manifest",
+      "type": "sync",
+      "status": "supported",
+      "advertised": true,
+      "evidence": ["built-in muxrpc manifest response tests"]
+    },
+    {
+      "name": "whoami",
+      "type": "async",
+      "status": "supported",
+      "advertised": true,
+      "evidence": ["sbot manifest", "room runtime manifest"]
+    },
+    {
+      "name": "room.metadata",
+      "type": "async",
+      "status": "supported",
+      "advertised": true,
+      "evidence": ["Rooms 2.0 schema check", "room runtime tests"]
+    },
+    {
+      "name": "room.attendants",
+      "type": "source",
+      "status": "supported",
+      "advertised": true,
+      "evidence": ["room runtime handlers", "Track 044 harness"]
+    },
+    {
+      "name": "room.members",
+      "type": "source",
+      "status": "supported",
+      "advertised": true,
+      "evidence": ["room runtime handlers", "sbot manifest tests"]
+    },
+    {
+      "name": "room.registerAlias",
+      "type": "async",
+      "status": "supported",
+      "advertised": true,
+      "evidence": ["room runtime handlers"]
+    },
+    {
+      "name": "room.revokeAlias",
+      "type": "async",
+      "status": "supported",
+      "advertised": true,
+      "evidence": ["room runtime handlers"]
+    },
+    {
+      "name": "room.listAliases",
+      "type": "async",
+      "status": "supported",
+      "advertised": true,
+      "evidence": ["room runtime handlers"]
+    },
+    {
+      "name": "room.createInvite",
+      "type": "async",
+      "status": "supported_on_room_runtime",
+      "advertised": true,
+      "evidence": ["room runtime handler"]
+    },
+    {
+      "name": "invite.create",
+      "type": "async",
+      "status": "not_supported",
+      "advertised": false,
+      "evidence": ["not registered by standalone sbot"]
+    },
+    {
+      "name": "invite.use",
+      "type": "async",
+      "status": "conditional",
+      "advertised": "only when RoomHTTPAddr is configured",
+      "evidence": ["sbot handler registration"]
+    },
+    {
+      "name": "tunnel.announce",
+      "type": "sync",
+      "status": "supported",
+      "advertised": true,
+      "evidence": ["room runtime handlers"]
+    },
+    {
+      "name": "tunnel.leave",
+      "type": "sync",
+      "status": "supported",
+      "advertised": true,
+      "evidence": ["room runtime handlers"]
+    },
+    {
+      "name": "tunnel.connect",
+      "type": "duplex",
+      "status": "supported",
+      "advertised": true,
+      "evidence": ["inner SHS tests", "Track 044 harness"]
+    },
+    {
+      "name": "tunnel.endpoints",
+      "type": "source",
+      "status": "supported",
+      "advertised": true,
+      "evidence": ["room runtime handlers"]
+    },
+    {
+      "name": "tunnel.isRoom",
+      "type": "async",
+      "status": "supported",
+      "advertised": true,
+      "evidence": ["room runtime handlers"]
+    },
+    {
+      "name": "tunnel.ping",
+      "type": "sync",
+      "status": "supported",
+      "advertised": true,
+      "evidence": ["room runtime handlers"]
+    },
+    {
+      "name": "createHistoryStream",
+      "type": "source",
+      "status": "supported_classic",
+      "advertised": true,
+      "evidence": ["raw value preservation tests", "room-tunnel-feed-verify history"]
+    },
+    {
+      "name": "ebt.replicate",
+      "type": "duplex",
+      "status": "supported_classic",
+      "advertised": true,
+      "evidence": ["replication tests", "Tildefriends harness"]
+    },
+    {
+      "name": "blobs.add",
+      "type": "sink",
+      "status": "supported",
+      "advertised": true,
+      "evidence": ["blob plugin tests"]
+    },
+    {
+      "name": "blobs.get",
+      "type": "source",
+      "status": "supported",
+      "advertised": true,
+      "evidence": ["blob plugin tests"]
+    },
+    {
+      "name": "blobs.has",
+      "type": "async",
+      "status": "supported",
+      "advertised": true,
+      "evidence": ["blob plugin tests"]
+    },
+    {
+      "name": "blobs.size",
+      "type": "async",
+      "status": "supported",
+      "advertised": true,
+      "evidence": ["blob plugin tests"]
+    },
+    {
+      "name": "blobs.want",
+      "type": "async",
+      "status": "supported",
+      "advertised": true,
+      "evidence": ["blob plugin tests"]
+    },
+    {
+      "name": "blobs.createWants",
+      "type": "source",
+      "status": "supported_long_lived",
+      "advertised": true,
+      "evidence": ["blob plugin tests", "Track 044 decision"]
+    },
+    {
+      "name": "metafeeds",
+      "type": "feed_format",
+      "status": "not_supported",
+      "advertised": false,
+      "evidence": ["out of scope"]
+    },
+    {
+      "name": "indexFeeds",
+      "type": "feed_format",
+      "status": "not_supported",
+      "advertised": false,
+      "evidence": ["out of scope"]
+    },
+    {
+      "name": "bipfHistory",
+      "type": "message_encoding",
+      "status": "not_supported",
+      "advertised": false,
+      "evidence": ["out of scope"]
+    }
+  ]
+}
+

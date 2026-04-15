@@ -14,10 +14,6 @@ var requiredManifestByType = map[string][]string{
 		"room.registerAlias",
 		"room.revokeAlias",
 		"tunnel.isRoom",
-		"httpAuth.requestSolution",
-		"httpAuth.invalidateAllSolutions",
-		"invite.create",
-		"invite.use",
 	},
 	"source": {
 		"createHistoryStream",
@@ -36,10 +32,20 @@ var requiredManifestByType = map[string][]string{
 		"tunnel.connect",
 	},
 	"sync": {
+		"manifest",
 		"tunnel.announce",
 		"tunnel.leave",
 		"tunnel.ping",
 	},
+}
+
+var explicitlyUnsupportedRPCMethods = map[string]string{
+	"invite.create":                   "not registered by cmd/ssb-client sbot; room HTTP invite creation is exposed through the room runtime",
+	"httpAuth.requestSolution":        "not registered by cmd/ssb-client sbot; available on the room runtime muxrpc surface",
+	"httpAuth.invalidateAllSolutions": "not registered by cmd/ssb-client sbot; available on the room runtime muxrpc surface",
+	"metafeeds":                       "out of Room+Replication scope and not advertised",
+	"indexFeeds":                      "out of Room+Replication scope and not advertised",
+	"bipfHistory":                     "out of Room+Replication scope and not advertised",
 }
 
 func flattenManifestByType(byType map[string][]string) []string {

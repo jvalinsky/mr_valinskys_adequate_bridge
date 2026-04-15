@@ -435,9 +435,10 @@ func (h *clientUIHandler) handleAPICapabilities(w http.ResponseWriter, r *http.R
 			},
 		},
 		"rpc": map[string]interface{}{
-			"requiredByType": requiredManifestByType,
-			"manifestByType": manifestByType,
-			"missingMethods": missingRPC,
+			"requiredByType":      requiredManifestByType,
+			"manifestByType":      manifestByType,
+			"missingMethods":      missingRPC,
+			"explicitUnsupported": explicitlyUnsupportedRPCMethods,
 		},
 		"http": map[string]interface{}{
 			"apiRoutes": []string{

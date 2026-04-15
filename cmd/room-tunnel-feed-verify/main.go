@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -19,6 +21,7 @@ import (
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/formats"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/keys"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/message/legacy"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/secretstream"
@@ -606,14 +609,16 @@ type historySummary struct {
 }
 
 type historyFrameSummary struct {
-	Key           string `json:"key,omitempty"`
-	Author        string `json:"author"`
-	FeedFormat    string `json:"feed_format"`
-	Sequence      int64  `json:"sequence"`
-	Timestamp     int64  `json:"timestamp"`
-	Hash          string `json:"hash"`
-	MessageFormat string `json:"message_format"`
-	Signature     string `json:"signature"`
+	Key            string `json:"key,omitempty"`
+	Author         string `json:"author"`
+	FeedFormat     string `json:"feed_format"`
+	Sequence       int64  `json:"sequence"`
+	Timestamp      int64  `json:"timestamp"`
+	Hash           string `json:"hash"`
+	MessageFormat  string `json:"message_format"`
+	Signature      string `json:"signature"`
+	SignatureValid bool   `json:"signature_valid"`
+	RawSHA256      string `json:"raw_sha256"`
 }
 
 func validateClassicHistoryFrame(payload []byte, expectAuthor string) (historyFrameSummary, error) {
@@ -678,15 +683,30 @@ func validateClassicHistoryFrame(payload []byte, expectAuthor string) (historyFr
 	if !strings.HasSuffix(value.Signature, ".sig.ed25519") {
 		return historyFrameSummary{}, fmt.Errorf("signature is not .sig.ed25519")
 	}
+
+	if _, err := legacy.VerifySignedMessageJSON(valuePayload); err != nil {
+		return historyFrameSummary{}, fmt.Errorf("signature verification failed: %w", err)
+	}
+	computedRef, err := legacy.SignedMessageRefFromJSON(valuePayload)
+	if err != nil {
+		return historyFrameSummary{}, fmt.Errorf("compute message ref: %w", err)
+	}
+	if key != "" && computedRef.String() != key {
+		return historyFrameSummary{}, fmt.Errorf("message key mismatch got=%s computed=%s", key, computedRef.String())
+	}
+	rawHash := sha256.Sum256(valuePayload)
+
 	return historyFrameSummary{
-		Key:           key,
-		Author:        value.Author,
-		FeedFormat:    string(feedFormat),
-		Sequence:      value.Sequence,
-		Timestamp:     value.Timestamp,
-		Hash:          value.Hash,
-		MessageFormat: string(messageFormat),
-		Signature:     value.Signature,
+		Key:            key,
+		Author:         value.Author,
+		FeedFormat:     string(feedFormat),
+		Sequence:       value.Sequence,
+		Timestamp:      value.Timestamp,
+		Hash:           value.Hash,
+		MessageFormat:  string(messageFormat),
+		Signature:      value.Signature,
+		SignatureValid: true,
+		RawSHA256:      hex.EncodeToString(rawHash[:]),
 	}, nil
 }
 

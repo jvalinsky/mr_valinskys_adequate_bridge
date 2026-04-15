@@ -198,7 +198,7 @@ func (r *Runtime) initHandlers() {
 	r.tunnelHandler = tunnelH
 
 	r.handler = handlerMux
-	r.manifest = &muxrpc.Manifest{}
+	r.manifest = newRoomManifest()
 }
 
 func (r *Runtime) initNetwork() error {
@@ -714,6 +714,30 @@ func registerRoomHandlers(mux *muxrpc.HandlerMux, srv *roomhandlers.RoomServer, 
 	mux.Register(muxrpc.Method{"httpAuth"}, roomhandlers.NewHTTPAuthHandler(authTokens, members))
 
 	return tunnelHandler
+}
+
+func newRoomManifest() *muxrpc.Manifest {
+	m := muxrpc.NewManifest()
+	m.RegisterSync("manifest")
+	m.RegisterAsync("whoami")
+	m.RegisterAsync("room.createInvite")
+	m.RegisterAsync("room.join")
+	m.RegisterAsync("room.listAliases")
+	m.RegisterAsync("room.registerAlias")
+	m.RegisterAsync("room.revokeAlias")
+	m.RegisterAsync("room.metadata")
+	m.RegisterSource("room.members")
+	m.RegisterSource("room.attendants")
+	m.RegisterSync("tunnel.announce")
+	m.RegisterSync("tunnel.leave")
+	m.RegisterSync("tunnel.ping")
+	m.RegisterDuplex("tunnel.connect")
+	m.RegisterSource("tunnel.endpoints")
+	m.RegisterAsync("tunnel.isRoom")
+	m.RegisterAsync("httpAuth.requestSolution")
+	m.RegisterAsync("httpAuth.invalidateAllSolutions")
+	m.RegisterAsync("httpAuth.rotateToken")
+	return m
 }
 
 type whoamiHandler struct {

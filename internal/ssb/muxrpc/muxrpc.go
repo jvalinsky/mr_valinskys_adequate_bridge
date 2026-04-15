@@ -478,6 +478,24 @@ func (r *rpc) HandlePacket(p *codec.Packet) {
 				req.sink.SetFlag(codec.FlagStream)
 			}
 
+			if len(req.Method) == 1 && req.Method[0] == "manifest" {
+				if req.Type != "async" && req.Type != "sync" {
+					req.CloseWithError(fmt.Errorf("manifest is sync"))
+					return
+				}
+				body := json.RawMessage([]byte("{}"))
+				if r.manifest != nil {
+					manifestBody, err := r.manifest.ToWireJSON()
+					if err != nil {
+						req.CloseWithError(fmt.Errorf("manifest: encode: %w", err))
+						return
+					}
+					body = json.RawMessage(manifestBody)
+				}
+				req.Return(r.ctx, body)
+				return
+			}
+
 			if r.handler != nil {
 				protocoltrace.Emit(protocoltrace.Event{
 					Phase:     "call_in",
@@ -792,6 +810,46 @@ func (m *Manifest) ToJSON() ([]byte, error) {
 	}
 
 	return json.Marshal(entries)
+}
+
+func (m *Manifest) ToWireJSON() ([]byte, error) {
+	return json.Marshal(m.ToWireMap())
+}
+
+func (m *Manifest) ToWireMap() map[string]interface{} {
+	root := make(map[string]interface{})
+	insertManifestEntries(root, m.async, "async")
+	insertManifestEntries(root, m.source, "source")
+	insertManifestEntries(root, m.sink, "sink")
+	insertManifestEntries(root, m.duplex, "duplex")
+	insertManifestEntries(root, m.sync, "sync")
+	return root
+}
+
+func insertManifestEntries(root map[string]interface{}, entries map[string]bool, typ string) {
+	for name := range entries {
+		parts := strings.Split(name, ".")
+		if len(parts) == 0 || parts[0] == "" {
+			continue
+		}
+		current := root
+		for _, part := range parts[:len(parts)-1] {
+			if part == "" {
+				continue
+			}
+			next, ok := current[part].(map[string]interface{})
+			if !ok {
+				next = make(map[string]interface{})
+				current[part] = next
+			}
+			current = next
+		}
+		leaf := parts[len(parts)-1]
+		if leaf == "" {
+			continue
+		}
+		current[leaf] = typ
+	}
 }
 
 func (m *Manifest) EntriesByType() map[string][]string {

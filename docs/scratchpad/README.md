@@ -66,6 +66,7 @@ These drafts were incorporated into the main README:
 | [043-reverse-sync-v2-media-facets.md](043-reverse-sync-v2-media-facets.md) | Reverse-sync v2 implementation log for image embeds, text shaping, and rich-text facets on reverse-created ATProto posts and replies | 1041-1061 | Historical |
 | [044-room-tildefriends-debug-harness.md](044-room-tildefriends-debug-harness.md) | Room2/Tildefriends debug harness log for safe protocol tracing, tunnel/history probes, e2e artifacts, and Deciduous-linked experiment results | 1145, 1151, 1152, 1184, 1185 | Completed |
 | [045-ssb-sip-feed-blob-compatibility.md](045-ssb-sip-feed-blob-compatibility.md) | SSB SIP feed-format registry, raw-byte storage, BendyButt replication, unsupported-format classification, and blob streaming notes | 1186 | In Progress |
+| [048-room-replication-sip-compliance.md](048-room-replication-sip-compliance.md) | Room+Replication compliance ledger for muxrpc terminations, manifest advertising, mobile export evidence, and follow-up probes | 1205-1207 | In Progress |
 
 ## Understanding Scratchpad Status
 

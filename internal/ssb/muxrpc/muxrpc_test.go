@@ -221,6 +221,64 @@ func TestManifestAllCallTypes(t *testing.T) {
 	}
 }
 
+func TestManifestWireJSONUsesNestedMuxrpcShape(t *testing.T) {
+	m := NewManifest()
+	m.RegisterSync("manifest")
+	m.RegisterSource("createHistoryStream")
+	m.RegisterDuplex("ebt.replicate")
+	m.RegisterAsync("room.metadata")
+
+	b, err := m.ToWireJSON()
+	if err != nil {
+		t.Fatalf("ToWireJSON failed: %v", err)
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("unmarshal wire manifest: %v", err)
+	}
+	if got["manifest"] != "sync" {
+		t.Fatalf("manifest = %#v, want sync", got["manifest"])
+	}
+	if got["createHistoryStream"] != "source" {
+		t.Fatalf("createHistoryStream = %#v, want source", got["createHistoryStream"])
+	}
+	ebt, ok := got["ebt"].(map[string]interface{})
+	if !ok || ebt["replicate"] != "duplex" {
+		t.Fatalf("ebt.replicate = %#v, want duplex", got["ebt"])
+	}
+	room, ok := got["room"].(map[string]interface{})
+	if !ok || room["metadata"] != "async" {
+		t.Fatalf("room.metadata = %#v, want async", got["room"])
+	}
+}
+
+func TestRPCManifestBuiltIn(t *testing.T) {
+	p1, p2 := net.Pipe()
+	defer p1.Close()
+	defer p2.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	manifest := NewManifest()
+	manifest.RegisterSync("manifest")
+	manifest.RegisterSource("createHistoryStream")
+
+	server := NewRPC(ctx, p2, nil, manifest)
+	defer server.Terminate()
+
+	client := NewRPC(ctx, p1, nil, nil)
+	defer client.Terminate()
+
+	var got map[string]interface{}
+	if err := client.Sync(ctx, &got, TypeJSON, Method{"manifest"}); err != nil {
+		t.Fatalf("manifest sync failed: %v", err)
+	}
+	if got["manifest"] != "sync" || got["createHistoryStream"] != "source" {
+		t.Fatalf("unexpected manifest response: %#v", got)
+	}
+}
+
 func TestMuxrpcMisc(t *testing.T) {
 	m := Method{"a", "b"}
 	if m.String() != "a.b" {

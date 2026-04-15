@@ -122,6 +122,16 @@ func TestRuntimeInitHandlersUsesProvidedMux(t *testing.T) {
 	if !providedMux.Handled(muxrpc.Method{"tunnel", "announce"}) {
 		t.Fatalf("expected tunnel handlers to be registered on provided mux")
 	}
+	if rt.manifest == nil {
+		t.Fatalf("expected room manifest")
+	}
+	entries := rt.manifest.EntriesByType()
+	if !containsString(entries["async"], "room.metadata") {
+		t.Fatalf("expected room.metadata in room manifest async entries: %#v", entries)
+	}
+	if !containsString(entries["duplex"], "tunnel.connect") {
+		t.Fatalf("expected tunnel.connect in room manifest duplex entries: %#v", entries)
+	}
 }
 
 func TestRuntimeInitHandlersAllocatesMuxWhenNil(t *testing.T) {

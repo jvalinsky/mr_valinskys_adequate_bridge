@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/db"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/keys"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/message/legacy"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
 )
 
@@ -190,36 +192,63 @@ func TestHistoryConfigValidation(t *testing.T) {
 }
 
 func TestValidateClassicHistoryFrame(t *testing.T) {
-	author := refs.MustNewFeedRef([]byte("abcdefghijklmnopqrstuvwxyz123456"), refs.RefAlgoFeedSSB1).String()
-	payload := []byte(strings.ReplaceAll(`{
-		"key":"%msg.sha256",
-		"value":{
-			"previous":null,
-			"author":"AUTHOR",
-			"sequence":1,
-			"timestamp":12345,
-			"hash":"sha256",
-			"content":{"type":"post","text":"hello"},
-			"signature":"abc.sig.ed25519"
-		},
-		"timestamp":12346
-	}`, "AUTHOR", author))
+	author, key, raw := signedHistoryPayload(t, 1)
+	payload, err := json.Marshal(struct {
+		Key       string          `json:"key"`
+		Value     json.RawMessage `json:"value"`
+		Timestamp int64           `json:"timestamp"`
+	}{
+		Key:       key,
+		Value:     raw,
+		Timestamp: 12346,
+	})
+	if err != nil {
+		t.Fatalf("marshal wrapped frame: %v", err)
+	}
 	frame, err := validateClassicHistoryFrame(payload, author)
 	if err != nil {
 		t.Fatalf("validate wrapped frame: %v", err)
 	}
-	if frame.Key != "%msg.sha256" || frame.Author != author || frame.Sequence != 1 || frame.FeedFormat != "ed25519" || frame.MessageFormat != "sha256" {
+	if frame.Key != key || frame.Author != author || frame.Sequence != 1 || frame.FeedFormat != "ed25519" || frame.MessageFormat != "sha256" || !frame.SignatureValid || frame.RawSHA256 == "" {
 		t.Fatalf("unexpected frame summary: %+v", frame)
 	}
 
-	direct := []byte(strings.ReplaceAll(`{"previous":null,"author":"AUTHOR","sequence":2,"timestamp":12346,"hash":"sha256","content":{"type":"post"},"signature":"def.sig.ed25519"}`, "AUTHOR", author))
+	author, _, direct := signedHistoryPayload(t, 2)
 	frame, err = validateClassicHistoryFrame(direct, author)
 	if err != nil {
 		t.Fatalf("validate direct frame: %v", err)
 	}
-	if frame.Key != "" || frame.Sequence != 2 {
+	if frame.Key != "" || frame.Sequence != 2 || !frame.SignatureValid {
 		t.Fatalf("unexpected direct frame summary: %+v", frame)
 	}
+}
+
+func signedHistoryPayload(t *testing.T, sequence int64) (author string, key string, raw []byte) {
+	t.Helper()
+	kp, err := keys.Generate()
+	if err != nil {
+		t.Fatalf("generate keypair: %v", err)
+	}
+	msg := legacy.Message{
+		Previous:  nil,
+		Author:    kp.FeedRef(),
+		Sequence:  sequence,
+		Timestamp: 12345 + sequence,
+		Hash:      "sha256",
+		Content: map[string]interface{}{
+			"type": "post",
+			"text": "hello",
+		},
+	}
+	ref, sig, err := msg.Sign(kp)
+	if err != nil {
+		t.Fatalf("sign message: %v", err)
+	}
+	raw, err = msg.MarshalWithSignature(sig)
+	if err != nil {
+		t.Fatalf("marshal signed message: %v", err)
+	}
+	return kp.FeedRef().String(), ref.String(), raw
 }
 
 func TestValidateClassicHistoryFrameRejectsInvalid(t *testing.T) {

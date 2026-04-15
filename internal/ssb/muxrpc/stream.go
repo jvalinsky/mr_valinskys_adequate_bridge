@@ -259,7 +259,7 @@ func (bs *ByteSink) flush(p []byte, end bool) (int, error) {
 
 	flag := encFlag | codec.FlagStream
 	if end {
-		flag |= codec.FlagEndErr
+		flag = codec.FlagJSON | codec.FlagStream | codec.FlagEndErr
 	}
 
 	id := bs.req

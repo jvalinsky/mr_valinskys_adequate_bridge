@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -309,7 +310,7 @@ func reserveLoopbackAddr(t *testing.T) string {
 }
 
 func TestSbotManifestRoomMethods(t *testing.T) {
-	m := newManifest(true, true)
+	m := newManifest(true, true, true)
 
 	b, err := m.ToJSON()
 	if err != nil {
@@ -357,6 +358,9 @@ func TestSbotManifestRoomMethods(t *testing.T) {
 		for _, n := range typeMap["async"] {
 			if n == "room.members" {
 				t.Error("room.members should NOT be registered as async")
+			}
+			if n == "invite.create" || strings.HasPrefix(n, "httpAuth.") {
+				t.Errorf("%s should not be advertised by sbot without a registered handler", n)
 			}
 		}
 	}
