@@ -30,6 +30,7 @@ BRIDGE_REVERSE_SYNC_ENABLE="${BRIDGE_REVERSE_SYNC_ENABLE:-0}"
 BRIDGE_REVERSE_CREDENTIALS_FILE="${BRIDGE_REVERSE_CREDENTIALS_FILE:-}"
 BRIDGE_REVERSE_SYNC_SCAN_INTERVAL="${BRIDGE_REVERSE_SYNC_SCAN_INTERVAL:-}"
 BRIDGE_REVERSE_SYNC_BATCH_SIZE="${BRIDGE_REVERSE_SYNC_BATCH_SIZE:-}"
+BRIDGE_SSB_PROTOCOL_TRACE="${BRIDGE_SSB_PROTOCOL_TRACE:-0}"
 
 # ── Mode-specific pre-start ────────────────────────────────────────
 
@@ -137,6 +138,10 @@ fi
 
 if [[ -n "${BRIDGE_REVERSE_SYNC_BATCH_SIZE}" ]]; then
   bridge_cli_args+=(--reverse-sync-batch-size "${BRIDGE_REVERSE_SYNC_BATCH_SIZE}")
+fi
+
+if [ "${BRIDGE_SSB_PROTOCOL_TRACE}" = "1" ]; then
+  bridge_cli_args+=(--ssb-protocol-trace)
 fi
 
 exec bridge-cli "${bridge_cli_args[@]}"

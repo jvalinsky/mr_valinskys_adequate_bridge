@@ -21,6 +21,10 @@ MAX_WAIT_SECS="${MAX_WAIT_SECS:-120}"
 POLL_INTERVAL="${POLL_INTERVAL:-3}"
 REQUIRE_ACTIVE_BRIDGED_PEERS="${E2E_TF_REQUIRE_ACTIVE_BRIDGED_PEERS:-1}"
 ROOM_TUNNEL_VERIFY_BIN="${ROOM_TUNNEL_VERIFY_BIN:-/bridge-data/tools/room-tunnel-feed-verify}"
+E2E_TF_DEBUG="${E2E_TF_DEBUG:-0}"
+MVAB_TEST_RUN_ID="${MVAB_TEST_RUN_ID:-e2e-tf}"
+E2E_TF_ARTIFACT_DIR="${E2E_TF_ARTIFACT_DIR:-/bridge-data/artifacts/${MVAB_TEST_RUN_ID}}"
+ARTIFACTS_COLLECTED=0
 
 log() { echo "[e2e-tf] $(date +%H:%M:%S) $*"; }
 
@@ -44,11 +48,93 @@ cleanup() {
 }
 trap cleanup EXIT
 
+collect_debug_artifacts() {
+  local reason="${1:-manual}"
+  if [[ "${ARTIFACTS_COLLECTED}" == "1" ]]; then
+    return
+  fi
+  ARTIFACTS_COLLECTED=1
+  mkdir -p "${E2E_TF_ARTIFACT_DIR}"
+
+  {
+    echo "# Tildefriends Room2 Debug Artifacts"
+    echo
+    echo "- run_id: ${MVAB_TEST_RUN_ID}"
+    echo "- reason: ${reason}"
+    echo "- collected_at: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "- bridge_http_addr: ${BRIDGE_HTTP_ADDR}"
+    echo "- bridge_muxrpc_addr: ${BRIDGE_MUXRPC_ADDR}"
+    echo "- bot_feed: ${BOT_SSB_FEED:-unknown}"
+    echo "- room_feed: ${ROOM_PUB_KEY:-unknown}"
+    echo "- tf_identity: ${TF_IDENTITY:-unknown}"
+  } > "${E2E_TF_ARTIFACT_DIR}/summary.md"
+
+  cp /tmp/tf.log "${E2E_TF_ARTIFACT_DIR}/tildefriends.log" 2>/dev/null || true
+  cp /tmp/invite-consume.json "${E2E_TF_ARTIFACT_DIR}/invite-consume.json" 2>/dev/null || true
+  cp /tmp/tf-room-probe.log "${E2E_TF_ARTIFACT_DIR}/room-probe.log" 2>/dev/null || true
+  cp /tmp/tf-room-history.log "${E2E_TF_ARTIFACT_DIR}/room-history.log" 2>/dev/null || true
+
+  room_curl -f "http://${BRIDGE_HTTP_ADDR}/healthz" > "${E2E_TF_ARTIFACT_DIR}/room-healthz.txt" 2>&1 || true
+  room_curl -f "http://${BRIDGE_HTTP_ADDR}/api/room/status/attendants" > "${E2E_TF_ARTIFACT_DIR}/room-attendants.json" 2>&1 || true
+  room_curl -f "http://${BRIDGE_HTTP_ADDR}/api/room/status/tunnels" > "${E2E_TF_ARTIFACT_DIR}/room-tunnels.json" 2>&1 || true
+
+  if [[ -f "${BRIDGE_DB_PATH}" ]]; then
+    sqlite3 -cmd ".timeout 5000" "${BRIDGE_DB_PATH}" \
+      "SELECT key, value FROM bridge_state ORDER BY key;" \
+      > "${E2E_TF_ARTIFACT_DIR}/bridge-state.tsv" 2>&1 || true
+    sqlite3 -cmd ".timeout 5000" "${BRIDGE_DB_PATH}" \
+      "SELECT message_state, COUNT(*) FROM messages GROUP BY message_state ORDER BY message_state;" \
+      > "${E2E_TF_ARTIFACT_DIR}/bridge-message-counts.tsv" 2>&1 || true
+    sqlite3 -cmd ".timeout 5000" "${BRIDGE_DB_PATH}" \
+      "SELECT at_did, ssb_feed_id, active FROM bridged_accounts ORDER BY at_did;" \
+      > "${E2E_TF_ARTIFACT_DIR}/bridge-accounts.tsv" 2>&1 || true
+    sqlite3 -cmd ".timeout 5000" "${BRIDGE_DB_PATH}" \
+      "SELECT source_ssb_author, action, event_state, COALESCE(error_text, '') FROM reverse_events ORDER BY created_at DESC LIMIT 20;" \
+      > "${E2E_TF_ARTIFACT_DIR}/reverse-events.tsv" 2>&1 || true
+  fi
+
+  if [[ -f "${ROOM_DB_PATH}" ]]; then
+    sqlite3 -cmd ".timeout 5000" "${ROOM_DB_PATH}" \
+      "SELECT id, role, pub_key FROM members ORDER BY id;" \
+      > "${E2E_TF_ARTIFACT_DIR}/room-members.tsv" 2>&1 || true
+    sqlite3 -cmd ".timeout 5000" "${ROOM_DB_PATH}" \
+      "SELECT feed_id, active, connected_at, last_seen_at, addr FROM runtime_attendants ORDER BY connected_at DESC LIMIT 30;" \
+      > "${E2E_TF_ARTIFACT_DIR}/room-runtime-attendants.tsv" 2>&1 || true
+    sqlite3 -cmd ".timeout 5000" "${ROOM_DB_PATH}" \
+      "SELECT target_feed, active, announced_at, last_seen_at, addr FROM runtime_tunnel_endpoints ORDER BY last_seen_at DESC LIMIT 30;" \
+      > "${E2E_TF_ARTIFACT_DIR}/room-runtime-tunnels.tsv" 2>&1 || true
+  fi
+
+  if [[ -f "${TF_DB_PATH}" ]]; then
+    sqlite3 -cmd ".timeout 5000" "${TF_DB_PATH}" \
+      "SELECT host, port, key, last_success FROM connections ORDER BY host, port;" \
+      > "${E2E_TF_ARTIFACT_DIR}/tf-connections.tsv" 2>&1 || true
+    sqlite3 -cmd ".timeout 5000" "${TF_DB_PATH}" \
+      "SELECT author, COUNT(*), MAX(sequence) FROM messages GROUP BY author ORDER BY COUNT(*) DESC LIMIT 20;" \
+      > "${E2E_TF_ARTIFACT_DIR}/tf-message-counts.tsv" 2>&1 || true
+  fi
+
+  if [[ -x "${ROOM_TUNNEL_VERIFY_BIN}" && -n "${ROOM_PUB_KEY:-}" && -n "${BOT_SSB_FEED:-}" ]]; then
+    "${ROOM_TUNNEL_VERIFY_BIN}" history \
+      --room-addr "${BRIDGE_MUXRPC_ADDR}" \
+      --room-feed "${ROOM_PUB_KEY}" \
+      --key-file "/tmp/tf-history-probe-secret" \
+      --target-feed "${BOT_SSB_FEED}" \
+      --timeout 20s \
+      --min-count 1 \
+      > "${E2E_TF_ARTIFACT_DIR}/verifier-history.json" \
+      2> "${E2E_TF_ARTIFACT_DIR}/verifier-history.err" || true
+  fi
+
+  log "debug artifacts collected at ${E2E_TF_ARTIFACT_DIR}"
+}
+
 die() {
   if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
     echo "::error file=infra/e2e-tildefriends/test_runner.sh,line=${BASH_LINENO[0]}::$*"
   fi
   log "FAIL: $*" >&2
+  collect_debug_artifacts "$*"
   exit 1
 }
 
@@ -57,6 +143,14 @@ case "${REQUIRE_ACTIVE_BRIDGED_PEERS}" in
     ;;
   *)
     die "invalid E2E_TF_REQUIRE_ACTIVE_BRIDGED_PEERS=${REQUIRE_ACTIVE_BRIDGED_PEERS} (expected 0 or 1)"
+    ;;
+esac
+
+case "${E2E_TF_DEBUG}" in
+  0|1)
+    ;;
+  *)
+    die "invalid E2E_TF_DEBUG=${E2E_TF_DEBUG} (expected 0 or 1)"
     ;;
 esac
 
@@ -246,6 +340,19 @@ assert_active_bridged_room_peers() {
       log "room tunnel probe output:"
       sed -n '1,120p' /tmp/tf-room-probe.log || true
       die "strict bridged peer presence failed: tunnel.connect probe failed for ${feed}"
+    fi
+    if [[ -n "${BOT_SSB_FEED:-}" && "${feed}" == "${BOT_SSB_FEED}" ]]; then
+      if ! "${ROOM_TUNNEL_VERIFY_BIN}" history \
+        --room-addr "${BRIDGE_MUXRPC_ADDR}" \
+        --room-feed "${ROOM_PUB_KEY}" \
+        --key-file "${probe_key_file}.history" \
+        --target-feed "${feed}" \
+        --timeout 20s \
+        --min-count 1 >/tmp/tf-room-history.log 2>&1; then
+        log "room tunnel history output:"
+        sed -n '1,160p' /tmp/tf-room-history.log || true
+        die "strict bridged peer presence failed: createHistoryStream over tunnel failed for ${feed}"
+      fi
     fi
   done
 
@@ -750,4 +857,7 @@ log "  E2E PASSED: TF ↔ Bridge Room replication  "
 log "  Forward replication checks: OK            "
 log "  Reverse media pipeline checks: OK         "
 log "============================================"
+if [[ "${E2E_TF_DEBUG}" == "1" ]]; then
+  collect_debug_artifacts "success"
+fi
 exit 0

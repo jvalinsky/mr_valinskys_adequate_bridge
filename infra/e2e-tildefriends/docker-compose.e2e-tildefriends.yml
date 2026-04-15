@@ -30,6 +30,8 @@ services:
       BRIDGE_REVERSE_CREDENTIALS_FILE: /data/reverse-credentials.json
       BRIDGE_REVERSE_SYNC_SCAN_INTERVAL: 1s
       BRIDGE_REVERSE_SYNC_BATCH_SIZE: "25"
+      BRIDGE_SSB_PROTOCOL_TRACE: "${E2E_TF_DEBUG:-0}"
+      MVAB_TEST_RUN_ID: "${MVAB_TEST_RUN_ID:-e2e-tf}"
     volumes:
       - bridge-data:/data
       - ../shared/bridge_entrypoint.sh:/scripts/bridge_entrypoint.sh:ro
@@ -60,6 +62,9 @@ services:
       POLL_INTERVAL: "${E2E_TF_POLL_INTERVAL:-3}"
       E2E_TF_REQUIRE_ACTIVE_BRIDGED_PEERS: "${E2E_TF_REQUIRE_ACTIVE_BRIDGED_PEERS:-1}"
       ROOM_TUNNEL_VERIFY_BIN: "${E2E_TF_ROOM_TUNNEL_VERIFY_BIN:-/bridge-data/tools/room-tunnel-feed-verify}"
+      E2E_TF_DEBUG: "${E2E_TF_DEBUG:-0}"
+      E2E_TF_ARTIFACT_DIR: "${E2E_TF_CONTAINER_ARTIFACT_DIR:-/bridge-data/artifacts/e2e-tf}"
+      MVAB_TEST_RUN_ID: "${MVAB_TEST_RUN_ID:-e2e-tf}"
     volumes:
       - bridge-data:/bridge-data
       - tf-data:/tf-data
