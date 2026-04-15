@@ -365,7 +365,7 @@ func TestSignatureVerification(t *testing.T) {
 		Content:   map[string]interface{}{"type": "post", "text": "hello from signature test"},
 	}
 
-	msgRef, sig, err := msg.Sign(kp, nil)
+	msgRef, sig, err := msg.Sign(kp)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -484,7 +484,7 @@ func createTestSignedMessage(t *testing.T, kp *keys.KeyPair, seq int64) ([]byte,
 		Content:   map[string]interface{}{"type": "post", "text": "test message"},
 	}
 
-	msgRef, sig, err := msg.Sign(kp, nil)
+	msgRef, sig, err := msg.Sign(kp)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -167,6 +167,43 @@ All HMAC-related code removed:
 
 **Tests**: All 28 test packages pass after changes.
 
-## Phase 2: Debug Signature Failure
+## Phase 2 Completion
 
-Started background subagent to compare bridge signing vs go-ssb reference implementation.
+**Date**: 2026-04-15
+
+### Findings Summary
+
+After comprehensive testing against go-ssb reference implementation:
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Key derivation | ✅ Compatible | Both use `ed25519.NewKeyFromSeed()` |
+| Field order | ✅ Compatible | Bridge matches go-ssb expected order |
+| V8 encoding | ✅ Compatible | Identical output for ASCII, BMP, emojis |
+| Signature algorithm | ✅ Compatible | Both use `crypto/ed25519.Sign()` |
+| Message hashing | ✅ Compatible | SHA256 over V8-encoded signed message |
+| String escaping | ✅ Compatible | ECMA-262 compliant |
+
+### Conclusion
+
+**The bridge's signing implementation is correct and compatible with go-ssb.**
+
+The signature verification failures observed in scuttlego must have a different root cause, possibly:
+
+1. **Message corruption in transmission** - Messages modified between signing and verification
+2. **Storage serialization issue** - Messages stored differently than sent
+3. **Version mismatch** - Scuttlego version expecting different format than tested go-ssb
+4. **Feed format issue** - The `.ggfeed-v1` suffix issue (separate problem)
+
+### Files Added
+
+- `internal/ssb/message/legacy/sign_compat_test.go` - Compatibility tests
+- `internal/ssb/message/legacy/signature_compat_test.go` - Comprehensive comparison tests
+- `docs/scratchpad/046b-signature-debug-analysis.md` - Analysis findings
+- `docs/plans/2026-04-15-phase2-signature-debug.md` - Phase 2 plan with findings
+
+### Next Steps
+
+1. Extract actual failing message from scuttlego logs
+2. Compare byte-by-byte with what bridge sent
+3. Verify with scuttlego directly using actual message content

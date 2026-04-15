@@ -2,7 +2,6 @@ package publisher
 
 import (
 	"crypto/ed25519"
-	"crypto/sha256"
 	"testing"
 	"time"
 
