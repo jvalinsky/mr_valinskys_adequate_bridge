@@ -18,6 +18,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/formats"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/message/legacy"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/message/tangle"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/refs"
@@ -45,22 +46,32 @@ type Log interface {
 }
 
 type StoredMessage struct {
-	Key      string
-	Value    []byte
-	Metadata *Metadata
-	Received int64
+	Key              string
+	Value            []byte
+	Metadata         *Metadata
+	Received         int64
+	FeedFormat       string
+	MessageFormat    string
+	RawValue         []byte
+	CanonicalRef     string
+	ValidationStatus string
 }
 
 type Metadata struct {
-	Author     string
-	Sequence   int64
-	Previous   string
-	Timestamp  int64
-	Sig        []byte
-	Hash       string
-	TangleName string
-	Root       string
-	Parents    []string
+	Author           string
+	Sequence         int64
+	Previous         string
+	Timestamp        int64
+	Sig              []byte
+	Hash             string
+	TangleName       string
+	Root             string
+	Parents          []string
+	FeedFormat       string
+	MessageFormat    string
+	RawValue         []byte
+	CanonicalRef     string
+	ValidationStatus string
 }
 
 type QuerySpec interface{}
@@ -275,6 +286,16 @@ func (s *StoreImpl) migrate() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_tangle_membership_tangle ON tangle_membership(tangle_name, root_key)`,
 		`CREATE INDEX IF NOT EXISTS idx_tangle_membership_root ON tangle_membership(root_key)`,
+		`ALTER TABLE messages ADD COLUMN feed_format TEXT NOT NULL DEFAULT 'ed25519'`,
+		`ALTER TABLE messages ADD COLUMN message_format TEXT NOT NULL DEFAULT 'sha256'`,
+		`ALTER TABLE messages ADD COLUMN raw_value BLOB`,
+		`ALTER TABLE messages ADD COLUMN canonical_ref TEXT`,
+		`ALTER TABLE messages ADD COLUMN validation_status TEXT NOT NULL DEFAULT 'validated'`,
+		`ALTER TABLE receive_log ADD COLUMN feed_format TEXT NOT NULL DEFAULT 'ed25519'`,
+		`ALTER TABLE receive_log ADD COLUMN message_format TEXT NOT NULL DEFAULT 'sha256'`,
+		`ALTER TABLE receive_log ADD COLUMN raw_value BLOB`,
+		`ALTER TABLE receive_log ADD COLUMN canonical_ref TEXT`,
+		`ALTER TABLE receive_log ADD COLUMN validation_status TEXT NOT NULL DEFAULT 'validated'`,
 	}
 
 	_, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS schema_version (
@@ -285,7 +306,7 @@ func (s *StoreImpl) migrate() error {
 	}
 
 	var version int
-	row := s.db.QueryRow("SELECT version FROM schema_version LIMIT 1")
+	row := s.db.QueryRow("SELECT COALESCE(MAX(version), 0) FROM schema_version")
 	if err := row.Scan(&version); err == sql.ErrNoRows {
 		version = 0
 	} else if err != nil {
@@ -617,9 +638,10 @@ func (l *logAdapter) Append(content []byte, metadata *Metadata) (int64, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	metadata = normalizeMetadata(content, metadata, false)
 	wrapper := &storedMessageWrapper{
 		Content:  content,
-		Metadata: metadata,
+		Metadata: metadataForValueJSON(metadata),
 	}
 	data, err := json.Marshal(wrapper)
 	if err != nil {
@@ -655,8 +677,10 @@ func (l *logAdapter) Append(content []byte, metadata *Metadata) (int64, error) {
 		key = fmt.Sprintf("%x", sha256.Sum256(data))
 
 		if _, err := tx.Exec(
-			"INSERT INTO messages (feed_id, seq, key, value_json, created_at) VALUES (?, ?, ?, ?, ?)",
-			l.feedID, nextSeq, key, data, now(),
+			`INSERT INTO messages
+				(feed_id, seq, key, value_json, created_at, feed_format, message_format, raw_value, canonical_ref, validation_status)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			l.feedID, nextSeq, key, data, now(), metadata.FeedFormat, metadata.MessageFormat, metadata.RawValue, metadata.CanonicalRef, metadata.ValidationStatus,
 		); err != nil {
 			_ = tx.Rollback()
 			if shouldRetrySQLiteBusy(err, attempt) {
@@ -699,7 +723,13 @@ func (l *logAdapter) Get(seq int64) (*StoredMessage, error) {
 
 	var data []byte
 	var createdAt int64
-	err := l.db.QueryRow("SELECT value_json, created_at FROM messages WHERE feed_id = ? AND seq = ?", l.feedID, seq).Scan(&data, &createdAt)
+	var rowKey, feedFormat, messageFormat, canonicalRef, validationStatus string
+	var rawValue []byte
+	err := l.db.QueryRow(
+		`SELECT key, value_json, created_at, feed_format, message_format, raw_value, COALESCE(canonical_ref, ''), validation_status
+		 FROM messages WHERE feed_id = ? AND seq = ?`,
+		l.feedID, seq,
+	).Scan(&rowKey, &data, &createdAt, &feedFormat, &messageFormat, &rawValue, &canonicalRef, &validationStatus)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
 	}
@@ -711,12 +741,29 @@ func (l *logAdapter) Get(seq int64) (*StoredMessage, error) {
 	if err := json.Unmarshal(data, &wrapper); err != nil {
 		return nil, err
 	}
+	metadata := normalizeMetadata(wrapper.Content, wrapper.Metadata, false)
+	applyStoredFormatFields(metadata, feedFormat, messageFormat, rawValue, canonicalRef, validationStatus)
+	key := canonicalRef
+	if key == "" {
+		key = metadata.CanonicalRef
+	}
+	if key == "" {
+		key = metadata.Hash
+	}
+	if key == "" {
+		key = rowKey
+	}
 
 	return &StoredMessage{
-		Key:      wrapper.Metadata.Hash,
-		Value:    wrapper.Content,
-		Metadata: wrapper.Metadata,
-		Received: createdAt,
+		Key:              key,
+		Value:            wrapper.Content,
+		Metadata:         metadata,
+		Received:         createdAt,
+		FeedFormat:       metadata.FeedFormat,
+		MessageFormat:    metadata.MessageFormat,
+		RawValue:         cloneBytes(metadata.RawValue),
+		CanonicalRef:     key,
+		ValidationStatus: metadata.ValidationStatus,
 	}, nil
 }
 
@@ -831,7 +878,8 @@ func (l *receiveLog) Append(content []byte, metadata *Metadata) (int64, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	if l.sigVerifier != nil && metadata != nil {
+	metadata = normalizeMetadata(content, metadata, true)
+	if l.sigVerifier != nil && metadata != nil && metadata.MessageFormat == string(formats.MessageSHA256) {
 		if err := l.sigVerifier.Verify(content, metadata); err != nil {
 			if l.sigLogger != nil {
 				go l.sigLogger(metadata.Author, metadata.Sequence, "", false, err)
@@ -845,7 +893,7 @@ func (l *receiveLog) Append(content []byte, metadata *Metadata) (int64, error) {
 
 	wrapper := &storedMessageWrapper{
 		Content:  content,
-		Metadata: metadata,
+		Metadata: metadataForValueJSON(metadata),
 	}
 	data, err := json.Marshal(wrapper)
 	if err != nil {
@@ -881,8 +929,10 @@ func (l *receiveLog) Append(content []byte, metadata *Metadata) (int64, error) {
 
 		key = fmt.Sprintf("%x", sha256.Sum256(data))
 		if _, err := tx.Exec(
-			"INSERT INTO receive_log (seq, key, value_json, created_at) VALUES (?, ?, ?, ?)",
-			nextSeq, key, data, now(),
+			`INSERT INTO receive_log
+				(seq, key, value_json, created_at, feed_format, message_format, raw_value, canonical_ref, validation_status)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			nextSeq, key, data, now(), metadata.FeedFormat, metadata.MessageFormat, metadata.RawValue, metadata.CanonicalRef, metadata.ValidationStatus,
 		); err != nil {
 			_ = tx.Rollback()
 			if shouldRetrySQLiteBusy(err, attempt) {
@@ -918,7 +968,13 @@ func (l *receiveLog) Get(seq int64) (*StoredMessage, error) {
 
 	var data []byte
 	var createdAt int64
-	err := l.db.QueryRow("SELECT value_json, created_at FROM receive_log WHERE seq = ?", seq).Scan(&data, &createdAt)
+	var rowKey, feedFormat, messageFormat, canonicalRef, validationStatus string
+	var rawValue []byte
+	err := l.db.QueryRow(
+		`SELECT key, value_json, created_at, feed_format, message_format, raw_value, COALESCE(canonical_ref, ''), validation_status
+		 FROM receive_log WHERE seq = ?`,
+		seq,
+	).Scan(&rowKey, &data, &createdAt, &feedFormat, &messageFormat, &rawValue, &canonicalRef, &validationStatus)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
 	}
@@ -930,12 +986,29 @@ func (l *receiveLog) Get(seq int64) (*StoredMessage, error) {
 	if err := json.Unmarshal(data, &wrapper); err != nil {
 		return nil, err
 	}
+	metadata := normalizeMetadata(wrapper.Content, wrapper.Metadata, true)
+	applyStoredFormatFields(metadata, feedFormat, messageFormat, rawValue, canonicalRef, validationStatus)
+	key := canonicalRef
+	if key == "" {
+		key = metadata.CanonicalRef
+	}
+	if key == "" {
+		key = metadata.Hash
+	}
+	if key == "" {
+		key = rowKey
+	}
 
 	return &StoredMessage{
-		Key:      wrapper.Metadata.Hash,
-		Value:    wrapper.Content,
-		Metadata: wrapper.Metadata,
-		Received: createdAt,
+		Key:              key,
+		Value:            wrapper.Content,
+		Metadata:         metadata,
+		Received:         createdAt,
+		FeedFormat:       metadata.FeedFormat,
+		MessageFormat:    metadata.MessageFormat,
+		RawValue:         cloneBytes(metadata.RawValue),
+		CanonicalRef:     key,
+		ValidationStatus: metadata.ValidationStatus,
 	}, nil
 }
 
@@ -945,6 +1018,101 @@ func (l *receiveLog) Query(specs ...QuerySpec) (Source, error) {
 
 func (l *receiveLog) Close() error {
 	return nil
+}
+
+func normalizeMetadata(content []byte, metadata *Metadata, defaultRaw bool) *Metadata {
+	var md Metadata
+	if metadata != nil {
+		md = *metadata
+		md.Sig = cloneBytes(metadata.Sig)
+		md.Parents = append([]string(nil), metadata.Parents...)
+		md.RawValue = cloneBytes(metadata.RawValue)
+	}
+
+	if strings.TrimSpace(md.FeedFormat) == "" {
+		if format := formats.FeedFromString(md.Author); format != "" {
+			md.FeedFormat = string(format)
+		}
+	}
+	if strings.TrimSpace(md.FeedFormat) == "" {
+		md.FeedFormat = string(formats.FeedEd25519)
+	}
+
+	if strings.TrimSpace(md.MessageFormat) == "" {
+		if format := formats.MessageFromString(md.Hash); format != "" {
+			md.MessageFormat = string(format)
+		}
+	}
+	if strings.TrimSpace(md.MessageFormat) == "" {
+		if format := formats.MessageFromFeed(formats.FeedFormat(md.FeedFormat)); format != "" {
+			md.MessageFormat = string(format)
+		}
+	}
+	if strings.TrimSpace(md.MessageFormat) == "" {
+		md.MessageFormat = string(formats.MessageSHA256)
+	}
+
+	if strings.TrimSpace(md.CanonicalRef) == "" {
+		md.CanonicalRef = strings.TrimSpace(md.Hash)
+	}
+	if strings.TrimSpace(md.ValidationStatus) == "" {
+		md.ValidationStatus = "validated"
+	}
+	if defaultRaw && len(md.RawValue) == 0 && len(content) > 0 {
+		md.RawValue = cloneBytes(content)
+	}
+	return &md
+}
+
+func metadataForValueJSON(metadata *Metadata) *Metadata {
+	if metadata == nil {
+		return nil
+	}
+	md := *metadata
+	md.Sig = cloneBytes(metadata.Sig)
+	md.Parents = append([]string(nil), metadata.Parents...)
+	md.FeedFormat = ""
+	md.MessageFormat = ""
+	md.RawValue = nil
+	md.CanonicalRef = ""
+	md.ValidationStatus = ""
+	return &md
+}
+
+func applyStoredFormatFields(md *Metadata, feedFormat, messageFormat string, rawValue []byte, canonicalRef, validationStatus string) {
+	if md == nil {
+		return
+	}
+	if strings.TrimSpace(feedFormat) != "" {
+		md.FeedFormat = strings.TrimSpace(feedFormat)
+	}
+	if strings.TrimSpace(messageFormat) != "" {
+		md.MessageFormat = strings.TrimSpace(messageFormat)
+	}
+	if len(rawValue) > 0 {
+		md.RawValue = cloneBytes(rawValue)
+	}
+	if strings.TrimSpace(canonicalRef) != "" {
+		md.CanonicalRef = strings.TrimSpace(canonicalRef)
+	}
+	if strings.TrimSpace(md.CanonicalRef) == "" {
+		md.CanonicalRef = strings.TrimSpace(md.Hash)
+	}
+	if strings.TrimSpace(validationStatus) != "" {
+		md.ValidationStatus = strings.TrimSpace(validationStatus)
+	}
+	if strings.TrimSpace(md.ValidationStatus) == "" {
+		md.ValidationStatus = "validated"
+	}
+}
+
+func cloneBytes(src []byte) []byte {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make([]byte, len(src))
+	copy(dst, src)
+	return dst
 }
 
 func shouldRetrySQLiteBusy(err error, attempt int) bool {
@@ -969,26 +1137,51 @@ func (b *blobStore) Put(r io.Reader) ([]byte, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	data, err := io.ReadAll(r)
+	if b.blobPath != "" {
+		if err := os.MkdirAll(b.blobPath, 0755); err != nil {
+			return nil, err
+		}
+		tmp, err := os.CreateTemp(b.blobPath, ".blob-*")
+		if err != nil {
+			return nil, err
+		}
+		tmpName := tmp.Name()
+		defer os.Remove(tmpName)
+
+		h := sha256.New()
+		size, copyErr := io.Copy(io.MultiWriter(tmp, h), r)
+		closeErr := tmp.Close()
+		if copyErr != nil {
+			return nil, copyErr
+		}
+		if closeErr != nil {
+			return nil, closeErr
+		}
+
+		hash := h.Sum(nil)
+		blobFile := filepath.Join(b.blobPath, fmt.Sprintf("%x", hash))
+		if err := os.Rename(tmpName, blobFile); err != nil {
+			return nil, err
+		}
+		_, err = b.db.Exec(
+			"INSERT OR REPLACE INTO blobs (hash, size, created_at) VALUES (?, ?, ?)",
+			hash, size, now(),
+		)
+		if err != nil {
+			return nil, err
+		}
+		return hash, nil
+	}
+
+	h := sha256.New()
+	size, err := io.Copy(h, r)
 	if err != nil {
 		return nil, err
 	}
-
-	hash := sha256Hash(data)
-
-	if b.blobPath != "" {
-		blobFile := filepath.Join(b.blobPath, fmt.Sprintf("%x", hash))
-		if err := os.MkdirAll(filepath.Dir(blobFile), 0755); err != nil {
-			return nil, err
-		}
-		if err := os.WriteFile(blobFile, data, 0644); err != nil {
-			return nil, err
-		}
-	}
-
+	hash := h.Sum(nil)
 	_, err = b.db.Exec(
 		"INSERT OR REPLACE INTO blobs (hash, size, created_at) VALUES (?, ?, ?)",
-		hash, int64(len(data)), now(),
+		hash, size, now(),
 	)
 	if err != nil {
 		return nil, err
@@ -1092,11 +1285,6 @@ func (b *blobStore) Delete(hash []byte) error {
 
 func now() int64 {
 	return time.Now().UnixMilli()
-}
-
-func sha256Hash(data []byte) []byte {
-	h := sha256.Sum256(data)
-	return h[:]
 }
 
 type MessageVerifier func(msg *legacy.SignedMessage, author *refs.FeedRef) error

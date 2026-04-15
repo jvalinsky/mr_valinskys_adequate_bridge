@@ -3,6 +3,7 @@ package feedlog
 import (
 	"bytes"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/formats"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/keys"
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/message/legacy"
 )
@@ -185,6 +187,149 @@ func TestStore(t *testing.T) {
 	hasBlob, _ = bs.Has(hash)
 	if hasBlob {
 		t.Fatal("expected blob to be deleted")
+	}
+}
+
+func TestMessageFormatMetadataRoundTrip(t *testing.T) {
+	tempDir := t.TempDir()
+	store, err := NewStore(Config{
+		DBPath:     filepath.Join(tempDir, "test.sqlite"),
+		RepoPath:   tempDir,
+		BlobSubdir: "blobs",
+	})
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	defer store.Close()
+
+	author := "@alice.bendybutt-v1"
+	log, err := store.Logs().Create(author)
+	if err != nil {
+		t.Fatalf("create log: %v", err)
+	}
+
+	raw := []byte("d5:bendy4:rawe")
+	content := []byte(`{"type":"post","text":"projection"}`)
+	metadata := &Metadata{
+		Author:           author,
+		Sequence:         1,
+		Timestamp:        123,
+		Hash:             "%abc.bendybutt-v1",
+		FeedFormat:       string(formats.FeedBendyButtV1),
+		MessageFormat:    string(formats.MessageBendyButtV1),
+		RawValue:         raw,
+		CanonicalRef:     "%abc.bendybutt-v1",
+		ValidationStatus: "validated",
+	}
+	if _, err := log.Append(content, metadata); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+
+	got, err := log.Get(1)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if got.FeedFormat != string(formats.FeedBendyButtV1) || got.MessageFormat != string(formats.MessageBendyButtV1) {
+		t.Fatalf("unexpected formats: %+v", got)
+	}
+	if got.CanonicalRef != "%abc.bendybutt-v1" || got.Key != "%abc.bendybutt-v1" {
+		t.Fatalf("unexpected canonical ref/key: %+v", got)
+	}
+	if !bytes.Equal(got.RawValue, raw) || !bytes.Equal(got.Metadata.RawValue, raw) {
+		t.Fatalf("raw bytes were not preserved")
+	}
+}
+
+func TestFeedlogMigratesClassicRowsToFormatDefaults(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "legacy.sqlite")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`
+		CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
+		INSERT INTO schema_version (version) VALUES (13);
+		CREATE TABLE feeds (id INTEGER PRIMARY KEY AUTOINCREMENT, addr BLOB UNIQUE NOT NULL, created_at INTEGER NOT NULL);
+		CREATE INDEX idx_feeds_addr ON feeds(addr);
+		CREATE TABLE messages (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			feed_id INTEGER NOT NULL,
+			seq INTEGER NOT NULL,
+			key TEXT NOT NULL,
+			value_json BLOB NOT NULL,
+			created_at INTEGER NOT NULL,
+			FOREIGN KEY (feed_id) REFERENCES feeds(id),
+			UNIQUE(feed_id, seq)
+		);
+		CREATE INDEX idx_messages_feed_seq ON messages(feed_id, seq);
+		CREATE TABLE messages_key_idx (key TEXT UNIQUE NOT NULL, feed_id INTEGER NOT NULL, seq INTEGER NOT NULL);
+		CREATE INDEX idx_messages_key ON messages_key_idx(key);
+		CREATE TABLE receive_log (id INTEGER PRIMARY KEY, seq INTEGER NOT NULL, key TEXT NOT NULL, value_json BLOB NOT NULL, created_at INTEGER NOT NULL);
+		CREATE TABLE blobs (id INTEGER PRIMARY KEY AUTOINCREMENT, hash BLOB UNIQUE NOT NULL, size INTEGER NOT NULL, created_at INTEGER NOT NULL);
+		CREATE INDEX idx_blobs_hash ON blobs(hash);
+		CREATE TABLE tangles (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			root TEXT NOT NULL,
+			tips TEXT,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL,
+			UNIQUE(name, root)
+		);
+		CREATE INDEX idx_tangles_name_root ON tangles(name, root);
+		CREATE TABLE tangle_membership (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			message_key TEXT NOT NULL,
+			tangle_name TEXT NOT NULL,
+			root_key TEXT NOT NULL,
+			parent_keys TEXT,
+			created_at INTEGER NOT NULL,
+			UNIQUE(message_key, tangle_name)
+		);
+		CREATE INDEX idx_tangle_membership_tangle ON tangle_membership(tangle_name, root_key);
+		CREATE INDEX idx_tangle_membership_root ON tangle_membership(root_key);
+	`)
+	if err != nil {
+		t.Fatalf("seed legacy schema: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO feeds (id, addr, created_at) VALUES (?, ?, ?)`, 1, []byte("@alice.ed25519"), 1); err != nil {
+		t.Fatalf("insert legacy feed: %v", err)
+	}
+	wrapper, err := json.Marshal(&storedMessageWrapper{
+		Content: []byte(`{"type":"post"}`),
+		Metadata: &Metadata{
+			Author:    "@alice.ed25519",
+			Sequence:  1,
+			Timestamp: 1,
+			Hash:      "%legacy.sha256",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO messages (feed_id, seq, key, value_json, created_at) VALUES (1, 1, '%legacy.sha256', ?, 1)`, wrapper); err != nil {
+		t.Fatalf("insert legacy message: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := NewStore(Config{DBPath: dbPath, RepoPath: tempDir})
+	if err != nil {
+		t.Fatalf("migrate legacy store: %v", err)
+	}
+	defer store.Close()
+	log, err := store.Logs().Get("@alice.ed25519")
+	if err != nil {
+		t.Fatalf("get migrated log: %v", err)
+	}
+	msg, err := log.Get(1)
+	if err != nil {
+		t.Fatalf("get migrated message: %v", err)
+	}
+	if msg.FeedFormat != string(formats.FeedEd25519) || msg.MessageFormat != string(formats.MessageSHA256) {
+		t.Fatalf("unexpected migrated formats: %+v", msg)
 	}
 }
 
