@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/muxrpc/codec"
+	"github.com/jvalinsky/mr_valinskys_adequate_bridge/internal/ssb/protocoltrace"
 )
 
 type CallType string
@@ -201,6 +202,7 @@ type Request struct {
 
 	id    int32
 	abort context.CancelFunc
+	trace string
 
 	remoteAddr net.Addr
 	endpoint   *rpc
@@ -286,6 +288,16 @@ func (req *Request) CloseWithError(cerr error) error {
 		}
 	}
 	if req.endpoint != nil {
+		if cerr != nil && cerr != io.EOF {
+			protocoltrace.Emit(protocoltrace.Event{
+				Phase:    "request_close_error",
+				ConnID:   req.endpoint.connID,
+				StreamID: req.trace,
+				Method:   req.Method.String(),
+				Req:      req.id,
+				ErrKind:  protocoltrace.ErrKind(cerr),
+			})
+		}
 		req.endpoint.closeStream(req)
 	}
 	return nil
@@ -313,6 +325,7 @@ type rpc struct {
 	out     []codec.Packet
 	sendCh  chan struct{}
 	done    chan struct{}
+	connID  string
 }
 
 func NewRPC(ctx context.Context, conn Conn, handler Handler, manifest *Manifest) *rpc {
@@ -325,6 +338,7 @@ func NewRPC(ctx context.Context, conn Conn, handler Handler, manifest *Manifest)
 		nextID:   1,
 		sendCh:   make(chan struct{}, 1),
 		done:     make(chan struct{}),
+		connID:   protocoltrace.NewConnID("muxrpc"),
 	}
 	r.packer = NewPacker(r.conn)
 	go r.serve()
@@ -417,6 +431,15 @@ func (r *rpc) HandlePacket(p *codec.Packet) {
 
 		if hasExisting {
 			slog.Debug("muxrpc handle packet follow-up detected", "req", p.Req)
+			protocoltrace.Emit(protocoltrace.Event{
+				Phase:     "stream_frame_in",
+				Direction: "in",
+				ConnID:    r.connID,
+				StreamID:  existingReq.trace,
+				Method:    existingReq.Method.String(),
+				Req:       p.Req,
+				Bytes:     len(p.Body),
+			})
 			if len(p.Body) > 0 {
 				if err := existingReq.source.WritePacket(p); err != nil {
 				}
@@ -434,6 +457,7 @@ func (r *rpc) HandlePacket(p *codec.Packet) {
 				source:     NewByteSource(r.ctx),
 				remoteAddr: r.conn.RemoteAddr(),
 				endpoint:   r,
+				trace:      protocoltrace.NewStreamID(),
 			}
 			req.sink.SetReqID(p.Req)
 
@@ -455,6 +479,15 @@ func (r *rpc) HandlePacket(p *codec.Packet) {
 			}
 
 			if r.handler != nil {
+				protocoltrace.Emit(protocoltrace.Event{
+					Phase:     "call_in",
+					Direction: "in",
+					ConnID:    r.connID,
+					StreamID:  req.trace,
+					Method:    req.Method.String(),
+					Req:       p.Req,
+					Bytes:     len(p.Body),
+				})
 				go r.handler.HandleCall(r.ctx, req)
 			}
 		}
@@ -463,6 +496,22 @@ func (r *rpc) HandlePacket(p *codec.Packet) {
 		req, ok := r.streams[-p.Req]
 		r.mu.Unlock()
 		if ok {
+			errKind := ""
+			if p.Flag.Get(codec.FlagEndErr) {
+				if _, isRemoteErr := decodeRemoteErrorEnvelope(p.Body); isRemoteErr {
+					errKind = "remote_error"
+				}
+			}
+			protocoltrace.Emit(protocoltrace.Event{
+				Phase:     "response_frame_in",
+				Direction: "in",
+				ConnID:    r.connID,
+				StreamID:  req.trace,
+				Method:    req.Method.String(),
+				Req:       -p.Req,
+				Bytes:     len(p.Body),
+				ErrKind:   errKind,
+			})
 			if len(p.Body) > 0 {
 				if err := req.source.WritePacket(p); err != nil {
 				}
@@ -478,6 +527,15 @@ func (r *rpc) HandlePacket(p *codec.Packet) {
 }
 
 func (r *rpc) closeStream(req *Request) {
+	if req != nil {
+		protocoltrace.Emit(protocoltrace.Event{
+			Phase:    "stream_close",
+			ConnID:   r.connID,
+			StreamID: req.trace,
+			Method:   req.Method.String(),
+			Req:      req.id,
+		})
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.streams, req.id)
@@ -598,6 +656,7 @@ func (r *rpc) doCall(ctx context.Context, callType string, tipe RequestEncoding,
 		source:     src,
 		remoteAddr: r.conn.RemoteAddr(),
 		endpoint:   r,
+		trace:      protocoltrace.NewStreamID(),
 	}
 
 	if len(args) > 0 {
@@ -621,6 +680,15 @@ func (r *rpc) doCall(ctx context.Context, callType string, tipe RequestEncoding,
 	if err := r.WritePacket(pkt); err != nil {
 		return nil, fmt.Errorf("muxrpc: failed to send packet: %w", err)
 	}
+	protocoltrace.Emit(protocoltrace.Event{
+		Phase:     "call_out",
+		Direction: "out",
+		ConnID:    r.connID,
+		StreamID:  req.trace,
+		Method:    method.String(),
+		Req:       id,
+		Bytes:     len(body),
+	})
 
 	r.mu.Lock()
 	r.streams[id] = req
