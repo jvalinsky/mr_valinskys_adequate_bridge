@@ -569,7 +569,11 @@ func (h *EBTHandler) createStreamHistory(ctx context.Context, tx Writer, arg Cre
 	retries := 0
 	startTime := time.Now()
 
+	sent := 0
 	for seq := arg.Seq; ; {
+		if arg.Limit > 0 && sent >= arg.Limit {
+			return nil
+		}
 		msg, err := h.store.GetMessage(feed, seq)
 		if err != nil {
 			if errors.Is(err, feedlog.ErrNotFound) || errors.Is(err, ErrNotFound) {
@@ -613,6 +617,7 @@ func (h *EBTHandler) createStreamHistory(ctx context.Context, tx Writer, arg Cre
 		if err := tx.Write(ctx, msg); err != nil {
 			return err
 		}
+		sent++
 		seq++
 	}
 }

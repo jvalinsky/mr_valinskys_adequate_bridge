@@ -1,6 +1,6 @@
 {
   "scope": "Room + Replication SIP/SSB compliance",
-  "updated": "2026-04-15",
+  "updated": "2026-04-16",
   "standard_network_identifier_hex": "d4a1cb88a66f02f8db635ce26441cc5dac1b08420ceaac230839b755845a9ffb",
   "default_advertising_policy": "Only advertise implemented methods with local compliance coverage. Unsupported formats must be explicit non-support.",
   "surfaces": [
@@ -16,7 +16,7 @@
       "type": "framing",
       "status": "supported",
       "advertised": true,
-      "evidence": ["internal/ssb/muxrpc stream termination tests"]
+      "evidence": ["internal/ssb/muxrpc stream termination tests", "strict non-JSON termination rejection test"]
     },
     {
       "name": "manifest",
@@ -142,42 +142,42 @@
       "type": "source",
       "status": "supported_classic",
       "advertised": true,
-      "evidence": ["raw value preservation tests", "room-tunnel-feed-verify history"]
+      "evidence": ["raw value preservation tests", "room-tunnel-feed-verify history", "raw artifact capture tests"]
     },
     {
       "name": "ebt.replicate",
       "type": "duplex",
       "status": "supported_classic",
       "advertised": true,
-      "evidence": ["replication tests", "Tildefriends harness"]
+      "evidence": ["replication tests", "Tildefriends harness", "EBT limit/live/append rejection tests"]
     },
     {
       "name": "blobs.add",
       "type": "sink",
       "status": "supported",
       "advertised": true,
-      "evidence": ["blob plugin tests"]
+      "evidence": ["blob plugin tests", "blob getSlice range test"]
     },
     {
       "name": "blobs.get",
       "type": "source",
       "status": "supported",
       "advertised": true,
-      "evidence": ["blob plugin tests"]
+      "evidence": ["blob plugin tests", "blob has false test"]
     },
     {
       "name": "blobs.has",
       "type": "async",
       "status": "supported",
       "advertised": true,
-      "evidence": ["blob plugin tests"]
+      "evidence": ["blob plugin tests", "blob size zero/match tests"]
     },
     {
       "name": "blobs.size",
       "type": "async",
       "status": "supported",
       "advertised": true,
-      "evidence": ["blob plugin tests"]
+      "evidence": ["blob plugin tests", "blob want existing stream test"]
     },
     {
       "name": "blobs.want",
@@ -191,7 +191,21 @@
       "type": "source",
       "status": "supported_long_lived",
       "advertised": true,
-      "evidence": ["blob plugin tests", "Track 044 decision"]
+      "evidence": ["blob plugin tests", "Track 044 decision", "long-lived empty stream and existing/live wants tests"]
+    },
+    {
+      "name": "room-replication-compliance-probe",
+      "type": "local_probe",
+      "status": "supported",
+      "advertised": false,
+      "evidence": ["cmd/room-replication-compliance-probe unit tests"]
+    },
+    {
+      "name": "raw_history_artifacts",
+      "type": "local_probe_artifact",
+      "status": "opt_in_local_only",
+      "advertised": false,
+      "evidence": ["room-tunnel-feed-verify --raw-artifact-dir tests"]
     },
     {
       "name": "metafeeds",
@@ -216,4 +230,3 @@
     }
   ]
 }
-

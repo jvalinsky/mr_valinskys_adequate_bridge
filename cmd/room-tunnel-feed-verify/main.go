@@ -333,6 +333,7 @@ func runHistory(args []string) error {
 	fs.IntVar(&cfg.Limit, "limit", 10, "createHistoryStream limit")
 	fs.Int64Var(&cfg.Sequence, "sequence", 0, "createHistoryStream starting sequence")
 	fs.BoolVar(&cfg.Live, "live", false, "keep createHistoryStream live after backlog")
+	fs.StringVar(&cfg.RawArtifactDir, "raw-artifact-dir", "", "optional directory for per-message raw signed payload artifacts")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -434,8 +435,13 @@ func runHistory(args []string) error {
 		if err != nil {
 			return fmt.Errorf("history frame %d invalid: %w", len(summary.Frames)+1, err)
 		}
+		if cfg.RawArtifactDir != "" {
+			if err := writeRawHistoryArtifact(cfg.RawArtifactDir, targetFeed.String(), frame); err != nil {
+				return fmt.Errorf("write raw artifact for history frame %d: %w", len(summary.Frames)+1, err)
+			}
+		}
 		summary.Frames = append(summary.Frames, frame)
-		if len(summary.Frames) >= cfg.MinCount {
+		if cfg.Live && len(summary.Frames) >= cfg.MinCount {
 			break
 		}
 	}
@@ -509,17 +515,18 @@ type probeConfig struct {
 }
 
 type historyConfig struct {
-	RoomAddr     string
-	RoomFeed     string
-	KeyFile      string
-	TargetFeed   string
-	ExpectAuthor string
-	SHSCap       string
-	Timeout      time.Duration
-	MinCount     int
-	Limit        int
-	Sequence     int64
-	Live         bool
+	RoomAddr       string
+	RoomFeed       string
+	KeyFile        string
+	TargetFeed     string
+	ExpectAuthor   string
+	SHSCap         string
+	Timeout        time.Duration
+	MinCount       int
+	Limit          int
+	Sequence       int64
+	Live           bool
+	RawArtifactDir string
 }
 
 type tunnelConnectArg struct {
@@ -610,6 +617,7 @@ type historySummary struct {
 
 type historyFrameSummary struct {
 	Key            string `json:"key,omitempty"`
+	MessageRef     string `json:"message_ref"`
 	Author         string `json:"author"`
 	FeedFormat     string `json:"feed_format"`
 	Sequence       int64  `json:"sequence"`
@@ -619,6 +627,7 @@ type historyFrameSummary struct {
 	Signature      string `json:"signature"`
 	SignatureValid bool   `json:"signature_valid"`
 	RawSHA256      string `json:"raw_sha256"`
+	RawJSON        []byte `json:"-"`
 }
 
 func validateClassicHistoryFrame(payload []byte, expectAuthor string) (historyFrameSummary, error) {
@@ -698,6 +707,7 @@ func validateClassicHistoryFrame(payload []byte, expectAuthor string) (historyFr
 
 	return historyFrameSummary{
 		Key:            key,
+		MessageRef:     computedRef.String(),
 		Author:         value.Author,
 		FeedFormat:     string(feedFormat),
 		Sequence:       value.Sequence,
@@ -707,7 +717,117 @@ func validateClassicHistoryFrame(payload []byte, expectAuthor string) (historyFr
 		Signature:      value.Signature,
 		SignatureValid: true,
 		RawSHA256:      hex.EncodeToString(rawHash[:]),
+		RawJSON:        append([]byte(nil), valuePayload...),
 	}, nil
+}
+
+type rawHistoryArtifact struct {
+	Peer           string          `json:"peer"`
+	Feed           string          `json:"feed"`
+	Sequence       int64           `json:"sequence"`
+	MessageRef     string          `json:"message_ref"`
+	EnvelopeKey    string          `json:"envelope_key,omitempty"`
+	RawSHA256      string          `json:"raw_sha256"`
+	SignatureValid bool            `json:"signature_valid"`
+	SourcePath     string          `json:"source_path"`
+	RawJSON        json.RawMessage `json:"raw_json"`
+	RawJSONBase64  string          `json:"raw_json_base64"`
+}
+
+func writeRawHistoryArtifact(dir string, peer string, frame historyFrameSummary) error {
+	if len(frame.RawJSON) == 0 {
+		return fmt.Errorf("frame has no raw JSON bytes")
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create artifact dir: %w", err)
+	}
+	ref := frame.MessageRef
+	if ref == "" {
+		ref = frame.Key
+	}
+	refPart := strings.TrimPrefix(ref, "%")
+	refPart = strings.TrimSuffix(refPart, ".sha256")
+	refPart = strings.NewReplacer("/", "_", "+", "-", "=", "").Replace(refPart)
+	if refPart == "" {
+		refPart = frame.RawSHA256
+	}
+	name := fmt.Sprintf("%06d-%s.json", frame.Sequence, refPart)
+	artifact := rawHistoryArtifact{
+		Peer:           peer,
+		Feed:           frame.Author,
+		Sequence:       frame.Sequence,
+		MessageRef:     ref,
+		EnvelopeKey:    frame.Key,
+		RawSHA256:      frame.RawSHA256,
+		SignatureValid: frame.SignatureValid,
+		SourcePath:     "room_tunnel/createHistoryStream",
+		RawJSON:        json.RawMessage(frame.RawJSON),
+		RawJSONBase64:  base64.StdEncoding.EncodeToString(frame.RawJSON),
+	}
+	data, err := marshalRawHistoryArtifact(artifact)
+	if err != nil {
+		return fmt.Errorf("encode artifact: %w", err)
+	}
+	data = append(data, '\n')
+	if err := os.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
+		return fmt.Errorf("write artifact: %w", err)
+	}
+	return nil
+}
+
+func marshalRawHistoryArtifact(artifact rawHistoryArtifact) ([]byte, error) {
+	raw := bytes.TrimSpace(artifact.RawJSON)
+	if !json.Valid(raw) {
+		return nil, fmt.Errorf("raw_json is not valid JSON")
+	}
+	var buf bytes.Buffer
+	buf.WriteByte('{')
+	writeArtifactString(&buf, "peer", artifact.Peer, false)
+	writeArtifactString(&buf, "feed", artifact.Feed, true)
+	writeArtifactInt(&buf, "sequence", artifact.Sequence)
+	writeArtifactString(&buf, "message_ref", artifact.MessageRef, true)
+	if artifact.EnvelopeKey != "" {
+		writeArtifactString(&buf, "envelope_key", artifact.EnvelopeKey, true)
+	}
+	writeArtifactString(&buf, "raw_sha256", artifact.RawSHA256, true)
+	writeArtifactBool(&buf, "signature_valid", artifact.SignatureValid)
+	writeArtifactString(&buf, "source_path", artifact.SourcePath, true)
+	buf.WriteString(`,"raw_json":`)
+	buf.Write(raw)
+	writeArtifactString(&buf, "raw_json_base64", artifact.RawJSONBase64, true)
+	buf.WriteByte('}')
+	return buf.Bytes(), nil
+}
+
+func writeArtifactString(buf *bytes.Buffer, name string, value string, comma bool) {
+	if comma {
+		buf.WriteByte(',')
+	}
+	key, _ := json.Marshal(name)
+	val, _ := json.Marshal(value)
+	buf.Write(key)
+	buf.WriteByte(':')
+	buf.Write(val)
+}
+
+func writeArtifactInt(buf *bytes.Buffer, name string, value int64) {
+	buf.WriteByte(',')
+	key, _ := json.Marshal(name)
+	buf.Write(key)
+	buf.WriteByte(':')
+	buf.WriteString(fmt.Sprintf("%d", value))
+}
+
+func writeArtifactBool(buf *bytes.Buffer, name string, value bool) {
+	buf.WriteByte(',')
+	key, _ := json.Marshal(name)
+	buf.Write(key)
+	buf.WriteByte(':')
+	if value {
+		buf.WriteString("true")
+	} else {
+		buf.WriteString("false")
+	}
 }
 
 type roomConn struct {

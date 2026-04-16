@@ -403,7 +403,7 @@ func (h *Handler) handleGetSlice(ctx context.Context, req *muxrpc.Request) {
 		Start int64  `json:"start"`
 		Size  int64  `json:"size"`
 	}
-	if err := decodeArgs(req.RawArgs, &args); err != nil {
+	if err := decodeSingleArg(req.RawArgs, &args); err != nil {
 		req.CloseWithError(err)
 		return
 	}
@@ -515,6 +515,20 @@ func (h *Handler) handleAdd(ctx context.Context, req *muxrpc.Request) {
 }
 
 func decodeArgs(raw []byte, v interface{}) error {
+	return json.Unmarshal(raw, v)
+}
+
+func decodeSingleArg(raw []byte, v interface{}) error {
+	var arr []json.RawMessage
+	if err := json.Unmarshal(raw, &arr); err == nil {
+		if len(arr) == 0 {
+			return errors.New("missing argument")
+		}
+		if len(arr) != 1 {
+			return errors.New("expected exactly one argument")
+		}
+		return json.Unmarshal(arr[0], v)
+	}
 	return json.Unmarshal(raw, v)
 }
 

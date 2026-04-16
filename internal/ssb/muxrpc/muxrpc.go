@@ -445,7 +445,13 @@ func (r *rpc) HandlePacket(p *codec.Packet) {
 				}
 			}
 			if p.Flag.Get(codec.FlagEndErr) {
-				existingReq.source.Cancel(nil)
+				if !p.Flag.Get(codec.FlagJSON) {
+					existingReq.source.Cancel(fmt.Errorf("muxrpc: termination frame for %s should have body type set to JSON", existingReq.Method.String()))
+				} else if remoteErr, ok := decodeRemoteErrorEnvelope(p.Body); ok {
+					existingReq.source.Cancel(remoteErr)
+				} else {
+					existingReq.source.Cancel(nil)
+				}
 				r.closeStream(existingReq)
 			}
 		} else {
@@ -537,7 +543,13 @@ func (r *rpc) HandlePacket(p *codec.Packet) {
 			// Stream end: FlagEndErr signals termination regardless of FlagStream.
 			// Both stream end (EndErr+Stream) and async error (EndErr only) should close.
 			if p.Flag.Get(codec.FlagEndErr) {
-				req.source.Cancel(nil)
+				if !p.Flag.Get(codec.FlagJSON) {
+					req.source.Cancel(fmt.Errorf("muxrpc: termination frame for %s should have body type set to JSON", req.Method.String()))
+				} else if remoteErr, ok := decodeRemoteErrorEnvelope(p.Body); ok {
+					req.source.Cancel(remoteErr)
+				} else {
+					req.source.Cancel(nil)
+				}
 				r.closeStream(req)
 			}
 		}

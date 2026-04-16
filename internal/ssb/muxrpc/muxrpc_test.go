@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -276,6 +277,57 @@ func TestRPCManifestBuiltIn(t *testing.T) {
 	}
 	if got["manifest"] != "sync" || got["createHistoryStream"] != "source" {
 		t.Fatalf("unexpected manifest response: %#v", got)
+	}
+}
+
+func TestSourceRejectsNonJSONTermination(t *testing.T) {
+	p1, p2 := net.Pipe()
+	defer p1.Close()
+	defer p2.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	client := NewRPC(ctx, p1, nil, nil)
+	defer client.Terminate()
+
+	serverPacker := NewPacker(p2)
+	defer serverPacker.Close()
+
+	src, err := client.Source(ctx, TypeBinary, Method{"test", "source"})
+	if err != nil {
+		t.Fatalf("open source: %v", err)
+	}
+
+	req, err := serverPacker.NextPacket(ctx)
+	if err != nil {
+		t.Fatalf("read request: %v", err)
+	}
+	if err := serverPacker.WritePacket(codec.Packet{
+		Flag: codec.FlagStream,
+		Req:  -req.Req,
+		Body: []byte("payload"),
+	}); err != nil {
+		t.Fatalf("write payload: %v", err)
+	}
+	if err := serverPacker.WritePacket(codec.Packet{
+		Flag: codec.FlagStream | codec.FlagEndErr,
+		Req:  -req.Req,
+	}); err != nil {
+		t.Fatalf("write non-json end: %v", err)
+	}
+
+	if !src.Next(ctx) {
+		t.Fatalf("expected payload before termination, err=%v", src.Err())
+	}
+	if got, err := src.Bytes(); err != nil || string(got) != "payload" {
+		t.Fatalf("payload = %q err=%v", string(got), err)
+	}
+	if src.Next(ctx) {
+		t.Fatal("expected stream to end after termination")
+	}
+	if err := src.Err(); err == nil || !strings.Contains(err.Error(), "body type set to JSON") {
+		t.Fatalf("expected strict termination error, got %v", err)
 	}
 }
 

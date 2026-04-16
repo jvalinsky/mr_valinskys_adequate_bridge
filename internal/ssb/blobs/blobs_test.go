@@ -143,6 +143,41 @@ func TestBlobsHandler(t *testing.T) {
 		}
 	})
 
+	t.Run("has false and size zero for missing blob", func(t *testing.T) {
+		h := sha256.Sum256([]byte("missing"))
+		ref, _ := refs.NewBlobRef(h[:])
+
+		var has bool
+		if err := client.Async(ctx, &has, muxrpc.TypeJSON, muxrpc.Method{"blobs", "has"}, ref.String()); err != nil {
+			t.Fatal(err)
+		}
+		if has {
+			t.Fatal("expected missing blob to report has=false")
+		}
+
+		var size int64
+		if err := client.Async(ctx, &size, muxrpc.TypeJSON, muxrpc.Method{"blobs", "size"}, ref.String()); err != nil {
+			t.Fatal(err)
+		}
+		if size != 0 {
+			t.Fatalf("expected missing blob size 0, got %d", size)
+		}
+	})
+
+	t.Run("size", func(t *testing.T) {
+		h := sha256.Sum256([]byte("sized data"))
+		ref, _ := refs.NewBlobRef(h[:])
+		bs.blobs[string(ref.Hash())] = []byte("sized data")
+
+		var size int64
+		if err := client.Async(ctx, &size, muxrpc.TypeJSON, muxrpc.Method{"blobs", "size"}, ref.String()); err != nil {
+			t.Fatal(err)
+		}
+		if size != int64(len("sized data")) {
+			t.Fatalf("size = %d, want %d", size, len("sized data"))
+		}
+	})
+
 	t.Run("get", func(t *testing.T) {
 		h := sha256.Sum256([]byte("data"))
 		ref, _ := refs.NewBlobRef(h[:])
@@ -157,6 +192,32 @@ func TestBlobsHandler(t *testing.T) {
 			if string(got) != "data" {
 				t.Errorf("got %s, want data", got)
 			}
+		}
+	})
+
+	t.Run("getSlice", func(t *testing.T) {
+		h := sha256.Sum256([]byte("slice-data"))
+		ref, _ := refs.NewBlobRef(h[:])
+		bs.blobs[string(ref.Hash())] = []byte("slice-data")
+
+		src, err := client.Source(ctx, muxrpc.TypeJSON, muxrpc.Method{"blobs", "getSlice"}, map[string]interface{}{
+			"hash":  ref.String(),
+			"start": 6,
+			"size":  4,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer src.Cancel(nil)
+		if !src.Next(ctx) {
+			t.Fatalf("expected slice frame, err=%v", src.Err())
+		}
+		got, err := src.Bytes()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != "data" {
+			t.Fatalf("slice = %q, want data", got)
 		}
 	})
 
@@ -199,12 +260,71 @@ func TestBlobsHandler(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		var gotRef string
-		if err := json.Unmarshal(got, &gotRef); err != nil {
-			t.Fatalf("decode want frame %q: %v", got, err)
+		found := false
+		for {
+			var gotRef string
+			if err := json.Unmarshal(got, &gotRef); err != nil {
+				t.Fatalf("decode want frame %q: %v", got, err)
+			}
+			if gotRef == ref.Ref() {
+				found = true
+				break
+			}
+			readCtx, cancel := context.WithTimeout(ctx, time.Second)
+			defer cancel()
+			if !src.Next(readCtx) {
+				t.Fatalf("did not find expected want %s before source ended, err=%v", ref.Ref(), src.Err())
+			}
+			got, err = src.Bytes()
+			if err != nil {
+				t.Fatal(err)
+			}
 		}
-		if gotRef != ref.Ref() {
-			t.Fatalf("want ref = %s, want %s", gotRef, ref.Ref())
+		if !found {
+			t.Fatalf("want ref %s was not emitted", ref.Ref())
+		}
+	})
+
+	t.Run("want adds ref and createWants emits existing wants", func(t *testing.T) {
+		h := sha256.Sum256([]byte("wanted before open"))
+		ref, _ := refs.NewBlobRef(h[:])
+		var ok bool
+		if err := client.Async(ctx, &ok, muxrpc.TypeJSON, muxrpc.Method{"blobs", "want"}, ref.String()); err != nil {
+			t.Fatal(err)
+		}
+		if !ok || !wm.IsWanted(ref) {
+			t.Fatal("expected blobs.want to mark ref wanted")
+		}
+
+		src, err := client.Source(ctx, muxrpc.TypeJSON, muxrpc.Method{"blobs", "createWants"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer src.Cancel(nil)
+		if !src.Next(ctx) {
+			t.Fatalf("expected existing want, err=%v", src.Err())
+		}
+		got, err := src.Bytes()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for {
+			var gotRef string
+			if err := json.Unmarshal(got, &gotRef); err != nil {
+				t.Fatalf("decode want frame %q: %v", got, err)
+			}
+			if gotRef == ref.Ref() {
+				break
+			}
+			readCtx, cancel := context.WithTimeout(ctx, time.Second)
+			defer cancel()
+			if !src.Next(readCtx) {
+				t.Fatalf("did not find expected want %s before source ended, err=%v", ref.Ref(), src.Err())
+			}
+			got, err = src.Bytes()
+			if err != nil {
+				t.Fatal(err)
+			}
 		}
 	})
 

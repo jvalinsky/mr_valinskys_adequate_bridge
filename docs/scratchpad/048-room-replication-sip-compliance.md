@@ -84,3 +84,41 @@ Tildefriends run:
 - Add a local Planetary/scuttlego-style probe that requests `manifest`, `room.metadata`, `tunnel.endpoints`, EBT, and tunneled `createHistoryStream`, failing on invalid signatures or non-JSON terminations.
 - Capture an actual bridge-authored raw payload from the failing mobile path and verify it with both bridge verifier and a scuttlego/go-ssb-compatible verifier.
 - Extend blob and EBT fixtures for note encoding, duplicate/gap paths, live streaming, append rejection, and ranged blob reads.
+
+## Slice 2: Raw Payload Probe
+
+Deciduous action:
+- #1210 Add mobile-style raw replication compliance probe
+
+Mobile export inspection on 2026-04-15:
+- `gobot-2026-04-15_03-17.log` contains repeated `.ggfeed-v1` contact mapping failures and scuttlego message-buffer persistence summaries.
+- `com.planetary.ios 2026-04-15--03-17-02-694.log` shows the client dialing `net:room.snek.cc:8989~shs:8Ui5fI5JRHCgbtpB1arG/iH+gQTUdxMipr0COoS+LKE=` and later asking go-ssb for new messages.
+- The SQLite export has normalized `authors`, `messagekeys`, and `messages` rows, but no raw signed-message JSON payload column in the exported schema.
+- Exact raw bridge payload bytes are therefore not available from this export; closure requires a new local run with raw artifacts enabled.
+
+Implemented in slice 2:
+- `room-tunnel-feed-verify history --raw-artifact-dir <dir>` writes one JSON artifact per valid classic message with peer, feed, sequence, message ref, envelope key, raw SHA-256, signature validity, source path, exact raw JSON, and base64 raw JSON.
+- `room-tunnel-feed-verify history` now reads non-live history streams to termination, so muxrpc termination errors are observable instead of stopping immediately after `--min-count`.
+- Muxrpc sources now reject incoming end/error frames whose body type is not JSON, matching the strict scuttlego failure signature.
+- Added `cmd/room-replication-compliance-probe` for a local mobile-style room probe. It checks `manifest`, `whoami`, `room.metadata`, `room.attendants`, `tunnel.endpoints`, optional room-level `ebt.replicate` when advertised, tunneled inner SHS, and tunneled `createHistoryStream` signature validity.
+- EBT history streaming now honors `CreateHistArgs.Limit`.
+- Added focused EBT, history artifact, muxrpc termination, and blob want/get/range tests.
+
+Open after slice 2:
+- Run the new compliance probe against the Docker room harness and attach the emitted JSONL to this scratchpad.
+- Run `room-tunnel-feed-verify history --raw-artifact-dir` against a mobile-failing bridge-authored feed and replay-verify the captured artifact with an independent go-ssb/scuttlego-compatible verifier.
+- Decide whether room-level `ebt.replicate` should be advertised by the room runtime or remain a target-peer-only capability; the probe currently treats absent room-level EBT as non-fatal unless advertised.
+
+Slice 2 verification:
+- `GOFLAGS=-mod=mod go test ./...`: passed.
+- `cd internal/ssb && go test ./...`: passed.
+- `go test -count=1 ./cmd/room-tunnel-feed-verify ./cmd/bridge-cli ./cmd/room-replication-compliance-probe`: passed.
+- `env E2E_TF_DEBUG=1 ./scripts/e2e_tildefriends.sh`: passed.
+
+Tildefriends run:
+- Run ID: `e2e-tf-20260416T022719Z`
+- Host artifacts: `tmp/e2e-tildefriends/e2e-tf-20260416T022719Z`
+- Harness result: `E2E PASSED: scenario=positive expect=pass compose_exit=0`
+- Forward replication checks: OK
+- Reverse media pipeline checks: OK
+- Non-fatal residuals: reverse event count stayed 0 within 120 seconds; `room_member_ingest_stream_failed` still reports a timestamp string decoding issue in the reverse ingest path.

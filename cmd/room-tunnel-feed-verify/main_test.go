@@ -209,17 +209,93 @@ func TestValidateClassicHistoryFrame(t *testing.T) {
 	if err != nil {
 		t.Fatalf("validate wrapped frame: %v", err)
 	}
-	if frame.Key != key || frame.Author != author || frame.Sequence != 1 || frame.FeedFormat != "ed25519" || frame.MessageFormat != "sha256" || !frame.SignatureValid || frame.RawSHA256 == "" {
+	if frame.Key != key || frame.MessageRef != key || frame.Author != author || frame.Sequence != 1 || frame.FeedFormat != "ed25519" || frame.MessageFormat != "sha256" || !frame.SignatureValid || frame.RawSHA256 == "" {
 		t.Fatalf("unexpected frame summary: %+v", frame)
 	}
-
-	author, _, direct := signedHistoryPayload(t, 2)
+	author, directRef, direct := signedHistoryPayload(t, 2)
 	frame, err = validateClassicHistoryFrame(direct, author)
 	if err != nil {
 		t.Fatalf("validate direct frame: %v", err)
 	}
-	if frame.Key != "" || frame.Sequence != 2 || !frame.SignatureValid {
+	if frame.Key != "" || frame.MessageRef != directRef || frame.Sequence != 2 || !frame.SignatureValid {
 		t.Fatalf("unexpected direct frame summary: %+v", frame)
+	}
+	if string(frame.RawJSON) != string(direct) {
+		t.Fatalf("direct raw JSON mismatch\nwant=%s\ngot=%s", string(direct), string(frame.RawJSON))
+	}
+}
+
+func TestWriteRawHistoryArtifact(t *testing.T) {
+	author, key, raw := signedHistoryPayload(t, 3)
+	payload, err := json.Marshal(struct {
+		Key   string          `json:"key"`
+		Value json.RawMessage `json:"value"`
+	}{
+		Key:   key,
+		Value: raw,
+	})
+	if err != nil {
+		t.Fatalf("marshal wrapped frame: %v", err)
+	}
+	frame, err := validateClassicHistoryFrame(payload, author)
+	if err != nil {
+		t.Fatalf("validate wrapped frame: %v", err)
+	}
+
+	dir := t.TempDir()
+	if err := writeRawHistoryArtifact(dir, "@peer.ed25519", frame); err != nil {
+		t.Fatalf("write artifact: %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read artifact dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected one artifact, got %d", len(entries))
+	}
+	data, err := os.ReadFile(filepath.Join(dir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("read artifact: %v", err)
+	}
+	var artifact struct {
+		Peer           string          `json:"peer"`
+		Feed           string          `json:"feed"`
+		Sequence       int64           `json:"sequence"`
+		MessageRef     string          `json:"message_ref"`
+		EnvelopeKey    string          `json:"envelope_key"`
+		RawSHA256      string          `json:"raw_sha256"`
+		SignatureValid bool            `json:"signature_valid"`
+		RawJSON        json.RawMessage `json:"raw_json"`
+		RawJSONBase64  string          `json:"raw_json_base64"`
+	}
+	if err := json.Unmarshal(data, &artifact); err != nil {
+		t.Fatalf("decode artifact: %v", err)
+	}
+	if artifact.Peer != "@peer.ed25519" || artifact.Feed != author || artifact.Sequence != 3 || artifact.MessageRef != key || artifact.EnvelopeKey != key || !artifact.SignatureValid {
+		t.Fatalf("unexpected artifact: %+v", artifact)
+	}
+	if string(artifact.RawJSON) != string(frame.RawJSON) {
+		t.Fatalf("artifact raw JSON mismatch\nwant=%s\ngot=%s", string(frame.RawJSON), string(artifact.RawJSON))
+	}
+}
+
+func TestMarshalRawHistoryArtifactPreservesRawJSONWhitespace(t *testing.T) {
+	raw := json.RawMessage([]byte("{\n  \"type\": \"post\",\n  \"text\": \"spaced\"\n}"))
+	data, err := marshalRawHistoryArtifact(rawHistoryArtifact{
+		Peer:           "@peer.ed25519",
+		Feed:           "@feed.ed25519",
+		Sequence:       1,
+		RawSHA256:      "abc",
+		SignatureValid: true,
+		SourcePath:     "test",
+		RawJSON:        raw,
+		RawJSONBase64:  "e30=",
+	})
+	if err != nil {
+		t.Fatalf("marshal artifact: %v", err)
+	}
+	if !strings.Contains(string(data), string(raw)) {
+		t.Fatalf("artifact did not preserve raw json bytes\nartifact=%s\nraw=%s", string(data), string(raw))
 	}
 }
 
