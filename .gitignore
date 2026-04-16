@@ -28,6 +28,8 @@ bin/
 # Logs
 *.log
 /bridge-demo.log
+/logs/
+.DS_Store
 
 # Reference dependency repos (clone locally as needed)
 # reference/
