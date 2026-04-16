@@ -8,6 +8,10 @@ docs/git-history.json
 docs/index.html
 *.db
 *.sqlite
+*.db-shm
+*.db-wal
+*.sqlite-shm
+*.sqlite-wal
 bin/
 
 # Live SSB repo data (contains private keys)
@@ -41,9 +45,21 @@ bridge-live.sqlite
 *.out
 *.test
 *.html
+*.coverprofile
+*.prof
+*.pprof
+*.trace
+coverage.*
+coverprofile
+/coverage/
+/build/
+/dist/
 /demo-repo/
 /tmp/e2e-tildefriends/
+/tmp/e2e-*/
 /vendor/
+result
+result-*
 .claude/settings.local.json
 
 # Temp / scratch files
